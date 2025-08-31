@@ -85,6 +85,13 @@ def startup():
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str | None = "/"):
     return templates.TemplateResponse("login.html", {"request": request, "next": next})
+
+<form method="post" action="/login">
+  <input type="hidden" name="next" value="{{ next or '/' }}">
+  <input name="username">
+  <input type="password" name="password">
+  <button>Sign in</button>
+</form>
     
 @app.post("/login")
 def login_post(
