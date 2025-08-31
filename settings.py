@@ -12,6 +12,8 @@ class Settings(BaseSettings):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
     CURRENCY: str = "LKR"
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "change-this-in-railway")
+
 
 settings = Settings()
 
