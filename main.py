@@ -13,9 +13,29 @@ from seed import init_db
 from sqlalchemy import func
 from utils_auth import hash_password, verify_password  # NEW
 from sqlalchemy import inspect  # NEW
+from urllib.parse import quote, urlparse
 
 app = FastAPI(title=settings.APP_NAME)
-app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY, same_site="lax")  # NEW
+app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY, same_site="lax", https_only=True,)  # NEW
+
+LOGIN_PATH = "/login"
+
+def _is_safe_next(next_url: str) -> bool:
+    """Prevent open-redirects. Allow only same-site paths."""
+    try:
+        u = urlparse(next_url)
+        return (not u.netloc) and next_url.startswith("/")
+    except Exception:
+        return False
+
+def login_required(request: Request):
+    """Dependency that either returns or raises a redirect to /login."""
+    user = request.session.get("user")
+    if user:
+        return
+    next_param = quote(request.url.path)
+    # IMPORTANT: raise a redirect, don't return it
+    raise HTTPException(status_code=307, headers={"Location": f"{LOGIN_PATH}?next={next_param}"})
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
@@ -63,37 +83,33 @@ def startup():
 # ------------------------ AUTH ROUTES ------------------------
 
 @app.get("/login", response_class=HTMLResponse)
-def login_form(request: Request):
-    return templates.TemplateResponse("login.html", {"request": request})
-
+def login_form(request: Request, next: str | None = "/"):
+    return templates.TemplateResponse("login.html", {"request": request, "next": next})
+    
 @app.post("/login")
-def login(
+def login_post(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    next: str | None = Form(None),
-    db: Session = Depends(get_db),
+    next: str = Form("/")
 ):
-    user = db.query(User).filter(User.username == username.strip()).first()
-    if not user or not verify_password(password, user.password_hash):
-        # invalid credentials
-        return templates.TemplateResponse(
-            "login.html",
-            {"request": request, "error": "Invalid username or password"},
-            status_code=400,
-        )
-    request.session["uid"] = user.id
-    return RedirectResponse(next or "/", status_code=303)
+    # TODO: replace with DB lookup later
+    if username == "admin" and password == "change-me":
+        request.session["user"] = {"username": username}
+        if not _is_safe_next(next):
+            next = "/"
+        return RedirectResponse(next, status_code=303)
+    return RedirectResponse(f"{LOGIN_PATH}?error=Invalid&next={quote(next)}", status_code=303)
 
 @app.get("/logout")
 def logout(request: Request):
     request.session.clear()
-    return RedirectResponse("/login", status_code=303)
-
+    return RedirectResponse(LOGIN_PATH, status_code=303)
+    
 # ---------------------- PROTECTED PAGES ----------------------
 
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_login)):
+def dashboard(request: Request, db: Session = Depends(get_db), _: None = Depends(login_required)):
     # ... your original code unchanged below ...
     today = date.today()
     start_month = today.replace(day=1)
@@ -109,7 +125,7 @@ def dashboard(request: Request, db: Session = Depends(get_db), user: User = Depe
     return templates.TemplateResponse("dashboard.html", {"request": request, "currency": settings.CURRENCY, "revenue": revenue, "expenses": expenses, "profit": profit, "cash_balance": cash_balance})
 
 @app.get("/accounts", response_class=HTMLResponse)
-def list_accounts(request: Request, db: Session = Depends(get_db), user: User = Depends(require_login)):
+def list_accounts(request: Request, db: Session = Depends(get_db), _: None = Depends(login_required)):
     accounts = db.query(Account).order_by(Account.code).all()
     return templates.TemplateResponse("accounts.html", {"request": request, "accounts": accounts})
 
@@ -121,7 +137,7 @@ def create_account(code: str = Form(...), name: str = Form(...), type: str = For
     return RedirectResponse("/accounts", status_code=303)
 
 @app.get("/entries", response_class=HTMLResponse)
-def list_entries(request: Request, db: Session = Depends(get_db), user: User = Depends(require_login)):
+def list_entries(request: Request, db: Session = Depends(get_db), _: None = Depends(login_required)):
     entries = db.query(JournalEntry).order_by(JournalEntry.date.desc(), JournalEntry.id.desc()).limit(200).all()
     accounts = db.query(Account).order_by(Account.code).all()
     return templates.TemplateResponse("entries.html", {"request": request, "entries": entries, "accounts": accounts, "currency": settings.CURRENCY})
