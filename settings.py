@@ -14,3 +14,6 @@ class Settings(BaseSettings):
     CURRENCY: str = "LKR"
 
 settings = Settings()
+git add settings.py
+git commit -m "Switch DB config to support Railway Postgres"
+git push
