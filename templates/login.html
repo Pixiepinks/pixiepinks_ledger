@@ -1,0 +1,18 @@
+<!-- templates/login.html -->
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Sign in</h1>
+
+{% if error %}
+<div class="mb-4 p-3 rounded bg-red-50 text-red-700">{{ error }}</div>
+{% endif %}
+
+<form method="post" class="bg-white rounded-2xl shadow p-4 max-w-md">
+  <input type="hidden" name="next" value="{{ request.query_params.get('next') or '' }}">
+  <div class="space-y-3">
+    <input name="username" placeholder="Username" class="border rounded-lg p-2 w-full" required>
+    <input name="password" type="password" placeholder="Password" class="border rounded-lg p-2 w-full" required>
+  </div>
+  <button class="mt-4 px-4 py-2 bg-black text-white rounded-lg">Sign in</button>
+</form>
+{% endblock %}
