@@ -35,3 +35,16 @@ class JournalLine(Base):
 
     entry = relationship("JournalEntry", back_populates="lines")
     account = relationship("Account", back_populates="lines")
+
+# models.py
+from sqlalchemy import Column, Integer, String, Text, Date, ForeignKey, Float
+from sqlalchemy.orm import relationship, declarative_base
+from database import Base
+
+# ... your existing Account / JournalEntry / JournalLine ...
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True)
+    username = Column(String(100), unique=True, nullable=False, index=True)
+    password_hash = Column(String(255), nullable=False)
