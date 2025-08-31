@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Dashboard</h1>
+<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+  <div class="bg-white rounded-2xl shadow p-4">
+    <div class="text-sm text-gray-500">Revenue (MTD)</div>
+    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(revenue) }}</div>
+  </div>
+  <div class="bg-white rounded-2xl shadow p-4">
+    <div class="text-sm text-gray-500">Expenses (MTD)</div>
+    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(expenses) }}</div>
+  </div>
+  <div class="bg-white rounded-2xl shadow p-4">
+    <div class="text-sm text-gray-500">Profit (MTD)</div>
+    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(profit) }}</div>
+  </div>
+  <div class="bg-white rounded-2xl shadow p-4">
+    <div class="text-sm text-gray-500">Cash Balance</div>
+    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(cash_balance) }}</div>
+  </div>
+</div>
+{% endblock %}

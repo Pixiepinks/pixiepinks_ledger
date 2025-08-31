@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Trial Balance</h1>
+<form method="get" class="bg-white rounded-2xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+  <input type="date" name="start" value="{{ start or '' }}" class="border rounded-lg p-2">
+  <input type="date" name="end" value="{{ end or '' }}" class="border rounded-lg p-2">
+  <button class="bg-black text-white px-4 py-2 rounded-lg">Run</button>
+</form>
+<table class="w-full bg-white rounded-2xl shadow overflow-hidden">
+  <thead class="bg-gray-100 text-left">
+    <tr><th class="p-3">Code</th><th class="p-3">Account</th><th class="p-3 text-right">Debit ({{ currency }})</th><th class="p-3 text-right">Credit ({{ currency }})</th></tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+    <tr class="border-t">
+      <td class="p-3">{{ r.code }}</td>
+      <td class="p-3">{{ r.name }}</td>
+      <td class="p-3 text-right">{{ '%.2f'|format(r.debit) }}</td>
+      <td class="p-3 text-right">{{ '%.2f'|format(r.credit) }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+  <tfoot class="bg-gray-100 font-semibold">
+    <tr><td class="p-3"></td><td class="p-3 text-right">Totals</td><td class="p-3 text-right">{{ '%.2f'|format(total_debit) }}</td><td class="p-3 text-right">{{ '%.2f'|format(total_credit) }}</td></tr>
+  </tfoot>
+</table>
+{% endblock %}

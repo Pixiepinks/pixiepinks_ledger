@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Balance Sheet</h1>
+<form method="get" class="bg-white rounded-2xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+  <input type="date" name="as_of" value="{{ as_of or '' }}" class="border rounded-lg p-2" required>
+  <button class="bg-black text-white px-4 py-2 rounded-lg">Run</button>
+</form>
+<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+  <div class="bg-white rounded-2xl shadow p-4">
+    <div class="text-sm text-gray-500">Assets</div>
+    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(assets) }}</div>
+  </div>
+  <div class="bg-white rounded-2xl shadow p-4">
+    <div class="text-sm text-gray-500">Liabilities</div>
+    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(liabilities) }}</div>
+  </div>
+  <div class="bg-white rounded-2xl shadow p-4">
+    <div class="text-sm text-gray-500">Equity</div>
+    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(equity) }}</div>
+  </div>
+</div>
+{% endblock %}
