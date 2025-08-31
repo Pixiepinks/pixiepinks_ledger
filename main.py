@@ -1,45 +1,35 @@
+from datetime import date, datetime
+from urllib.parse import quote, urlparse
+
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from starlette.middleware.sessions import SessionMiddleware  # NEW
+from starlette.middleware.sessions import SessionMiddleware
+from sqlalchemy import func, inspect
 from sqlalchemy.orm import Session
-from datetime import date, datetime, timedelta
+
 from settings import settings
-from database import SessionLocal, engine  # engine for create_all
-from models import Account, JournalEntry, JournalLine, User  # include User
-from schemas import AccountCreate, JournalEntryIn
+from database import SessionLocal, engine
+from models import Account, JournalEntry, JournalLine, User, Base
 from seed import init_db
-from sqlalchemy import func
-from utils_auth import hash_password, verify_password  # NEW
-from sqlalchemy import inspect  # NEW
-from urllib.parse import quote, urlparse
+from utils_auth import hash_password, verify_password  # expects hash_password/verify_password
 
+# ---------------------- App & Middleware ----------------------
 app = FastAPI(title=settings.APP_NAME)
-app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY, same_site="lax", https_only=True,)  # NEW
 
-LOGIN_PATH = "/login"
-
-def _is_safe_next(next_url: str) -> bool:
-    """Prevent open-redirects. Allow only same-site paths."""
-    try:
-        u = urlparse(next_url)
-        return (not u.netloc) and next_url.startswith("/")
-    except Exception:
-        return False
-
-def login_required(request: Request):
-    """Dependency that either returns or raises a redirect to /login."""
-    user = request.session.get("user")
-    if user:
-        return
-    next_param = quote(request.url.path)
-    # IMPORTANT: raise a redirect, don't return it
-    raise HTTPException(status_code=307, headers={"Location": f"{LOGIN_PATH}?next={next_param}"})
+# MUST be set in Railway Variables (SECRET_KEY)
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.SECRET_KEY,
+    same_site="lax",
+    https_only=True,        # Railway is HTTPS
+)
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+# ---------------------- DB Session ----------------------
 def get_db():
     db = SessionLocal()
     try:
@@ -47,108 +37,180 @@ def get_db():
     finally:
         db.close()
 
-# ---------- auth utilities ----------
-def require_login(request: Request, db: Session = Depends(get_db)) -> User:
-    uid = request.session.get("uid")
-    if not uid:
-        # redirect to login (303) – FastAPI allows redirect via HTTPException headers
-        raise HTTPException(status_code=303, headers={"Location": f"/login?next={request.url.path}"})
-    user = db.get(User, uid)
-    if not user:
-        request.session.clear()
-        raise HTTPException(status_code=303, headers={"Location": "/login"})
-    return user
-# ------------------------------------
+# ---------------------- Helpers ----------------------
+LOGIN_PATH = "/login"
 
+def _is_safe_next(next_url: str) -> bool:
+    try:
+        u = urlparse(next_url)
+        return (not u.netloc) and next_url.startswith("/")
+    except Exception:
+        return False
+
+def require_user(request: Request, db: Session = Depends(get_db)) -> User:
+    """
+    Return the current user or raise a redirect to /login.
+    Raising (not returning) the redirect avoids 'blank page' issues.
+    """
+    uid = request.session.get("uid")
+    if uid:
+        user = db.get(User, uid)
+        if user:
+            return user
+        # session had a stale uid
+        request.session.clear()
+    # 303 redirect to login with ?next=
+    raise HTTPException(
+        status_code=303,
+        headers={"Location": f"{LOGIN_PATH}?next={quote(request.url.path)}"}
+    )
+
+# ---------------------- Startup ----------------------
 @app.on_event("startup")
 def startup():
-    # Create missing tables once
-    from models import Base
+    # Create tables if missing
     inspector = inspect(engine)
     if not inspector.has_table("users"):
         Base.metadata.create_all(bind=engine)
     else:
-        # still ensure future tables exist if you add more models later
+        # ensure any future models are created too
         Base.metadata.create_all(bind=engine)
 
-    # Seed your chart of accounts/etc.
+    # Seed chart of accounts, etc.
     init_db()
 
-    # Seed an admin if none exists
+    # Seed admin user if none exists
     with SessionLocal() as db:
         if not db.query(User).filter_by(username="admin").first():
             db.add(User(username="admin", password_hash=hash_password("change-me")))
             db.commit()
 
-# ------------------------ AUTH ROUTES ------------------------
-
+# ---------------------- Auth Routes ----------------------
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request, next: str | None = "/"):
     return templates.TemplateResponse("login.html", {"request": request, "next": next})
-    
+
 @app.post("/login")
 def login_post(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    next: str = Form("/")
+    next: str = Form("/"),
+    db: Session = Depends(get_db),
 ):
-    # TODO: replace with DB lookup later
-    if username == "admin" and password == "change-me":
-        request.session["user"] = {"username": username}
+    # DB lookup
+    user = db.query(User).filter(User.username == username).first()
+    if user and verify_password(password, user.password_hash):
+        # set session
+        request.session["uid"] = user.id
+        request.session["user"] = {"username": user.username}
         if not _is_safe_next(next):
             next = "/"
         return RedirectResponse(next, status_code=303)
+    # invalid -> back to login
     return RedirectResponse(f"{LOGIN_PATH}?error=Invalid&next={quote(next)}", status_code=303)
 
 @app.get("/logout")
 def logout(request: Request):
     request.session.clear()
     return RedirectResponse(LOGIN_PATH, status_code=303)
-    
-# ---------------------- PROTECTED PAGES ----------------------
 
+# ---------------------- Protected Pages ----------------------
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request, db: Session = Depends(get_db), _: None = Depends(login_required)):
-    # ... your original code unchanged below ...
+def dashboard(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
     today = date.today()
     start_month = today.replace(day=1)
-    revenue = db.query(func.coalesce(func.sum(JournalLine.credit), 0)).join(Account).filter(Account.type == "INCOME").join(JournalEntry).filter(JournalEntry.date >= start_month, JournalEntry.date <= today).scalar() or 0
-    expenses = db.query(func.coalesce(func.sum(JournalLine.debit), 0)).join(Account).filter(Account.type == "EXPENSE").join(JournalEntry).filter(JournalEntry.date >= start_month, JournalEntry.date <= today).scalar() or 0
+
+    revenue = (
+        db.query(func.coalesce(func.sum(JournalLine.credit), 0))
+        .join(Account).filter(Account.type == "INCOME")
+        .join(JournalEntry)
+        .filter(JournalEntry.date >= start_month, JournalEntry.date <= today)
+        .scalar() or 0
+    )
+    expenses = (
+        db.query(func.coalesce(func.sum(JournalLine.debit), 0))
+        .join(Account).filter(Account.type == "EXPENSE")
+        .join(JournalEntry)
+        .filter(JournalEntry.date >= start_month, JournalEntry.date <= today)
+        .scalar() or 0
+    )
     profit = float(revenue) - float(expenses)
+
     cash_acc = db.query(Account).filter(Account.name.in_(["Cash on Hand", "Bank - Current Account"])).all()
     cash_balance = 0.0
     for acc in cash_acc:
         dr = db.query(func.coalesce(func.sum(JournalLine.debit), 0)).filter(JournalLine.account_id == acc.id).scalar() or 0
         cr = db.query(func.coalesce(func.sum(JournalLine.credit), 0)).filter(JournalLine.account_id == acc.id).scalar() or 0
         cash_balance += float(dr) - float(cr)
-    return templates.TemplateResponse("dashboard.html", {"request": request, "currency": settings.CURRENCY, "revenue": revenue, "expenses": expenses, "profit": profit, "cash_balance": cash_balance})
+
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "currency": settings.CURRENCY,
+            "revenue": revenue,
+            "expenses": expenses,
+            "profit": profit,
+            "cash_balance": cash_balance,
+        },
+    )
 
 @app.get("/accounts", response_class=HTMLResponse)
-def list_accounts(request: Request, db: Session = Depends(get_db), _: None = Depends(login_required)):
+def list_accounts(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
     accounts = db.query(Account).order_by(Account.code).all()
     return templates.TemplateResponse("accounts.html", {"request": request, "accounts": accounts})
 
 @app.post("/accounts")
-def create_account(code: str = Form(...), name: str = Form(...), type: str = Form(...), description: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_login)):
+def create_account(
+    code: str = Form(...),
+    name: str = Form(...),
+    type: str = Form(...),
+    description: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
     acc = Account(code=code.strip(), name=name.strip(), type=type.strip().upper(), description=description.strip())
     db.add(acc)
     db.commit()
     return RedirectResponse("/accounts", status_code=303)
 
 @app.get("/entries", response_class=HTMLResponse)
-def list_entries(request: Request, db: Session = Depends(get_db), _: None = Depends(login_required)):
+def list_entries(
+    request: Request,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
     entries = db.query(JournalEntry).order_by(JournalEntry.date.desc(), JournalEntry.id.desc()).limit(200).all()
     accounts = db.query(Account).order_by(Account.code).all()
-    return templates.TemplateResponse("entries.html", {"request": request, "entries": entries, "accounts": accounts, "currency": settings.CURRENCY})
+    return templates.TemplateResponse(
+        "entries.html", {"request": request, "entries": entries, "accounts": accounts, "currency": settings.CURRENCY}
+    )
 
 @app.post("/entries")
-def create_entry(date_str: str = Form(...), memo: str = Form(""), accounts: list[int] = Form(...), descriptions: list[str] = Form(...), debits: list[str] = Form(...), credits: list[str] = Form(...), db: Session = Depends(get_db), user: User = Depends(require_login)):
-    # ... unchanged body ...
+def create_entry(
+    date_str: str = Form(...),
+    memo: str = Form(""),
+    accounts: list[int] = Form(...),
+    descriptions: list[str] = Form(...),
+    debits: list[str] = Form(...),
+    credits: list[str] = Form(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
     dt = datetime.strptime(date_str, "%Y-%m-%d").date()
     entry = JournalEntry(date=dt, memo=memo)
     db.add(entry)
     db.flush()
+
     total_debit = 0.0
     total_credit = 0.0
     for a, d, dr, cr in zip(accounts, descriptions, debits, credits):
@@ -158,15 +220,21 @@ def create_entry(date_str: str = Form(...), memo: str = Form(""), accounts: list
         total_credit += cr_amt
         line = JournalLine(entry_id=entry.id, account_id=int(a), description=d, debit=dr_amt, credit=cr_amt)
         db.add(line)
+
     if round(total_debit, 2) != round(total_credit, 2):
         db.rollback()
         return RedirectResponse("/entries?error=Not%20balanced", status_code=303)
+
     db.commit()
     return RedirectResponse("/entries", status_code=303)
 
 @app.post("/entries/{entry_id}/delete")
 @app.get("/entries/{entry_id}/delete", include_in_schema=False)
-def delete_entry(entry_id: int, db: Session = Depends(get_db), user: User = Depends(require_login)):
+def delete_entry(
+    entry_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
     entry = db.get(JournalEntry, entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
@@ -175,17 +243,168 @@ def delete_entry(entry_id: int, db: Session = Depends(get_db), user: User = Depe
     return RedirectResponse(url="/entries", status_code=status.HTTP_303_SEE_OTHER)
 
 @app.get("/reports/trial-balance", response_class=HTMLResponse)
-def trial_balance(request: Request, start: str | None = None, end: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_login)):
-    # ... unchanged body ...
-    # (keep your current code here)
-    ...
+def trial_balance(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    from datetime import datetime as dt
+    start_dt = dt.strptime(start, "%Y-%m-%d").date() if start else None
+    end_dt = dt.strptime(end, "%Y-%m-%d").date() if end else None
+
+    accounts = db.query(Account).order_by(Account.code).all()
+    rows = []
+    total_debit = 0.0
+    total_credit = 0.0
+
+    for acc in accounts:
+        dr = db.query(func.coalesce(func.sum(JournalLine.debit), 0)).join(JournalEntry).filter(JournalLine.account_id == acc.id)
+        cr = db.query(func.coalesce(func.sum(JournalLine.credit), 0)).join(JournalEntry).filter(JournalLine.account_id == acc.id)
+        if start_dt:
+            dr = dr.filter(JournalEntry.date >= start_dt)
+            cr = cr.filter(JournalEntry.date >= start_dt)
+        if end_dt:
+            dr = dr.filter(JournalEntry.date <= end_dt)
+            cr = cr.filter(JournalEntry.date <= end_dt)
+        dr_amt = float(dr.scalar() or 0)
+        cr_amt = float(cr.scalar() or 0)
+        bal = dr_amt - cr_amt
+        debit = bal if bal > 0 else 0.0
+        credit = -bal if bal < 0 else 0.0
+        total_debit += debit
+        total_credit += credit
+        rows.append({"code": acc.code, "name": acc.name, "debit": debit, "credit": credit})
+
+    return templates.TemplateResponse(
+        "trial_balance.html",
+        {
+            "request": request,
+            "rows": rows,
+            "total_debit": total_debit,
+            "total_credit": total_credit,
+            "currency": settings.CURRENCY,
+            "start": start,
+            "end": end,
+        },
+    )
 
 @app.get("/reports/income-statement", response_class=HTMLResponse)
-def income_statement(request: Request, start: str | None = None, end: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_login)):
-    # ... unchanged body ...
-    ...
+def income_statement(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    from datetime import datetime as dt
+    if not start or not end:
+        return templates.TemplateResponse(
+            "income_statement.html",
+            {
+                "request": request,
+                "currency": settings.CURRENCY,
+                "start": start,
+                "end": end,
+                "income": 0,
+                "cogs": 0,
+                "other_exp": 0,
+                "gross_profit": 0,
+                "net_profit": 0,
+            },
+        )
+
+    start_dt = dt.strptime(start, "%Y-%m-%d").date()
+    end_dt = dt.strptime(end, "%Y-%m-%d").date()
+
+    income = (
+        db.query(func.coalesce(func.sum(JournalLine.credit), 0))
+        .join(Account).filter(Account.type == "INCOME")
+        .join(JournalEntry)
+        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
+        .scalar() or 0
+    )
+    cogs = (
+        db.query(func.coalesce(func.sum(JournalLine.debit), 0))
+        .join(Account).filter(Account.code == "5000")
+        .join(JournalEntry)
+        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
+        .scalar() or 0
+    )
+    other_exp = (
+        db.query(func.coalesce(func.sum(JournalLine.debit), 0))
+        .join(Account).filter(Account.type == "EXPENSE", Account.code != "5000")
+        .join(JournalEntry)
+        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
+        .scalar() or 0
+    )
+
+    gross_profit = float(income) - float(cogs)
+    net_profit = gross_profit - float(other_exp)
+
+    return templates.TemplateResponse(
+        "income_statement.html",
+        {
+            "request": request,
+            "currency": settings.CURRENCY,
+            "start": start,
+            "end": end,
+            "income": income,
+            "cogs": cogs,
+            "other_exp": other_exp,
+            "gross_profit": gross_profit,
+            "net_profit": net_profit,
+        },
+    )
 
 @app.get("/reports/balance-sheet", response_class=HTMLResponse)
-def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_login)):
-    # ... unchanged body ...
-    ...
+def balance_sheet(
+    request: Request,
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    from datetime import datetime as dt
+
+    if not as_of:
+        return templates.TemplateResponse(
+            "balance_sheet.html",
+            {"request": request, "currency": settings.CURRENCY, "as_of": None, "assets": 0, "liabilities": 0, "equity": 0},
+        )
+
+    as_of_dt = dt.strptime(as_of, "%Y-%m-%d").date()
+
+    def sum_type(acc_type: str):
+        dr = (
+            db.query(func.coalesce(func.sum(JournalLine.debit), 0))
+            .join(Account).filter(Account.type == acc_type)
+            .join(JournalEntry).filter(JournalEntry.date <= as_of_dt)
+            .scalar() or 0
+        )
+        cr = (
+            db.query(func.coalesce(func.sum(JournalLine.credit), 0))
+            .join(Account).filter(Account.type == acc_type)
+            .join(JournalEntry).filter(JournalEntry.date <= as_of_dt)
+            .scalar() or 0
+        )
+        # debit-normal for ASSET/EXPENSE; credit-normal for LIABILITY/EQUITY/INCOME
+        return float(dr) - float(cr) if acc_type in {"ASSET", "EXPENSE"} else float(cr) - float(dr)
+
+    assets = sum_type("ASSET")
+    liabilities = sum_type("LIABILITY")
+    equity = sum_type("EQUITY")
+    retained_from_income = sum_type("INCOME") - sum_type("EXPENSE")
+    total_equity = equity + retained_from_income
+
+    return templates.TemplateResponse(
+        "balance_sheet.html",
+        {
+            "request": request,
+            "currency": settings.CURRENCY,
+            "as_of": as_of,
+            "assets": assets,
+            "liabilities": liabilities,
+            "equity": total_equity,
+        },
+    )
