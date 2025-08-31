@@ -15,6 +15,21 @@ app = FastAPI(title=settings.APP_NAME)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+# main.py
+from fastapi import FastAPI
+from database import engine, Base  # your existing engine/Base
+from sqlalchemy import inspect
+
+app = FastAPI()
+
+@app.on_event("startup")
+def init_db_once():
+    # Create any missing tables the first time a new environment boots
+    inspector = inspect(engine)
+    # If you have at least one table to check, e.g. "users"
+    if not inspector.has_table("users"):
+        Base.metadata.create_all(bind=engine)
+
 def get_db():
     db = SessionLocal()
     try:
