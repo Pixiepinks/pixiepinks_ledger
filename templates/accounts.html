@@ -1,22 +1,55 @@
 {% extends "base.html" %}
 {% block content %}
 <h1 class="text-2xl font-bold mb-4">Chart of Accounts</h1>
-<form method="post" class="bg-white rounded-2xl shadow p-4 mb-6 grid grid-cols-1 md:grid-cols-5 gap-3">
+
+<form method="post" class="bg-white rounded-2xl shadow p-4 mb-6 grid grid-cols-1 md:grid-cols-6 gap-3">
   <input name="code" required placeholder="Code" class="border rounded-lg p-2">
   <input name="name" required placeholder="Name" class="border rounded-lg p-2 md:col-span-2">
+
+  <!-- Main Type -->
   <select name="type" class="border rounded-lg p-2">
-    <option>ASSET</option><option>LIABILITY</option><option>EQUITY</option><option>INCOME</option><option>EXPENSE</option>
+    <option>ASSET</option>
+    <option>LIABILITY</option>
+    <option>EQUITY</option>
+    <option>INCOME</option>
+    <option>EXPENSE</option>
   </select>
-  <input name="description" placeholder="Description" class="border rounded-lg p-2 md:col-span-5">
+
+  <!-- Subtype -->
+  <select name="subtype" class="border rounded-lg p-2">
+    <option value="">-- Select Subtype --</option>
+    <option>CURRENT_ASSET</option>
+    <option>NON_CURRENT_ASSET</option>
+    <option>CURRENT_LIABILITY</option>
+    <option>NON_CURRENT_LIABILITY</option>
+    <option>EQUITY</option>
+    <option>INCOME</option>
+    <option>EXPENSE</option>
+  </select>
+
+  <input name="description" placeholder="Description" class="border rounded-lg p-2 md:col-span-6">
   <button class="bg-black text-white px-4 py-2 rounded-lg w-max">Add Account</button>
 </form>
+
 <table class="w-full bg-white rounded-2xl shadow overflow-hidden">
   <thead class="bg-gray-100 text-left">
-    <tr><th class="p-3">Code</th><th class="p-3">Name</th><th class="p-3">Type</th><th class="p-3">Description</th></tr>
+    <tr>
+      <th class="p-3">Code</th>
+      <th class="p-3">Name</th>
+      <th class="p-3">Type</th>
+      <th class="p-3">Subtype</th>
+      <th class="p-3">Description</th>
+    </tr>
   </thead>
   <tbody>
     {% for a in accounts %}
-    <tr class="border-t"><td class="p-3">{{ a.code }}</td><td class="p-3">{{ a.name }}</td><td class="p-3">{{ a.type }}</td><td class="p-3">{{ a.description }}</td></tr>
+    <tr class="border-t">
+      <td class="p-3">{{ a.code }}</td>
+      <td class="p-3">{{ a.name }}</td>
+      <td class="p-3">{{ a.type }}</td>
+      <td class="p-3">{{ a.subtype or '' }}</td>
+      <td class="p-3">{{ a.description }}</td>
+    </tr>
     {% endfor %}
   </tbody>
 </table>
