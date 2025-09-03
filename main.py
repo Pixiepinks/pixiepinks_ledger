@@ -174,11 +174,17 @@ def create_account(
     code: str = Form(...),
     name: str = Form(...),
     type: str = Form(...),
+    subtype: str = Form(""),
     description: str = Form(""),
-    db: Session = Depends(get_db),
-    user: User = Depends(require_user),
+    db: Session = Depends(get_db)
 ):
-    acc = Account(code=code.strip(), name=name.strip(), type=type.strip().upper(), description=description.strip())
+    acc = Account(
+        code=code.strip(),
+        name=name.strip(),
+        type=type.strip().upper(),
+        subtype=subtype.strip(),
+        description=description.strip()
+    )
     db.add(acc)
     db.commit()
     return RedirectResponse("/accounts", status_code=303)
