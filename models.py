@@ -7,11 +7,12 @@ from database import Base
 # ASSET, LIABILITY, EQUITY, INCOME, EXPENSE
 class Account(Base):
     __tablename__ = "accounts"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
-    code: Mapped[str] = mapped_column(String(20), unique=True, index=True)
-    name: Mapped[str] = mapped_column(String(100), index=True)
-    type: Mapped[str] = mapped_column(String(20), index=True)  # ASSET, LIABILITY, EQUITY, INCOME, EXPENSE
-    description: Mapped[str] = mapped_column(Text, default="")
+    id = Column(Integer, primary_key=True, index=True)
+    code = Column(String, unique=True, nullable=False)
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False)  # ASSET, LIABILITY, EQUITY, INCOME, EXPENSE
+    subtype = Column(String, nullable=True)  # NEW: Current Asset, Non-Current Asset, etc.
+    description = Column(String, nullable=True)
 
     lines = relationship("JournalLine", back_populates="account", cascade="all, delete-orphan")
 
