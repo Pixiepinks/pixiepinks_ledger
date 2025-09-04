@@ -1,22 +1,93 @@
 {% extends "base.html" %}
 {% block content %}
 <h1 class="text-2xl font-bold mb-4">Balance Sheet</h1>
-<form method="get" class="bg-white rounded-2xl shadow p-4 mb-4 grid grid-cols-1 md:grid-cols-4 gap-3">
-  <input type="date" name="as_of" value="{{ as_of or '' }}" class="border rounded-lg p-2" required>
+
+<!-- Date selector -->
+<form method="get" class="mb-6 flex gap-3">
+  <input name="as_of" type="date" class="border rounded-lg p-2" value="{{ as_of or '' }}">
   <button class="bg-black text-white px-4 py-2 rounded-lg">Run</button>
 </form>
-<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+
+  <!-- Assets -->
   <div class="bg-white rounded-2xl shadow p-4">
-    <div class="text-sm text-gray-500">Assets</div>
-    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(assets) }}</div>
+    <h2 class="font-bold text-xl mb-2">Assets</h2>
+
+    <div class="flex justify-between">
+      <span>Current Assets</span>
+      <span>{{ currency }} {{ "%.2f"|format(assets_current) }}</span>
+    </div>
+
+    <div class="flex justify-between mt-2">
+      <span>Non-Current Assets</span>
+      <span>{{ currency }} {{ "%.2f"|format(assets_non_current) }}</span>
+    </div>
+
+    <hr class="my-2">
+    <div class="flex justify-between font-bold">
+      <span>Total Assets</span>
+      <span>{{ currency }} {{ "%.2f"|format(assets_total) }}</span>
+    </div>
   </div>
+
+  <!-- Liabilities & Equity -->
   <div class="bg-white rounded-2xl shadow p-4">
-    <div class="text-sm text-gray-500">Liabilities</div>
-    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(liabilities) }}</div>
-  </div>
-  <div class="bg-white rounded-2xl shadow p-4">
-    <div class="text-sm text-gray-500">Equity</div>
-    <div class="text-2xl font-semibold">{{ currency }} {{ '%.2f'|format(equity) }}</div>
+    <h2 class="font-bold text-xl mb-2">Liabilities</h2>
+
+    <div class="flex justify-between">
+      <span>Current Liabilities</span>
+      <span>{{ currency }} {{ "%.2f"|format(liab_current) }}</span>
+    </div>
+
+    <div class="flex justify-between mt-2">
+      <span>Non-Current Liabilities</span>
+      <span>{{ currency }} {{ "%.2f"|format(liab_non_current) }}</span>
+    </div>
+
+    <hr class="my-2">
+    <div class="flex justify-between font-bold">
+      <span>Total Liabilities</span>
+      <span>{{ currency }} {{ "%.2f"|format(liab_total) }}</span>
+    </div>
+
+    <h2 class="font-bold text-xl mt-4 mb-2">Equity</h2>
+
+    <div class="flex justify-between">
+      <span>Capital</span>
+      <span>{{ currency }} {{ "%.2f"|format(equity_capital) }}</span>
+    </div>
+
+    <div class="flex justify-between mt-2">
+      <span>Retained Earnings</span>
+      <span>{{ currency }} {{ "%.2f"|format(retained_earnings) }}</span>
+    </div>
+
+    <hr class="my-2">
+    <div class="flex justify-between font-bold">
+      <span>Total Equity</span>
+      <span>{{ currency }} {{ "%.2f"|format(equity_total) }}</span>
+    </div>
+
+    <hr class="my-2">
+    <div class="flex justify-between font-bold text-lg">
+      <span>Total Liabilities + Equity</span>
+      <span>{{ currency }} {{ "%.2f"|format(liab_equity_total) }}</span>
+    </div>
   </div>
 </div>
+
+<!-- Validation: Assets vs Liabilities+Equity -->
+<div class="mt-6 p-4 rounded-xl
+     {% if assets_total == liab_equity_total %}
+       bg-green-100 text-green-800
+     {% else %}
+       bg-red-100 text-red-800
+     {% endif %}">
+  <p class="font-semibold">
+    Check: Assets = Liabilities + Equity → 
+    {{ "OK ✅" if assets_total == liab_equity_total else "Not Balanced ⚠️" }}
+  </p>
+</div>
+
 {% endblock %}
