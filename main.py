@@ -365,7 +365,7 @@ def income_statement(
     )
 
 @app.get("/reports/balance-sheet", response_class=HTMLResponse)
-def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_login)):
+def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_user)):
     from datetime import datetime as dt
 
     if not as_of:
