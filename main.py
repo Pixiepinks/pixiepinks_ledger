@@ -365,67 +365,76 @@ def income_statement(
     )
 
 @app.get("/reports/balance-sheet", response_class=HTMLResponse)
-def balance_sheet(
-    request: Request,
-    as_of: str | None = None,
-    db: Session = Depends(get_db),
-    user: User = Depends(require_user),
-):
+def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_login)):
     from datetime import datetime as dt
 
     if not as_of:
         return templates.TemplateResponse(
             "balance_sheet.html",
-            {"request": request, "currency": settings.CURRENCY, "as_of": None, "assets": 0, "liabilities": 0, "equity": 0},
+            {"request": request, "currency": settings.CURRENCY, "as_of": None,
+             "assets_current": [], "assets_non_current": [], "liab_current": [], "liab_non_current": [],
+             "equity_capital": [], "retained_earnings": 0,
+             "assets_total": 0, "liab_total": 0, "equity_total": 0, "liab_equity_total": 0}
         )
 
     as_of_dt = dt.strptime(as_of, "%Y-%m-%d").date()
 
-    def sum_type(acc_type: str, subtype: str | None = None):
-    q_dr = db.query(func.coalesce(func.sum(JournalLine.debit), 0))\
-             .join(Account).filter(Account.type == acc_type)
-    q_cr = db.query(func.coalesce(func.sum(JournalLine.credit), 0))\
-             .join(Account).filter(Account.type == acc_type)
-    if subtype:
-        q_dr = q_dr.filter(Account.subtype == subtype)
-        q_cr = q_cr.filter(Account.subtype == subtype)
-    dr = q_dr.scalar() or 0
-    cr = q_cr.scalar() or 0
-    return float(dr) - float(cr) if acc_type in {"ASSET", "EXPENSE"} else float(cr) - float(dr)
+    def account_balance(acc: Account):
+        dr = db.query(func.coalesce(func.sum(JournalLine.debit), 0))\
+               .filter(JournalLine.account_id == acc.id)\
+               .join(JournalEntry).filter(JournalEntry.date <= as_of_dt).scalar() or 0
+        cr = db.query(func.coalesce(func.sum(JournalLine.credit), 0))\
+               .filter(JournalLine.account_id == acc.id)\
+               .join(JournalEntry).filter(JournalEntry.date <= as_of_dt).scalar() or 0
+        if acc.type in {"ASSET", "EXPENSE"}:
+            return float(dr) - float(cr)
+        else:
+            return float(cr) - float(dr)
 
+    # Fetch all accounts
+    accounts = db.query(Account).all()
 
-# Assets
-assets_current = sum_type("ASSET", "Current Asset")
-assets_non_current = sum_type("ASSET", "Non-Current Asset")
-assets_total = assets_current + assets_non_current
+    # Categorize by subtype
+    assets_current, assets_non_current = [], []
+    liab_current, liab_non_current = [], []
+    equity_capital = []
 
-# Liabilities
-liab_current = sum_type("LIABILITY", "Current Liability")
-liab_non_current = sum_type("LIABILITY", "Non-Current Liability")
-liab_total = liab_current + liab_non_current
+    for acc in accounts:
+        bal = account_balance(acc)
+        if abs(bal) < 0.01:  # skip near zero
+            continue
+        if acc.type == "ASSET":
+            if acc.subtype == "Current Asset":
+                assets_current.append((acc.name, bal))
+            elif acc.subtype == "Non-Current Asset":
+                assets_non_current.append((acc.name, bal))
+        elif acc.type == "LIABILITY":
+            if acc.subtype == "Current Liability":
+                liab_current.append((acc.name, bal))
+            elif acc.subtype == "Non-Current Liability":
+                liab_non_current.append((acc.name, bal))
+        elif acc.type == "EQUITY":
+            equity_capital.append((acc.name, bal))
 
-# Equity
-equity_capital = sum_type("EQUITY")
-retained_earnings = sum_type("INCOME") - sum_type("EXPENSE")
-equity_total = equity_capital + retained_earnings
+    # Totals
+    assets_total = sum(b for _, b in assets_current + assets_non_current)
+    liab_total = sum(b for _, b in liab_current + liab_non_current)
+    eq_cap_total = sum(b for _, b in equity_capital)
 
-# Check Balance Equation
-liab_equity_total = liab_total + equity_total
+    # Retained earnings = cumulative net profit
+    income_total = sum(account_balance(a) for a in accounts if a.type == "INCOME")
+    expense_total = sum(account_balance(a) for a in accounts if a.type == "EXPENSE")
+    retained_earnings = income_total - expense_total
 
+    equity_total = eq_cap_total + retained_earnings
+    liab_equity_total = liab_total + equity_total
 
-   return templates.TemplateResponse(
-    "balance_sheet.html",
-    {"request": request, "currency": settings.CURRENCY,
-     "as_of": as_of,
-     "assets_current": assets_current,
-     "assets_non_current": assets_non_current,
-     "assets_total": assets_total,
-     "liab_current": liab_current,
-     "liab_non_current": liab_non_current,
-     "liab_total": liab_total,
-     "equity_capital": equity_capital,
-     "retained_earnings": retained_earnings,
-     "equity_total": equity_total,
-     "liab_equity_total": liab_equity_total}
-)
-
+    return templates.TemplateResponse(
+        "balance_sheet.html",
+        {"request": request, "currency": settings.CURRENCY, "as_of": as_of,
+         "assets_current": assets_current, "assets_non_current": assets_non_current,
+         "liab_current": liab_current, "liab_non_current": liab_non_current,
+         "equity_capital": equity_capital, "retained_earnings": retained_earnings,
+         "assets_total": assets_total, "liab_total": liab_total,
+         "equity_total": equity_total, "liab_equity_total": liab_equity_total}
+    )
