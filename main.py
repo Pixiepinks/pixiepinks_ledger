@@ -369,7 +369,7 @@ def balance_sheet(
     request: Request,
     as_of: str | None = None,
     db: Session = Depends(get_db),
-    user: User = Depends(require_user),
+    user: User = Depends(require_user),   # ✅ fix: use require_user not require_login
 ):
     from datetime import datetime as dt
 
@@ -380,11 +380,16 @@ def balance_sheet(
                 "request": request,
                 "currency": settings.CURRENCY,
                 "as_of": None,
-                "assets_current": [], "assets_non_current": [],
-                "liab_current": [], "liab_non_current": [],
-                "equity_capital": [], "retained_earnings": 0,
-                "assets_total": 0, "liab_total": 0,
-                "equity_total": 0, "liab_equity_total": 0,
+                "assets_current": [],
+                "assets_non_current": [],
+                "liab_current": [],
+                "liab_non_current": [],
+                "equity_capital": [],
+                "equity_retained": 0,
+                "assets_total": 0,
+                "liab_total": 0,
+                "equity_total": 0,
+                "liab_equity_total": 0,
             },
         )
 
@@ -394,57 +399,66 @@ def balance_sheet(
         dr = (
             db.query(func.coalesce(func.sum(JournalLine.debit), 0))
             .filter(JournalLine.account_id == acc.id)
-            .join(JournalEntry).filter(JournalEntry.date <= as_of_dt)
-            .scalar() or 0
+            .join(JournalEntry)
+            .filter(JournalEntry.date <= as_of_dt)
+            .scalar()
+            or 0
         )
         cr = (
             db.query(func.coalesce(func.sum(JournalLine.credit), 0))
             .filter(JournalLine.account_id == acc.id)
-            .join(JournalEntry).filter(JournalEntry.date <= as_of_dt)
-            .scalar() or 0
+            .join(JournalEntry)
+            .filter(JournalEntry.date <= as_of_dt)
+            .scalar()
+            or 0
         )
         if acc.type in {"ASSET", "EXPENSE"}:
             return float(dr) - float(cr)
         else:
             return float(cr) - float(dr)
 
-    # Fetch accounts
+    # Fetch all accounts
     accounts = db.query(Account).all()
 
-    # Categorize
+    # Buckets
     assets_current, assets_non_current = [], []
     liab_current, liab_non_current = [], []
     equity_capital = []
+    retained_earnings = 0
 
     for acc in accounts:
         bal = account_balance(acc)
-        if abs(bal) < 0.01:
+        if abs(bal) < 0.01:  # skip near zero
             continue
 
         if acc.type == "ASSET":
-            if acc.subtype == "Current Asset" or not acc.subtype:
+            if acc.subtype == "CURRENT_ASSET":
                 assets_current.append((acc.name, bal))
-            elif acc.subtype == "Non-Current Asset":
+            elif acc.subtype == "NON_CURRENT_ASSET":
                 assets_non_current.append((acc.name, bal))
 
         elif acc.type == "LIABILITY":
-            if acc.subtype == "Current Liability" or not acc.subtype:
+            if acc.subtype == "CURRENT_LIABILITY":
                 liab_current.append((acc.name, bal))
-            elif acc.subtype == "Non-Current Liability":
+            elif acc.subtype == "NON_CURRENT_LIABILITY":
                 liab_non_current.append((acc.name, bal))
 
         elif acc.type == "EQUITY":
-            equity_capital.append((acc.name, bal))
+            if acc.subtype == "CAPITAL":
+                equity_capital.append((acc.name, bal))
+            elif acc.subtype == "RETAINED_EARNINGS":
+                retained_earnings += bal
+
+        elif acc.type == "INCOME":
+            retained_earnings += bal  # flows to equity
+
+        elif acc.type == "EXPENSE":
+            retained_earnings -= bal  # flows to equity
 
     # Totals
     assets_total = sum(b for _, b in assets_current + assets_non_current)
     liab_total = sum(b for _, b in liab_current + liab_non_current)
     eq_cap_total = sum(b for _, b in equity_capital)
-
-    # Retained earnings = cumulative net profit
-    income_total = sum(account_balance(a) for a in accounts if a.type == "INCOME")
-    expense_total = sum(account_balance(a) for a in accounts if a.type == "EXPENSE")
-    retained_earnings = income_total - expense_total
 
     equity_total = eq_cap_total + retained_earnings
     liab_equity_total = liab_total + equity_total
@@ -467,3 +481,4 @@ def balance_sheet(
             "liab_equity_total": liab_equity_total,
         },
     )
+
