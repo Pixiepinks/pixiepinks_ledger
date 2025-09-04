@@ -365,54 +365,74 @@ def income_statement(
     )
 
 @app.get("/reports/balance-sheet", response_class=HTMLResponse)
-def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_user)):
+def balance_sheet(
+    request: Request,
+    as_of: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
     from datetime import datetime as dt
 
     if not as_of:
         return templates.TemplateResponse(
             "balance_sheet.html",
-            {"request": request, "currency": settings.CURRENCY, "as_of": None,
-             "assets_current": [], "assets_non_current": [], "liab_current": [], "liab_non_current": [],
-             "equity_capital": [], "retained_earnings": 0,
-             "assets_total": 0, "liab_total": 0, "equity_total": 0, "liab_equity_total": 0}
+            {
+                "request": request,
+                "currency": settings.CURRENCY,
+                "as_of": None,
+                "assets_current": [], "assets_non_current": [],
+                "liab_current": [], "liab_non_current": [],
+                "equity_capital": [], "retained_earnings": 0,
+                "assets_total": 0, "liab_total": 0,
+                "equity_total": 0, "liab_equity_total": 0,
+            },
         )
 
     as_of_dt = dt.strptime(as_of, "%Y-%m-%d").date()
 
     def account_balance(acc: Account):
-        dr = db.query(func.coalesce(func.sum(JournalLine.debit), 0))\
-               .filter(JournalLine.account_id == acc.id)\
-               .join(JournalEntry).filter(JournalEntry.date <= as_of_dt).scalar() or 0
-        cr = db.query(func.coalesce(func.sum(JournalLine.credit), 0))\
-               .filter(JournalLine.account_id == acc.id)\
-               .join(JournalEntry).filter(JournalEntry.date <= as_of_dt).scalar() or 0
+        dr = (
+            db.query(func.coalesce(func.sum(JournalLine.debit), 0))
+            .filter(JournalLine.account_id == acc.id)
+            .join(JournalEntry).filter(JournalEntry.date <= as_of_dt)
+            .scalar() or 0
+        )
+        cr = (
+            db.query(func.coalesce(func.sum(JournalLine.credit), 0))
+            .filter(JournalLine.account_id == acc.id)
+            .join(JournalEntry).filter(JournalEntry.date <= as_of_dt)
+            .scalar() or 0
+        )
         if acc.type in {"ASSET", "EXPENSE"}:
             return float(dr) - float(cr)
         else:
             return float(cr) - float(dr)
 
-    # Fetch all accounts
+    # Fetch accounts
     accounts = db.query(Account).all()
 
-    # Categorize by subtype
+    # Categorize
     assets_current, assets_non_current = [], []
     liab_current, liab_non_current = [], []
     equity_capital = []
 
     for acc in accounts:
         bal = account_balance(acc)
-        if abs(bal) < 0.01:  # skip near zero
+        if abs(bal) < 0.01:
             continue
+
         if acc.type == "ASSET":
-            if acc.subtype == "Current Asset":
+            if acc.subtype == "Current Asset" or not acc.subtype:
                 assets_current.append((acc.name, bal))
             elif acc.subtype == "Non-Current Asset":
                 assets_non_current.append((acc.name, bal))
+
         elif acc.type == "LIABILITY":
-            if acc.subtype == "Current Liability":
+            if acc.subtype == "Current Liability" or not acc.subtype:
                 liab_current.append((acc.name, bal))
             elif acc.subtype == "Non-Current Liability":
                 liab_non_current.append((acc.name, bal))
+
         elif acc.type == "EQUITY":
             equity_capital.append((acc.name, bal))
 
@@ -431,10 +451,19 @@ def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depe
 
     return templates.TemplateResponse(
         "balance_sheet.html",
-        {"request": request, "currency": settings.CURRENCY, "as_of": as_of,
-         "assets_current": assets_current, "assets_non_current": assets_non_current,
-         "liab_current": liab_current, "liab_non_current": liab_non_current,
-         "equity_capital": equity_capital, "retained_earnings": retained_earnings,
-         "assets_total": assets_total, "liab_total": liab_total,
-         "equity_total": equity_total, "liab_equity_total": liab_equity_total}
+        {
+            "request": request,
+            "currency": settings.CURRENCY,
+            "as_of": as_of,
+            "assets_current": assets_current,
+            "assets_non_current": assets_non_current,
+            "liab_current": liab_current,
+            "liab_non_current": liab_non_current,
+            "equity_capital": equity_capital,
+            "retained_earnings": retained_earnings,
+            "assets_total": assets_total,
+            "liab_total": liab_total,
+            "equity_total": equity_total,
+            "liab_equity_total": liab_equity_total,
+        },
     )
