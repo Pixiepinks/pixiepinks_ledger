@@ -381,36 +381,51 @@ def balance_sheet(
 
     as_of_dt = dt.strptime(as_of, "%Y-%m-%d").date()
 
-    def sum_type(acc_type: str):
-        dr = (
-            db.query(func.coalesce(func.sum(JournalLine.debit), 0))
-            .join(Account).filter(Account.type == acc_type)
-            .join(JournalEntry).filter(JournalEntry.date <= as_of_dt)
-            .scalar() or 0
-        )
-        cr = (
-            db.query(func.coalesce(func.sum(JournalLine.credit), 0))
-            .join(Account).filter(Account.type == acc_type)
-            .join(JournalEntry).filter(JournalEntry.date <= as_of_dt)
-            .scalar() or 0
-        )
-        # debit-normal for ASSET/EXPENSE; credit-normal for LIABILITY/EQUITY/INCOME
-        return float(dr) - float(cr) if acc_type in {"ASSET", "EXPENSE"} else float(cr) - float(dr)
+    def sum_type(acc_type: str, subtype: str | None = None):
+    q_dr = db.query(func.coalesce(func.sum(JournalLine.debit), 0))\
+             .join(Account).filter(Account.type == acc_type)
+    q_cr = db.query(func.coalesce(func.sum(JournalLine.credit), 0))\
+             .join(Account).filter(Account.type == acc_type)
+    if subtype:
+        q_dr = q_dr.filter(Account.subtype == subtype)
+        q_cr = q_cr.filter(Account.subtype == subtype)
+    dr = q_dr.scalar() or 0
+    cr = q_cr.scalar() or 0
+    return float(dr) - float(cr) if acc_type in {"ASSET", "EXPENSE"} else float(cr) - float(dr)
 
-    assets = sum_type("ASSET")
-    liabilities = sum_type("LIABILITY")
-    equity = sum_type("EQUITY")
-    retained_from_income = sum_type("INCOME") - sum_type("EXPENSE")
-    total_equity = equity + retained_from_income
 
-    return templates.TemplateResponse(
-        "balance_sheet.html",
-        {
-            "request": request,
-            "currency": settings.CURRENCY,
-            "as_of": as_of,
-            "assets": assets,
-            "liabilities": liabilities,
-            "equity": total_equity,
-        },
-    )
+# Assets
+assets_current = sum_type("ASSET", "Current Asset")
+assets_non_current = sum_type("ASSET", "Non-Current Asset")
+assets_total = assets_current + assets_non_current
+
+# Liabilities
+liab_current = sum_type("LIABILITY", "Current Liability")
+liab_non_current = sum_type("LIABILITY", "Non-Current Liability")
+liab_total = liab_current + liab_non_current
+
+# Equity
+equity_capital = sum_type("EQUITY")
+retained_earnings = sum_type("INCOME") - sum_type("EXPENSE")
+equity_total = equity_capital + retained_earnings
+
+# Check Balance Equation
+liab_equity_total = liab_total + equity_total
+
+
+   return templates.TemplateResponse(
+    "balance_sheet.html",
+    {"request": request, "currency": settings.CURRENCY,
+     "as_of": as_of,
+     "assets_current": assets_current,
+     "assets_non_current": assets_non_current,
+     "assets_total": assets_total,
+     "liab_current": liab_current,
+     "liab_non_current": liab_non_current,
+     "liab_total": liab_total,
+     "equity_capital": equity_capital,
+     "retained_earnings": retained_earnings,
+     "equity_total": equity_total,
+     "liab_equity_total": liab_equity_total}
+)
+
