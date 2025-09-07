@@ -1,17 +1,27 @@
-from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text
+from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
+import enum
 
-# Account types for basic double-entry
-# ASSET, LIABILITY, EQUITY, INCOME, EXPENSE
+# ----------------------
+# Party Type Enum
+# ----------------------
+class PartyType(str, enum.Enum):
+    CUSTOMER = "CUSTOMER"
+    SUPPLIER = "SUPPLIER"
+    ITEM = "ITEM"
+
+# ----------------------
+# Accounts & Journal
+# ----------------------
 class Account(Base):
     __tablename__ = "accounts"
     id = Column(Integer, primary_key=True, index=True)
     code = Column(String, unique=True, nullable=False)
     name = Column(String, nullable=False)
     type = Column(String, nullable=False)  # ASSET, LIABILITY, EQUITY, INCOME, EXPENSE
-    subtype = Column(String, nullable=True)  # NEW: Current Asset, Non-Current Asset, etc.
+    subtype = Column(String, nullable=True)  # Current Asset, Non-Current Asset, etc.
     description = Column(String, nullable=True)
 
     lines = relationship("JournalLine", back_populates="account", cascade="all, delete-orphan")
@@ -34,16 +44,40 @@ class JournalLine(Base):
     debit: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     credit: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
 
+    # 🔹 New fields for Hybrid Sub-ledgers
+    party_type = Column(Enum(PartyType), nullable=True)   # CUSTOMER / SUPPLIER / ITEM
+    party_id = Column(Integer, nullable=True)             # Refers to Customer.id / Supplier.id / Item.id
+    qty = Column(Float, default=0.0)                      # For inventory qty tracking
+
     entry = relationship("JournalEntry", back_populates="lines")
     account = relationship("Account", back_populates="lines")
 
-# models.py
-from sqlalchemy import Column, Integer, String, Text, Date, ForeignKey, Float
-from sqlalchemy.orm import relationship, declarative_base
-from database import Base
+# ----------------------
+# Master Data Tables
+# ----------------------
+class Customer(Base):
+    __tablename__ = "customers"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
 
-# ... your existing Account / JournalEntry / JournalLine ...
+class Supplier(Base):
+    __tablename__ = "suppliers"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    email = Column(String, nullable=True)
+    phone = Column(String, nullable=True)
 
+class Item(Base):
+    __tablename__ = "items"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False, unique=True)
+    unit = Column(String, nullable=True)   # e.g., pcs, kg, box
+
+# ----------------------
+# Users
+# ----------------------
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
