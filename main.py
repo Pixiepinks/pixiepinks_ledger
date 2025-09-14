@@ -159,6 +159,73 @@ def create_account(
     db.commit()
     return RedirectResponse("/accounts", status_code=303)
 
+# ---------------------- Customers ----------------------
+@app.get("/customers", response_class=HTMLResponse)
+def list_customers(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    customers = db.query(Customer).order_by(Customer.name).all()
+    return templates.TemplateResponse("customers.html", {"request": request, "customers": customers})
+
+@app.post("/customers")
+def create_customer(name: str = Form(...), email: str = Form(""), phone: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user)):
+    c = Customer(name=name.strip(), email=email.strip(), phone=phone.strip())
+    db.add(c)
+    db.commit()
+    return RedirectResponse("/customers", status_code=303)
+
+@app.post("/customers/{cust_id}/delete")
+def delete_customer(cust_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    c = db.get(Customer, cust_id)
+    if not c:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    db.delete(c)
+    db.commit()
+    return RedirectResponse("/customers", status_code=303)
+
+# ---------------------- Suppliers ----------------------
+@app.get("/suppliers", response_class=HTMLResponse)
+def list_suppliers(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    suppliers = db.query(Supplier).order_by(Supplier.name).all()
+    return templates.TemplateResponse("suppliers.html", {"request": request, "suppliers": suppliers})
+
+@app.post("/suppliers")
+def create_supplier(name: str = Form(...), email: str = Form(""), phone: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user)):
+    s = Supplier(name=name.strip(), email=email.strip(), phone=phone.strip())
+    db.add(s)
+    db.commit()
+    return RedirectResponse("/suppliers", status_code=303)
+
+@app.post("/suppliers/{sup_id}/delete")
+def delete_supplier(sup_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    s = db.get(Supplier, sup_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+    db.delete(s)
+    db.commit()
+    return RedirectResponse("/suppliers", status_code=303)
+
+# ---------------------- Items ----------------------
+@app.get("/items", response_class=HTMLResponse)
+def list_items(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    items = db.query(Item).order_by(Item.name).all()
+    return templates.TemplateResponse("items.html", {"request": request, "items": items})
+
+@app.post("/items")
+def create_item(name: str = Form(...), unit: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user)):
+    i = Item(name=name.strip(), unit=unit.strip())
+    db.add(i)
+    db.commit()
+    return RedirectResponse("/items", status_code=303)
+
+@app.post("/items/{item_id}/delete")
+def delete_item(item_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    i = db.get(Item, item_id)
+    if not i:
+        raise HTTPException(status_code=404, detail="Item not found")
+    db.delete(i)
+    db.commit()
+    return RedirectResponse("/items", status_code=303)
+
+
 # ---------------------- Entries ----------------------
 @app.get("/entries", response_class=HTMLResponse)
 def list_entries(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
