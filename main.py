@@ -238,3 +238,193 @@ def delete_entry(entry_id: int, db: Session = Depends(get_db), user: User = Depe
 
 # ---------------------- Reports ----------------------
 # (Trial Balance, Income Statement, Balance Sheet remain same as your version)
+@app.get("/reports/trial-balance", response_class=HTMLResponse)
+def trial_balance(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    from datetime import datetime as dt
+    start_dt = dt.strptime(start, "%Y-%m-%d").date() if start else None
+    end_dt = dt.strptime(end, "%Y-%m-%d").date() if end else None
+
+    accounts = db.query(Account).order_by(Account.code).all()
+    rows = []
+    total_debit = 0.0
+    total_credit = 0.0
+
+    for acc in accounts:
+        dr = db.query(func.coalesce(func.sum(JournalLine.debit), 0)).join(JournalEntry).filter(JournalLine.account_id == acc.id)
+        cr = db.query(func.coalesce(func.sum(JournalLine.credit), 0)).join(JournalEntry).filter(JournalLine.account_id == acc.id)
+        if start_dt:
+            dr = dr.filter(JournalEntry.date >= start_dt)
+            cr = cr.filter(JournalEntry.date >= start_dt)
+        if end_dt:
+            dr = dr.filter(JournalEntry.date <= end_dt)
+            cr = cr.filter(JournalEntry.date <= end_dt)
+        dr_amt = float(dr.scalar() or 0)
+        cr_amt = float(cr.scalar() or 0)
+        bal = dr_amt - cr_amt
+        debit = bal if bal > 0 else 0.0
+        credit = -bal if bal < 0 else 0.0
+        total_debit += debit
+        total_credit += credit
+        rows.append({"code": acc.code, "name": acc.name, "debit": debit, "credit": credit})
+
+    return templates.TemplateResponse(
+        "trial_balance.html",
+        {
+            "request": request,
+            "rows": rows,
+            "total_debit": total_debit,
+            "total_credit": total_credit,
+            "currency": settings.CURRENCY,
+            "start": start,
+            "end": end,
+        },
+    )
+
+@app.get("/reports/income-statement", response_class=HTMLResponse)
+def income_statement(
+    request: Request,
+    start: str | None = None,
+    end: str | None = None,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    from datetime import datetime as dt
+    if not start or not end:
+        return templates.TemplateResponse(
+            "income_statement.html",
+            {
+                "request": request,
+                "currency": settings.CURRENCY,
+                "start": start,
+                "end": end,
+                "income": 0,
+                "cogs": 0,
+                "other_exp": 0,
+                "gross_profit": 0,
+                "net_profit": 0,
+            },
+        )
+
+    start_dt = dt.strptime(start, "%Y-%m-%d").date()
+    end_dt = dt.strptime(end, "%Y-%m-%d").date()
+
+    income = (
+        db.query(func.coalesce(func.sum(JournalLine.credit), 0))
+        .join(Account).filter(Account.type == "INCOME")
+        .join(JournalEntry)
+        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
+        .scalar() or 0
+    )
+    cogs = (
+        db.query(func.coalesce(func.sum(JournalLine.debit), 0))
+        .join(Account).filter(Account.code == "5000")
+        .join(JournalEntry)
+        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
+        .scalar() or 0
+    )
+    other_exp = (
+        db.query(func.coalesce(func.sum(JournalLine.debit), 0))
+        .join(Account).filter(Account.type == "EXPENSE", Account.code != "5000")
+        .join(JournalEntry)
+        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
+        .scalar() or 0
+    )
+
+    gross_profit = float(income) - float(cogs)
+    net_profit = gross_profit - float(other_exp)
+
+    return templates.TemplateResponse(
+        "income_statement.html",
+        {
+            "request": request,
+            "currency": settings.CURRENCY,
+            "start": start,
+            "end": end,
+            "income": income,
+            "cogs": cogs,
+            "other_exp": other_exp,
+            "gross_profit": gross_profit,
+            "net_profit": net_profit,
+        },
+    )
+
+
+# ---------------------- Balance Sheet ----------------------
+@app.get("/reports/balance-sheet", response_class=HTMLResponse)
+def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    from datetime import datetime as dt
+
+    if not as_of:
+        return templates.TemplateResponse("balance_sheet.html", {
+            "request": request, "currency": settings.CURRENCY, "as_of": None,
+            "assets_current": [], "assets_non_current": [],
+            "liab_current": [], "liab_non_current": [],
+            "equity_capital": [], "retained_earnings": 0,
+            "assets_total": 0, "liab_total": 0,
+            "equity_total": 0, "liab_equity_total": 0
+        })
+
+    as_of_dt = dt.strptime(as_of, "%Y-%m-%d").date()
+
+    def account_balance(acc: Account):
+        dr = db.query(func.coalesce(func.sum(JournalLine.debit), 0))\
+            .filter(JournalLine.account_id == acc.id).join(JournalEntry).filter(JournalEntry.date <= as_of_dt).scalar() or 0
+        cr = db.query(func.coalesce(func.sum(JournalLine.credit), 0))\
+            .filter(JournalLine.account_id == acc.id).join(JournalEntry).filter(JournalEntry.date <= as_of_dt).scalar() or 0
+        if acc.type in {"ASSET", "EXPENSE"}:
+            return float(dr) - float(cr)
+        return float(cr) - float(dr)
+
+    accounts = db.query(Account).all()
+
+    assets_current, assets_non_current = [], []
+    liab_current, liab_non_current = [], []
+    equity_capital = []
+    retained_earnings = 0
+
+    for acc in accounts:
+        bal = account_balance(acc)
+        if abs(bal) < 0.01:
+            continue
+        if acc.type == "ASSET":
+            if acc.subtype == "CURRENT_ASSET":
+                assets_current.append((acc.name, bal))
+            elif acc.subtype == "NON_CURRENT_ASSET":
+                assets_non_current.append((acc.name, bal))
+        elif acc.type == "LIABILITY":
+            if acc.subtype == "CURRENT_LIABILITY":
+                liab_current.append((acc.name, bal))
+            elif acc.subtype == "NON_CURRENT_LIABILITY":
+                liab_non_current.append((acc.name, bal))
+        elif acc.type == "EQUITY":
+            if acc.subtype == "CAPITAL":
+                equity_capital.append((acc.name, bal))
+            elif acc.subtype == "RETAINED_EARNINGS":
+                retained_earnings += bal
+        elif acc.type == "INCOME":
+            retained_earnings += bal
+        elif acc.type == "EXPENSE":
+            retained_earnings -= bal
+
+    assets_total = sum(b for _, b in assets_current + assets_non_current)
+    liab_total = sum(b for _, b in liab_current + liab_non_current)
+    eq_cap_total = sum(b for _, b in equity_capital)
+
+    equity_total = eq_cap_total + retained_earnings
+    liab_equity_total = liab_total + equity_total
+
+    return templates.TemplateResponse("balance_sheet.html", {
+        "request": request, "currency": settings.CURRENCY, "as_of": as_of,
+        "assets_current": assets_current, "assets_non_current": assets_non_current,
+        "liab_current": liab_current, "liab_non_current": liab_non_current,
+        "equity_capital": equity_capital, "retained_earnings": retained_earnings,
+        "assets_total": assets_total, "liab_total": liab_total,
+        "equity_total": equity_total, "liab_equity_total": liab_equity_total
+    })
+
