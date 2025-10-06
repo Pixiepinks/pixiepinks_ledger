@@ -3,18 +3,20 @@
 <h1 class="text-2xl font-bold mb-4">Items</h1>
 
 <form method="post" class="bg-white rounded-2xl shadow p-4 mb-6 grid grid-cols-1 md:grid-cols-2 gap-3">
+  <input name="sku" required placeholder="SKU" class="border rounded-lg p-2">
   <input name="name" required placeholder="Item Name" class="border rounded-lg p-2">
-  <input name="unit" placeholder="Unit (pcs, kg, etc)" class="border rounded-lg p-2">
-  <button class="bg-black text-white px-4 py-2 rounded-lg w-max">Add</button>
+  <input name="unit" placeholder="Unit (pcs, kg, etc)" class="border rounded-lg p-2 md:col-span-2">
+  <button class="bg-black text-white px-4 py-2 rounded-lg w-max md:col-span-2">Add</button>
 </form>
 
 <table class="w-full bg-white rounded-2xl shadow overflow-hidden">
   <thead class="bg-gray-100 text-left">
-    <tr><th class="p-3">Name</th><th class="p-3">Unit</th><th class="p-3">Actions</th></tr>
+    <tr><th class="p-3">SKU</th><th class="p-3">Name</th><th class="p-3">Unit</th><th class="p-3">Actions</th></tr>
   </thead>
   <tbody>
     {% for i in items %}
     <tr class="border-t">
+      <td class="p-3 font-mono">{{ i.sku }}</td>
       <td class="p-3">{{ i.name }}</td>
       <td class="p-3">{{ i.unit }}</td>
       <td class="p-3">
