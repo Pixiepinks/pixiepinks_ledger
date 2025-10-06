@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import func, inspect
+from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
 
 from settings import settings
@@ -67,12 +67,50 @@ def startup():
     else:
         Base.metadata.create_all(bind=engine)
 
+    ensure_item_sku_column()
     init_db()
 
     with SessionLocal() as db:
         if not db.query(User).filter_by(username="admin").first():
             db.add(User(username="admin", password_hash=hash_password("change-me")))
             db.commit()
+
+
+def ensure_item_sku_column():
+    inspector = inspect(engine)
+    item_columns = {col["name"] for col in inspector.get_columns("items")}
+
+    if "sku" not in item_columns:
+        with engine.begin() as conn:
+            conn.execute(text("ALTER TABLE items ADD COLUMN sku VARCHAR"))
+
+    with SessionLocal() as db:
+        existing_skus = {
+            sku for (sku,) in db.query(Item.sku).filter(Item.sku.isnot(None), Item.sku != "").all()
+        }
+        missing_items = (
+            db.query(Item)
+            .filter(Item.sku.is_(None) | (Item.sku == ""))
+            .order_by(Item.id)
+            .all()
+        )
+
+        for item in missing_items:
+            base_sku = f"ITEM-{item.id:04d}"
+            candidate = base_sku
+            suffix = 1
+            while candidate in existing_skus:
+                suffix += 1
+                candidate = f"{base_sku}-{suffix}"
+            item.sku = candidate
+            existing_skus.add(candidate)
+
+        if missing_items:
+            db.commit()
+
+    if settings.DATABASE_URL.startswith("sqlite"):
+        with engine.begin() as conn:
+            conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_items_sku ON items (sku)"))
 
 # ---------------------- Auth Routes ----------------------
 @app.get("/login", response_class=HTMLResponse)
