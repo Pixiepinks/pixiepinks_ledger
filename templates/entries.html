@@ -42,7 +42,7 @@
       <select name="party_ids" class="border rounded-lg p-2 party-select item-select hidden">
         <option value="">-- Select Item --</option>
         {% for i in items %}
-        <option value="{{ i.id }}">{{ i.name }}</option>
+        <option value="{{ i.id }}">{{ i.sku }} - {{ i.name }}</option>
         {% endfor %}
       </select>
 
@@ -101,7 +101,7 @@ function addLine(){
 
     <select name="party_ids" class="border rounded-lg p-2 party-select item-select hidden">
       <option value="">-- Select Item --</option>
-      {% for i in items %}<option value="{{ i.id }}">{{ i.name }}</option>{% endfor %}
+      {% for i in items %}<option value="{{ i.id }}">{{ i.sku }} - {{ i.name }}</option>{% endfor %}
     </select>
 
     <input name="qtys" type="number" step="0.01" placeholder="Qty" class="border rounded-lg p-2">

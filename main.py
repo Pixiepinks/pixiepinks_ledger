@@ -206,12 +206,18 @@ def delete_supplier(sup_id: int, db: Session = Depends(get_db), user: User = Dep
 # ---------------------- Items ----------------------
 @app.get("/items", response_class=HTMLResponse)
 def list_items(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    items = db.query(Item).order_by(Item.name).all()
+    items = db.query(Item).order_by(Item.sku, Item.name).all()
     return templates.TemplateResponse("items.html", {"request": request, "items": items})
 
 @app.post("/items")
-def create_item(name: str = Form(...), unit: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user)):
-    i = Item(name=name.strip(), unit=unit.strip())
+def create_item(
+    name: str = Form(...),
+    sku: str = Form(...),
+    unit: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    i = Item(name=name.strip(), sku=sku.strip(), unit=unit.strip())
     db.add(i)
     db.commit()
     return RedirectResponse("/items", status_code=303)

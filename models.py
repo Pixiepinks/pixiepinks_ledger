@@ -73,6 +73,7 @@ class Item(Base):
     __tablename__ = "items"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False, unique=True)
+    sku = Column(String, nullable=False, unique=True, index=True)
     unit = Column(String, nullable=True)   # e.g., pcs, kg, box
 
 # ----------------------
