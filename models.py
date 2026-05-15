@@ -89,6 +89,15 @@ class User(Base):
 # ----------------------
 # CRM
 # ----------------------
+
+
+class CRMUser(Base):
+    __tablename__ = "crm_users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
 class Lead(Base):
     __tablename__ = "leads"
 
