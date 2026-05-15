@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from settings import settings
 from database import SessionLocal, engine
-from models import Account, JournalEntry, JournalLine, User, Base, Customer, Supplier, Item, Lead, LeadNote, LeadTask
+from models import Account, JournalEntry, JournalLine, User, Base, Customer, Supplier, Item, Lead, LeadNote, LeadTask, CRMUser
 from seed import init_db
 from utils_auth import hash_password, verify_password
 
@@ -349,7 +349,8 @@ def crm_leads(request: Request, q: str = "", db: Session = Depends(get_db), user
         like = f"%{q}%"
         query = query.filter(or_(Lead.customer_name.ilike(like), Lead.mobile.ilike(like), Lead.city.ilike(like)))
     leads = query.order_by(Lead.created_at.desc(), Lead.id.desc()).all()
-    return templates.TemplateResponse("crm_leads.html", {"request": request, "leads": leads, "statuses": LEAD_STATUSES, "q": q})
+    crm_users = db.query(CRMUser).order_by(CRMUser.name).all()
+    return templates.TemplateResponse("crm_leads.html", {"request": request, "leads": leads, "statuses": LEAD_STATUSES, "q": q, "crm_users": crm_users})
 
 
 @app.post("/crm/leads")
@@ -360,11 +361,23 @@ def crm_create_lead(
     product_interest: str = Form(""),
     status: str = Form("NEW"),
     assigned_to: str = Form(""),
+    new_assignee: str = Form(""),
     notes: str = Form(""),
     next_followup: str = Form(""),
     db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ):
+    selected_assigned_to = assigned_to.strip()
+    new_assignee_name = new_assignee.strip()
+
+    if new_assignee_name:
+        existing_user = db.query(CRMUser).filter(func.lower(CRMUser.name) == new_assignee_name.lower()).first()
+        if not existing_user:
+            db.add(CRMUser(name=new_assignee_name))
+        selected_assigned_to = new_assignee_name
+    elif selected_assigned_to == "__new__":
+        selected_assigned_to = ""
+
     lead = Lead(
         lead_no=_generate_lead_no(db),
         customer_name=customer_name.strip(),
@@ -372,7 +385,7 @@ def crm_create_lead(
         city=city.strip(),
         product_interest=product_interest.strip(),
         status=status if status in LEAD_STATUSES else "NEW",
-        assigned_to=assigned_to.strip(),
+        assigned_to=selected_assigned_to,
         notes=notes.strip(),
         next_followup=datetime.strptime(next_followup, "%Y-%m-%d").date() if next_followup else None,
     )
