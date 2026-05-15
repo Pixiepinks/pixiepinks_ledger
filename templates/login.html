@@ -1,18 +1,48 @@
-<!-- templates/login.html -->
 {% extends "base.html" %}
+
 {% block content %}
-<h1 class="text-2xl font-bold mb-4">Sign in</h1>
 
-{% if error %}
-<div class="mb-4 p-3 rounded bg-red-50 text-red-700">{{ error }}</div>
-{% endif %}
+<div class="min-h-[80vh] flex items-center justify-center">
+  
+  <div class="bg-white shadow-2xl rounded-2xl p-10 w-full max-w-md">
 
-<form method="post" class="bg-white rounded-2xl shadow p-4 max-w-md">
-  <input type="hidden" name="next" value="{{ request.query_params.get('next') or '' }}">
-  <div class="space-y-3">
-    <input name="username" placeholder="Username" class="border rounded-lg p-2 w-full" required>
-    <input name="password" type="password" placeholder="Password" class="border rounded-lg p-2 w-full" required>
+    <h1 class="text-4xl font-bold mb-8 text-center">
+      Sign in
+    </h1>
+
+    <form method="post" class="space-y-5">
+
+      <input
+        type="hidden"
+        name="next"
+        value="{{ next or '/dashboard' }}"
+      >
+
+      <input
+        name="username"
+        placeholder="Username"
+        class="w-full border rounded-xl p-4"
+        required
+      >
+
+      <input
+        name="password"
+        type="password"
+        placeholder="Password"
+        class="w-full border rounded-xl p-4"
+        required
+      >
+
+      <button
+        class="w-full bg-black text-white py-4 rounded-xl font-semibold hover:bg-gray-800 transition"
+      >
+        Sign in
+      </button>
+
+    </form>
+
   </div>
-  <button class="mt-4 px-4 py-2 bg-black text-white rounded-lg">Sign in</button>
-</form>
+
+</div>
+
 {% endblock %}
