@@ -122,7 +122,7 @@ def login_post(
     request: Request,
     username: str = Form(...),
     password: str = Form(...),
-    next: str = Form("/"),
+    next: str = Form("/dashboard"),
     db: Session = Depends(get_db),
 ):
     user = db.query(User).filter(User.username == username).first()
@@ -141,6 +141,12 @@ def logout(request: Request):
 
 # ---------------------- Protected Pages ----------------------
 @app.get("/", response_class=HTMLResponse)
+def root(request: Request):
+    if request.session.get("uid"):
+        return RedirectResponse("/dashboard", status_code=303)
+    return RedirectResponse("/login", status_code=303)
+
+@app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
     today = date.today()
     start_month = today.replace(day=1)
@@ -538,4 +544,3 @@ def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depe
         "assets_total": assets_total, "liab_total": liab_total,
         "equity_total": equity_total, "liab_equity_total": liab_equity_total
     })
-
