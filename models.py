@@ -84,3 +84,43 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     username = Column(String(100), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
+
+
+# ----------------------
+# CRM
+# ----------------------
+class Lead(Base):
+    __tablename__ = "leads"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lead_no = Column(String, unique=True, index=True)
+    customer_name = Column(String, nullable=False)
+    mobile = Column(String, nullable=False)
+    city = Column(String)
+    source = Column(String, default="WhatsApp")
+    status = Column(String, default="NEW")
+    assigned_to = Column(String)
+    product_interest = Column(String)
+    notes = Column(Text)
+    next_followup = Column(Date)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LeadNote(Base):
+    __tablename__ = "lead_notes"
+
+    id = Column(Integer, primary_key=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"))
+    note = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class LeadTask(Base):
+    __tablename__ = "lead_tasks"
+
+    id = Column(Integer, primary_key=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"))
+    task_date = Column(Date)
+    status = Column(String, default="PENDING")
+    note = Column(Text)
+    created_at = Column(DateTime, default=datetime.utcnow)

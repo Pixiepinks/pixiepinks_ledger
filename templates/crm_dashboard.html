@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <h1 class="text-2xl font-bold text-gray-900">CRM Dashboard</h1>
+    <a href="/crm/leads" class="bg-emerald-600 text-white px-4 py-2 rounded-lg">Manage Leads</a>
+  </div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">Total Leads</p><p class="text-2xl font-bold">{{ total_leads }}</p></div>
+    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">New Leads</p><p class="text-2xl font-bold text-emerald-600">{{ new_leads }}</p></div>
+    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">Follow-ups Today</p><p class="text-2xl font-bold">{{ followups_today }}</p></div>
+    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">Completed Sales</p><p class="text-2xl font-bold text-blue-600">{{ completed_sales }}</p></div>
+    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">Lost Leads</p><p class="text-2xl font-bold text-rose-600">{{ lost_leads }}</p></div>
+  </div>
+
+  <div class="bg-rose-50 border border-rose-200 rounded-xl p-4">
+    <h2 class="font-semibold text-rose-700">Today's Pending Follow-ups</h2>
+    {% if pending_followups %}
+      <ul class="mt-3 space-y-2">
+        {% for lead in pending_followups %}
+          <li><a class="text-rose-700 underline" href="/crm/leads/{{ lead.id }}">{{ lead.lead_no }} - {{ lead.customer_name }} ({{ lead.next_followup }})</a></li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-sm text-rose-600 mt-2">No pending follow-ups.</p>
+    {% endif %}
+  </div>
+
+  <div class="bg-white rounded-xl shadow p-4">
+    <h2 class="font-semibold mb-3">Recent Leads</h2>
+    <div class="overflow-x-auto">
+      <table class="min-w-full text-sm">
+        <thead><tr class="text-left border-b"><th class="py-2">Lead No</th><th>Customer</th><th>Mobile</th><th>Status</th><th>Next Follow-up</th></tr></thead>
+        <tbody>
+        {% for lead in recent_leads %}
+          <tr class="border-b"><td class="py-2"><a class="text-emerald-700 underline" href="/crm/leads/{{ lead.id }}">{{ lead.lead_no }}</a></td><td>{{ lead.customer_name }}</td><td>{{ lead.mobile }}</td><td>{{ lead.status }}</td><td>{{ lead.next_followup or '-' }}</td></tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

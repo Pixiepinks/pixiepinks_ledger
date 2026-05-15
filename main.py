@@ -6,12 +6,12 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
-from sqlalchemy import func, inspect, text
+from sqlalchemy import func, inspect, text, or_
 from sqlalchemy.orm import Session
 
 from settings import settings
 from database import SessionLocal, engine
-from models import Account, JournalEntry, JournalLine, User, Base, Customer, Supplier, Item
+from models import Account, JournalEntry, JournalLine, User, Base, Customer, Supplier, Item, Lead, LeadNote, LeadTask
 from seed import init_db
 from utils_auth import hash_password, verify_password
 
@@ -38,6 +38,40 @@ def get_db():
 
 # ---------------------- Helpers ----------------------
 LOGIN_PATH = "/login"
+
+
+LEAD_STATUSES = [
+    "NEW",
+    "REPLIED",
+    "INTERESTED",
+    "FOLLOW_UP",
+    "NEGOTIATING",
+    "PAYMENT_PENDING",
+    "ORDER_CONFIRMED",
+    "DELIVERED",
+    "LOST",
+]
+
+
+def _generate_lead_no(db: Session, dt: date | None = None) -> str:
+    dt = dt or date.today()
+    year = dt.year
+    prefix = f"LD-{year}-"
+    latest = (
+        db.query(Lead)
+        .filter(Lead.lead_no.like(f"{prefix}%"))
+        .order_by(Lead.id.desc())
+        .first()
+    )
+    if latest and latest.lead_no:
+        try:
+            seq = int(latest.lead_no.split("-")[-1]) + 1
+        except ValueError:
+            seq = 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:05d}"
+
 
 def _is_safe_next(next_url: str) -> bool:
     try:
@@ -274,6 +308,124 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user: User = Depend
     db.delete(i)
     db.commit()
     return RedirectResponse("/items", status_code=303)
+
+
+# ---------------------- CRM ----------------------
+@app.get("/crm", response_class=HTMLResponse)
+def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    today = date.today()
+    total_leads = db.query(func.count(Lead.id)).scalar() or 0
+    new_leads = db.query(func.count(Lead.id)).filter(Lead.status == "NEW").scalar() or 0
+    followups_today = db.query(func.count(Lead.id)).filter(Lead.next_followup == today).scalar() or 0
+    completed_sales = db.query(func.count(Lead.id)).filter(Lead.status == "DELIVERED").scalar() or 0
+    lost_leads = db.query(func.count(Lead.id)).filter(Lead.status == "LOST").scalar() or 0
+
+    pending_followups = (
+        db.query(Lead)
+        .filter(Lead.next_followup.is_not(None), Lead.next_followup <= today, Lead.status.notin_(["DELIVERED", "LOST"]))
+        .order_by(Lead.next_followup.asc(), Lead.created_at.desc())
+        .all()
+    )
+
+    recent_leads = db.query(Lead).order_by(Lead.created_at.desc(), Lead.id.desc()).limit(10).all()
+
+    return templates.TemplateResponse("crm_dashboard.html", {
+        "request": request,
+        "total_leads": total_leads,
+        "new_leads": new_leads,
+        "followups_today": followups_today,
+        "completed_sales": completed_sales,
+        "lost_leads": lost_leads,
+        "recent_leads": recent_leads,
+        "pending_followups": pending_followups,
+    })
+
+
+@app.get("/crm/leads", response_class=HTMLResponse)
+def crm_leads(request: Request, q: str = "", db: Session = Depends(get_db), user: User = Depends(require_user)):
+    query = db.query(Lead)
+    q = q.strip()
+    if q:
+        like = f"%{q}%"
+        query = query.filter(or_(Lead.customer_name.ilike(like), Lead.mobile.ilike(like), Lead.city.ilike(like)))
+    leads = query.order_by(Lead.created_at.desc(), Lead.id.desc()).all()
+    return templates.TemplateResponse("crm_leads.html", {"request": request, "leads": leads, "statuses": LEAD_STATUSES, "q": q})
+
+
+@app.post("/crm/leads")
+def crm_create_lead(
+    customer_name: str = Form(...),
+    mobile: str = Form(...),
+    city: str = Form(""),
+    product_interest: str = Form(""),
+    status: str = Form("NEW"),
+    assigned_to: str = Form(""),
+    notes: str = Form(""),
+    next_followup: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    lead = Lead(
+        lead_no=_generate_lead_no(db),
+        customer_name=customer_name.strip(),
+        mobile=mobile.strip(),
+        city=city.strip(),
+        product_interest=product_interest.strip(),
+        status=status if status in LEAD_STATUSES else "NEW",
+        assigned_to=assigned_to.strip(),
+        notes=notes.strip(),
+        next_followup=datetime.strptime(next_followup, "%Y-%m-%d").date() if next_followup else None,
+    )
+    db.add(lead)
+    db.commit()
+    return RedirectResponse("/crm/leads", status_code=303)
+
+
+@app.get("/crm/leads/{lead_id}", response_class=HTMLResponse)
+def crm_lead_view(lead_id: int, request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    lead = db.get(Lead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    notes = db.query(LeadNote).filter(LeadNote.lead_id == lead_id).order_by(LeadNote.created_at.desc()).all()
+    tasks = db.query(LeadTask).filter(LeadTask.lead_id == lead_id).order_by(LeadTask.task_date.desc(), LeadTask.id.desc()).all()
+
+    return templates.TemplateResponse("crm_lead_view.html", {
+        "request": request, "lead": lead, "notes": notes, "tasks": tasks, "statuses": LEAD_STATUSES
+    })
+
+
+@app.post("/crm/leads/{lead_id}/note")
+def crm_add_note(lead_id: int, note: str = Form(...), db: Session = Depends(get_db), user: User = Depends(require_user)):
+    lead = db.get(Lead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+    db.add(LeadNote(lead_id=lead_id, note=note.strip()))
+    db.commit()
+    return RedirectResponse(f"/crm/leads/{lead_id}", status_code=303)
+
+
+@app.post("/crm/leads/{lead_id}/followup")
+def crm_add_followup(
+    lead_id: int,
+    task_date: str = Form(...),
+    status: str = Form("PENDING"),
+    note: str = Form(""),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    lead = db.get(Lead, lead_id)
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    parsed_date = datetime.strptime(task_date, "%Y-%m-%d").date()
+    task = LeadTask(lead_id=lead_id, task_date=parsed_date, status=status.strip().upper(), note=note.strip())
+    lead.next_followup = parsed_date
+    if status in LEAD_STATUSES:
+        lead.status = status
+    db.add(task)
+    db.commit()
+    return RedirectResponse(f"/crm/leads/{lead_id}", status_code=303)
 
 
 # ---------------------- Entries ----------------------
