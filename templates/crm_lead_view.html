@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="space-y-6">
+  <a href="/crm/leads" class="text-emerald-700 underline">← Back to Leads</a>
+  <div class="bg-white rounded-xl shadow p-4">
+    <h1 class="text-2xl font-bold">{{ lead.customer_name }} <span class="text-sm text-gray-500">({{ lead.lead_no }})</span></h1>
+    <p class="text-sm mt-2">Mobile: {{ lead.mobile }} | City: {{ lead.city or '-' }} | Product: {{ lead.product_interest or '-' }}</p>
+    <p class="text-sm">Status: <span class="font-semibold">{{ lead.status }}</span> | Assigned: {{ lead.assigned_to or '-' }} | Next Follow-up: {{ lead.next_followup or '-' }}</p>
+    <p class="text-sm mt-2">Notes: {{ lead.notes or '-' }}</p>
+  </div>
+
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+    <div class="bg-white rounded-xl shadow p-4">
+      <h2 class="font-semibold mb-3">Notes History</h2>
+      <form method="post" action="/crm/leads/{{ lead.id }}/note" class="space-y-2 mb-3">
+        <textarea name="note" required class="w-full border rounded-lg px-3 py-2" placeholder="Add note"></textarea>
+        <button class="bg-emerald-600 text-white rounded-lg px-3 py-2">Add Note</button>
+      </form>
+      {% for n in notes %}<div class="border rounded-lg p-2 mb-2 text-sm"><p>{{ n.note }}</p><p class="text-gray-500">{{ n.created_at }}</p></div>{% endfor %}
+    </div>
+
+    <div class="bg-white rounded-xl shadow p-4">
+      <h2 class="font-semibold mb-3">Follow-up History</h2>
+      <form method="post" action="/crm/leads/{{ lead.id }}/followup" class="grid grid-cols-1 gap-2 mb-3">
+        <input type="date" name="task_date" required class="border rounded-lg px-3 py-2">
+        <select name="status" class="border rounded-lg px-3 py-2"><option value="PENDING">PENDING</option>{% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+        <input name="note" placeholder="Follow-up note" class="border rounded-lg px-3 py-2">
+        <button class="bg-emerald-600 text-white rounded-lg px-3 py-2">Add Follow-up</button>
+      </form>
+      {% for t in tasks %}<div class="border rounded-lg p-2 mb-2 text-sm"><p>{{ t.task_date }} - {{ t.status }}</p><p>{{ t.note or '-' }}</p></div>{% endfor %}
+    </div>
+  </div>
+</div>
+{% endblock %}

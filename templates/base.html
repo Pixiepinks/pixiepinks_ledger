@@ -11,13 +11,14 @@
   {% if request.url.path != '/login' %}
   <nav class="bg-white shadow mb-6">
     <div class="max-w-7xl mx-auto px-4">
-      <div class="flex gap-6 py-4">
+      <div class="flex gap-6 py-4 overflow-x-auto whitespace-nowrap">
         <a href="/dashboard">Dashboard</a>
-        <a href="/entries">Journal</a>
-        <a href="/accounts">Chart of Accounts</a>
+        <a href="/crm">CRM</a>
         <a href="/customers">Customers</a>
         <a href="/suppliers">Suppliers</a>
         <a href="/items">Items</a>
+        <a href="/entries">Journal</a>
+        <a href="/accounts">Chart of Accounts</a>
         <a href="/reports/trial-balance">Trial Balance</a>
         <a href="/reports/income-statement">Income Statement</a>
         <a href="/reports/balance-sheet">Balance Sheet</a>

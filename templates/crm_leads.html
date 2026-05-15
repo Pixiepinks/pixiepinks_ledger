@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="space-y-6">
+  <h1 class="text-2xl font-bold">CRM Leads</h1>
+  <form method="get" class="bg-white rounded-xl shadow p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
+    <input name="q" value="{{ q }}" placeholder="Search name, mobile, city" class="border rounded-lg px-3 py-2 md:col-span-3">
+    <button class="bg-emerald-600 text-white rounded-lg px-3 py-2">Search</button>
+  </form>
+
+  <form method="post" action="/crm/leads" class="bg-white rounded-xl shadow p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
+    <input name="customer_name" required placeholder="Customer Name" class="border rounded-lg px-3 py-2">
+    <input name="mobile" required placeholder="Mobile" class="border rounded-lg px-3 py-2">
+    <input name="city" placeholder="City" class="border rounded-lg px-3 py-2">
+    <input name="product_interest" placeholder="Product Interest" class="border rounded-lg px-3 py-2">
+    <select name="status" class="border rounded-lg px-3 py-2">{% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+    <input name="assigned_to" placeholder="Assigned To" class="border rounded-lg px-3 py-2">
+    <input type="date" name="next_followup" class="border rounded-lg px-3 py-2">
+    <input name="notes" placeholder="Notes" class="border rounded-lg px-3 py-2 md:col-span-2">
+    <button class="bg-emerald-600 text-white rounded-lg px-3 py-2 md:col-span-2">Add Lead</button>
+  </form>
+
+  <div class="bg-white rounded-xl shadow p-4 overflow-x-auto">
+    <table class="min-w-full text-sm">
+      <thead><tr class="border-b text-left"><th>Lead No</th><th>Date</th><th>Customer</th><th>Mobile</th><th>City</th><th>Product</th><th>Status</th><th>Assigned To</th><th>Next Follow-up</th><th>Actions</th></tr></thead>
+      <tbody>
+      {% for lead in leads %}
+      <tr class="border-b"><td>{{ lead.lead_no }}</td><td>{{ lead.created_at.date() if lead.created_at else '-' }}</td><td>{{ lead.customer_name }}</td><td>{{ lead.mobile }}</td><td>{{ lead.city or '-' }}</td><td>{{ lead.product_interest or '-' }}</td><td>{{ lead.status }}</td><td>{{ lead.assigned_to or '-' }}</td><td>{{ lead.next_followup or '-' }}</td><td><a href="/crm/leads/{{ lead.id }}" class="text-emerald-700 underline">View</a></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
