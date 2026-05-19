@@ -57,16 +57,17 @@
   </div>
 
   <div class="bg-white rounded-2xl shadow p-4 mb-6">
-    <form method="get" class="grid grid-cols-1 md:grid-cols-4 gap-3">
+    <form method="get" id="leadFilterForm" class="grid grid-cols-1 md:grid-cols-4 gap-3">
       <input
         type="text"
         name="query"
-        value="{{ query }}"
+        id="leadSearchInput"
+        value="{{ query or '' }}"
         placeholder="Search name, phone, city, product..."
         class="border rounded-xl p-3"
       >
 
-      <select name="range_type" id="range_type" class="border rounded-xl p-3">
+      <select name="range_type" id="rangeTypeSelect" class="border rounded-xl p-3">
         <option value="this_week" {% if range_type == "this_week" %}selected{% endif %}>This Week To Date</option>
         <option value="this_month" {% if range_type == "this_month" %}selected{% endif %}>This Month To Date</option>
         <option value="last_week" {% if range_type == "last_week" %}selected{% endif %}>Last Week</option>
@@ -81,7 +82,7 @@
       <input
         type="date"
         name="date_from"
-        id="date_from"
+        id="dateFromInput"
         value="{{ date_from }}"
         class="border rounded-xl p-3 transition-all duration-300"
       >
@@ -89,14 +90,10 @@
       <input
         type="date"
         name="date_to"
-        id="date_to"
+        id="dateToInput"
         value="{{ date_to }}"
         class="border rounded-xl p-3 transition-all duration-300"
       >
-
-      <button class="bg-green-600 text-white rounded-xl px-4 py-3 hover:bg-green-700 transition md:col-span-4">
-        Apply Filters
-      </button>
     </form>
   </div>
 
@@ -125,9 +122,12 @@ document.addEventListener("DOMContentLoaded", function () {
     const cancelLeadFormBtn = document.getElementById("cancelLeadFormBtn");
     const select = document.getElementById("assigned_to_select");
     const input = document.getElementById("new_assignee_input");
-    const rangeType = document.getElementById("range_type");
-    const dateFrom = document.getElementById("date_from");
-    const dateTo = document.getElementById("date_to");
+    const leadFilterForm = document.getElementById("leadFilterForm");
+    const leadSearchInput = document.getElementById("leadSearchInput");
+    const rangeType = document.getElementById("rangeTypeSelect");
+    const dateFrom = document.getElementById("dateFromInput");
+    const dateTo = document.getElementById("dateToInput");
+    let searchTimer = null;
 
     if (showLeadFormBtn && leadFormCard) {
         showLeadFormBtn.addEventListener("click", () => {
@@ -180,6 +180,39 @@ document.addEventListener("DOMContentLoaded", function () {
     if (rangeType) {
         rangeType.addEventListener("change", toggleCustomDates);
         toggleCustomDates();
+    }
+
+    function submitLeadFilters() {
+        if (leadFilterForm) {
+            leadFilterForm.submit();
+        }
+    }
+
+    if (leadSearchInput) {
+        leadSearchInput.addEventListener("input", function () {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(() => {
+                submitLeadFilters();
+            }, 300);
+        });
+    }
+
+    if (rangeType) {
+        rangeType.addEventListener("change", function () {
+            submitLeadFilters();
+        });
+    }
+
+    if (dateFrom) {
+        dateFrom.addEventListener("change", function () {
+            submitLeadFilters();
+        });
+    }
+
+    if (dateTo) {
+        dateTo.addEventListener("change", function () {
+            submitLeadFilters();
+        });
     }
 
     {% if request.query_params.get('saved') %}
