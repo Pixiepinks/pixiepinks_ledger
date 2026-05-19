@@ -2,10 +2,50 @@
 {% block content %}
 <div class="space-y-6">
   <h1 class="text-2xl font-bold">CRM Leads</h1>
-  <form method="get" class="bg-white rounded-xl shadow p-4 grid grid-cols-1 md:grid-cols-4 gap-3">
-    <input name="q" value="{{ q }}" placeholder="Search name, mobile, city" class="border rounded-lg px-3 py-2 md:col-span-3">
-    <button class="bg-emerald-600 text-white rounded-lg px-3 py-2">Search</button>
-  </form>
+
+  <div class="bg-white rounded-2xl shadow p-4 mb-6">
+    <form method="get" class="grid grid-cols-1 md:grid-cols-4 gap-3">
+      <input
+        type="text"
+        name="query"
+        value="{{ query }}"
+        placeholder="Search name, phone, city, product..."
+        class="border rounded-xl p-3"
+      >
+
+      <select name="range_type" id="range_type" class="border rounded-xl p-3">
+        <option value="this_week" {% if range_type == "this_week" %}selected{% endif %}>This Week To Date</option>
+        <option value="this_month" {% if range_type == "this_month" %}selected{% endif %}>This Month To Date</option>
+        <option value="last_week" {% if range_type == "last_week" %}selected{% endif %}>Last Week</option>
+        <option value="last_month" {% if range_type == "last_month" %}selected{% endif %}>Last Month</option>
+        <option value="this_quarter" {% if range_type == "this_quarter" %}selected{% endif %}>This Quarter To Date</option>
+        <option value="last_quarter" {% if range_type == "last_quarter" %}selected{% endif %}>Last Quarter</option>
+        <option value="this_year" {% if range_type == "this_year" %}selected{% endif %}>This Year To Date</option>
+        <option value="last_year" {% if range_type == "last_year" %}selected{% endif %}>Last Year</option>
+        <option value="custom" {% if range_type == "custom" %}selected{% endif %}>Custom Date</option>
+      </select>
+
+      <input
+        type="date"
+        name="date_from"
+        id="date_from"
+        value="{{ date_from }}"
+        class="border rounded-xl p-3 transition-all duration-300"
+      >
+
+      <input
+        type="date"
+        name="date_to"
+        id="date_to"
+        value="{{ date_to }}"
+        class="border rounded-xl p-3 transition-all duration-300"
+      >
+
+      <button class="bg-green-600 text-white rounded-xl px-4 py-3 hover:bg-green-700 transition md:col-span-4">
+        Apply Filters
+      </button>
+    </form>
+  </div>
 
   <form method="post" action="/crm/leads" class="bg-white rounded-xl shadow p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
     <input name="customer_name" required placeholder="Customer Name" class="border rounded-lg px-3 py-2">
@@ -30,11 +70,17 @@
   </form>
 
   <div class="bg-white rounded-xl shadow p-4 overflow-x-auto">
-    <table class="min-w-full text-sm">
-      <thead><tr class="border-b text-left"><th>Lead No</th><th>Date</th><th>Customer</th><th>Mobile</th><th>City</th><th>Product</th><th>Status</th><th>Assigned To</th><th>Next Follow-up</th><th>Actions</th></tr></thead>
+    <table class="min-w-full text-sm whitespace-nowrap">
+      <thead class="sticky top-0 bg-white z-10">
+        <tr class="border-b text-left">
+          <th class="px-3 py-2">Lead No</th><th class="px-3 py-2">Date</th><th class="px-3 py-2">Customer</th><th class="px-3 py-2">Mobile</th><th class="px-3 py-2">City</th><th class="px-3 py-2">Product</th><th class="px-3 py-2">Status</th><th class="px-3 py-2">Assigned To</th><th class="px-3 py-2">Next Follow-up</th><th class="px-3 py-2">Actions</th>
+        </tr>
+      </thead>
       <tbody>
       {% for lead in leads %}
-      <tr class="border-b"><td>{{ lead.lead_no }}</td><td>{{ lead.created_at.date() if lead.created_at else '-' }}</td><td>{{ lead.customer_name }}</td><td>{{ lead.mobile }}</td><td>{{ lead.city or '-' }}</td><td>{{ lead.product_interest or '-' }}</td><td>{{ lead.status }}</td><td>{{ lead.assigned_to or '-' }}</td><td>{{ lead.next_followup or '-' }}</td><td><a href="/crm/leads/{{ lead.id }}" class="text-emerald-700 underline">View</a></td></tr>
+      <tr class="border-b hover:bg-gray-50">
+        <td class="px-3 py-2">{{ lead.lead_no }}</td><td class="px-3 py-2">{{ lead.created_at.date() if lead.created_at else '-' }}</td><td class="px-3 py-2">{{ lead.customer_name }}</td><td class="px-3 py-2">{{ lead.mobile }}</td><td class="px-3 py-2">{{ lead.city or '-' }}</td><td class="px-3 py-2">{{ lead.product_interest or '-' }}</td><td class="px-3 py-2">{{ lead.status }}</td><td class="px-3 py-2">{{ lead.assigned_to or '-' }}</td><td class="px-3 py-2">{{ lead.next_followup or '-' }}</td><td class="px-3 py-2"><a href="/crm/leads/{{ lead.id }}" class="text-emerald-700 underline">View</a></td>
+      </tr>
       {% endfor %}
       </tbody>
     </table>
@@ -44,18 +90,41 @@
 document.addEventListener("DOMContentLoaded", function () {
     const select = document.getElementById("assigned_to_select");
     const input = document.getElementById("new_assignee_input");
+    const rangeType = document.getElementById("range_type");
+    const dateFrom = document.getElementById("date_from");
+    const dateTo = document.getElementById("date_to");
 
-    if (!select || !input) return;
+    if (select && input) {
+        select.addEventListener("change", function () {
+            if (this.value === "__new__") {
+                input.classList.remove("hidden");
+                input.required = true;
+            } else {
+                input.classList.add("hidden");
+                input.required = false;
+            }
+        });
+    }
 
-    select.addEventListener("change", function () {
-        if (this.value === "__new__") {
-            input.classList.remove("hidden");
-            input.required = true;
-        } else {
-            input.classList.add("hidden");
-            input.required = false;
-        }
-    });
+    function toggleCustomDates() {
+        const isCustom = rangeType && rangeType.value === "custom";
+        [dateFrom, dateTo].forEach(function (field) {
+            if (!field) return;
+            field.classList.add("transition-all", "duration-300");
+            if (isCustom) {
+                field.classList.remove("hidden", "opacity-0", "max-h-0", "pointer-events-none");
+                field.classList.add("opacity-100", "max-h-20");
+            } else {
+                field.classList.add("hidden", "opacity-0", "max-h-0", "pointer-events-none");
+                field.classList.remove("opacity-100", "max-h-20");
+            }
+        });
+    }
+
+    if (rangeType) {
+        rangeType.addEventListener("change", toggleCustomDates);
+        toggleCustomDates();
+    }
 });
 </script>
 {% endblock %}
