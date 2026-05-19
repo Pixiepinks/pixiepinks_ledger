@@ -358,7 +358,16 @@ def crm_leads(
     start_date = today - timedelta(days=today.weekday())
     end_date = today
 
-    if selected_range == "this_month":
+    if selected_range == "today":
+        start_date = today
+        end_date = today
+    elif selected_range == "yesterday":
+        start_date = today - timedelta(days=1)
+        end_date = today - timedelta(days=1)
+    elif selected_range == "day_before_yesterday":
+        start_date = today - timedelta(days=2)
+        end_date = today - timedelta(days=2)
+    elif selected_range == "this_month":
         start_date = today.replace(day=1)
     elif selected_range == "last_week":
         current_week_start = today - timedelta(days=today.weekday())

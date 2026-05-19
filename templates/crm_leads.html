@@ -68,6 +68,9 @@
       >
 
       <select name="range_type" id="rangeTypeSelect" class="border rounded-xl p-3">
+        <option value="today" {% if range_type == "today" %}selected{% endif %}>Today</option>
+        <option value="yesterday" {% if range_type == "yesterday" %}selected{% endif %}>Yesterday</option>
+        <option value="day_before_yesterday" {% if range_type == "day_before_yesterday" %}selected{% endif %}>Day Before Yesterday</option>
         <option value="this_week" {% if range_type == "this_week" %}selected{% endif %}>This Week To Date</option>
         <option value="this_month" {% if range_type == "this_month" %}selected{% endif %}>This Month To Date</option>
         <option value="last_week" {% if range_type == "last_week" %}selected{% endif %}>Last Week</option>
