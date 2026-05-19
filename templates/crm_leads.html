@@ -1,7 +1,60 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="space-y-6">
-  <h1 class="text-2xl font-bold">CRM Leads</h1>
+  <div class="flex items-center justify-between mb-4">
+    <h1 class="text-3xl font-bold">CRM Leads</h1>
+
+    <button
+      type="button"
+      id="showLeadFormBtn"
+      class="bg-green-600 hover:bg-green-700 text-white font-semibold px-5 py-2 rounded-xl shadow transition"
+    >
+      + Add Lead
+    </button>
+  </div>
+
+  <div
+    id="leadFormCard"
+    class="hidden bg-white rounded-2xl shadow-lg p-6 mb-6 border border-gray-200 transition-all duration-300"
+  >
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-2xl font-bold text-gray-800">Add New Lead</h2>
+
+      <button
+        type="button"
+        id="closeLeadFormBtn"
+        class="text-gray-500 hover:text-red-600 text-2xl leading-none"
+      >
+        ×
+      </button>
+    </div>
+
+    <form method="post" action="/crm/leads" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <input name="customer_name" required placeholder="Customer Name" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
+      <input name="mobile" required placeholder="Mobile" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
+      <input name="city" placeholder="City" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
+      <input name="product_interest" placeholder="Product Interest" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
+      <select name="status" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">{% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <select name="assigned_to" id="assigned_to_select" class="border border-gray-300 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
+          <option value="">-- Select Assignee --</option>
+          {% for user in crm_users %}
+          <option value="{{ user.name }}">{{ user.name }}</option>
+          {% endfor %}
+          <option value="__new__">+ Add New Assignee</option>
+        </select>
+
+        <input type="text" name="new_assignee" id="new_assignee_input" placeholder="Enter new assignee name" class="border border-gray-300 rounded-xl p-3 hidden focus:outline-none focus:ring-2 focus:ring-emerald-300">
+      </div>
+      <input type="date" name="next_followup" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
+      <input name="notes" placeholder="Notes" class="border border-gray-300 rounded-xl px-4 py-3 md:col-span-2 focus:outline-none focus:ring-2 focus:ring-emerald-300">
+
+      <div class="md:col-span-2 flex flex-col sm:flex-row gap-3">
+        <button class="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl px-4 py-3 transition">Add Lead</button>
+        <button type="button" id="cancelLeadFormBtn" class="bg-gray-100 hover:bg-gray-200 text-gray-700 font-semibold rounded-xl px-4 py-3 transition">Cancel</button>
+      </div>
+    </form>
+  </div>
 
   <div class="bg-white rounded-2xl shadow p-4 mb-6">
     <form method="get" class="grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -47,28 +100,6 @@
     </form>
   </div>
 
-  <form method="post" action="/crm/leads" class="bg-white rounded-xl shadow p-4 grid grid-cols-1 md:grid-cols-2 gap-3">
-    <input name="customer_name" required placeholder="Customer Name" class="border rounded-lg px-3 py-2">
-    <input name="mobile" required placeholder="Mobile" class="border rounded-lg px-3 py-2">
-    <input name="city" placeholder="City" class="border rounded-lg px-3 py-2">
-    <input name="product_interest" placeholder="Product Interest" class="border rounded-lg px-3 py-2">
-    <select name="status" class="border rounded-lg px-3 py-2">{% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-      <select name="assigned_to" id="assigned_to_select" class="border rounded-xl p-3">
-        <option value="">-- Select Assignee --</option>
-        {% for user in crm_users %}
-        <option value="{{ user.name }}">{{ user.name }}</option>
-        {% endfor %}
-        <option value="__new__">+ Add New Assignee</option>
-      </select>
-
-      <input type="text" name="new_assignee" id="new_assignee_input" placeholder="Enter new assignee name" class="border rounded-xl p-3 hidden">
-    </div>
-    <input type="date" name="next_followup" class="border rounded-lg px-3 py-2">
-    <input name="notes" placeholder="Notes" class="border rounded-lg px-3 py-2 md:col-span-2">
-    <button class="bg-emerald-600 text-white rounded-lg px-3 py-2 md:col-span-2">Add Lead</button>
-  </form>
-
   <div class="bg-white rounded-xl shadow p-4 overflow-x-auto">
     <table class="min-w-full text-sm whitespace-nowrap">
       <thead class="sticky top-0 bg-white z-10">
@@ -88,11 +119,36 @@
 </div>
 <script>
 document.addEventListener("DOMContentLoaded", function () {
+    const leadFormCard = document.getElementById("leadFormCard");
+    const showLeadFormBtn = document.getElementById("showLeadFormBtn");
+    const closeLeadFormBtn = document.getElementById("closeLeadFormBtn");
+    const cancelLeadFormBtn = document.getElementById("cancelLeadFormBtn");
     const select = document.getElementById("assigned_to_select");
     const input = document.getElementById("new_assignee_input");
     const rangeType = document.getElementById("range_type");
     const dateFrom = document.getElementById("date_from");
     const dateTo = document.getElementById("date_to");
+
+    if (showLeadFormBtn && leadFormCard) {
+        showLeadFormBtn.addEventListener("click", () => {
+            leadFormCard.classList.remove("hidden");
+            leadFormCard.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
+    }
+
+    function hideLeadForm() {
+        if (leadFormCard) {
+            leadFormCard.classList.add("hidden");
+        }
+    }
+
+    if (closeLeadFormBtn) {
+        closeLeadFormBtn.addEventListener("click", hideLeadForm);
+    }
+
+    if (cancelLeadFormBtn) {
+        cancelLeadFormBtn.addEventListener("click", hideLeadForm);
+    }
 
     if (select && input) {
         select.addEventListener("change", function () {
@@ -125,6 +181,10 @@ document.addEventListener("DOMContentLoaded", function () {
         rangeType.addEventListener("change", toggleCustomDates);
         toggleCustomDates();
     }
+
+    {% if request.query_params.get('saved') %}
+    document.getElementById("leadFormCard").classList.add("hidden");
+    {% endif %}
 });
 </script>
 {% endblock %}
