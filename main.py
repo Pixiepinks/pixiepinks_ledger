@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from urllib.parse import quote, urlparse
 
 from fastapi import FastAPI, Request, Depends, Form, HTTPException, status
@@ -342,15 +342,107 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
 
 
 @app.get("/crm/leads", response_class=HTMLResponse)
-def crm_leads(request: Request, q: str = "", db: Session = Depends(get_db), user: User = Depends(require_user)):
-    query = db.query(Lead)
-    q = q.strip()
-    if q:
-        like = f"%{q}%"
-        query = query.filter(or_(Lead.customer_name.ilike(like), Lead.mobile.ilike(like), Lead.city.ilike(like)))
-    leads = query.order_by(Lead.created_at.desc(), Lead.id.desc()).all()
+def crm_leads(
+    request: Request,
+    query: str = "",
+    range_type: str = "this_week",
+    date_from: str = "",
+    date_to: str = "",
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    lead_query = db.query(Lead)
+    today = date.today()
+
+    selected_range = (range_type or "this_week").strip().lower()
+    start_date = today - timedelta(days=today.weekday())
+    end_date = today
+
+    if selected_range == "this_month":
+        start_date = today.replace(day=1)
+    elif selected_range == "last_week":
+        current_week_start = today - timedelta(days=today.weekday())
+        start_date = current_week_start - timedelta(days=7)
+        end_date = current_week_start - timedelta(days=1)
+    elif selected_range == "last_month":
+        first_day_this_month = today.replace(day=1)
+        end_date = first_day_this_month - timedelta(days=1)
+        start_date = end_date.replace(day=1)
+    elif selected_range == "this_year":
+        start_date = date(today.year, 1, 1)
+    elif selected_range == "last_year":
+        start_date = date(today.year - 1, 1, 1)
+        end_date = date(today.year - 1, 12, 31)
+    elif selected_range == "this_quarter":
+        quarter_start_month = ((today.month - 1) // 3) * 3 + 1
+        start_date = date(today.year, quarter_start_month, 1)
+    elif selected_range == "last_quarter":
+        current_quarter = (today.month - 1) // 3 + 1
+        if current_quarter == 1:
+            last_quarter_year = today.year - 1
+            last_quarter_start_month = 10
+        else:
+            last_quarter_year = today.year
+            last_quarter_start_month = (current_quarter - 2) * 3 + 1
+        start_date = date(last_quarter_year, last_quarter_start_month, 1)
+        if last_quarter_start_month == 10:
+            end_date = date(last_quarter_year, 12, 31)
+        else:
+            next_quarter_start = date(last_quarter_year, last_quarter_start_month + 3, 1)
+            end_date = next_quarter_start - timedelta(days=1)
+    elif selected_range == "custom":
+        parsed_from = None
+        parsed_to = None
+        try:
+            parsed_from = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else None
+        except ValueError:
+            parsed_from = None
+        try:
+            parsed_to = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else None
+        except ValueError:
+            parsed_to = None
+
+        if parsed_from and parsed_to:
+            start_date, end_date = sorted([parsed_from, parsed_to])
+        elif parsed_from:
+            start_date, end_date = parsed_from, today
+        elif parsed_to:
+            start_date, end_date = parsed_to, parsed_to
+    else:
+        selected_range = "this_week"
+
+    lead_query = lead_query.filter(func.date(Lead.created_at).between(start_date, end_date))
+
+    search_query = (query or "").strip()
+    if search_query:
+        query_filter = f"%{search_query}%"
+        lead_query = lead_query.filter(
+            or_(
+                Lead.customer_name.ilike(query_filter),
+                Lead.mobile.ilike(query_filter),
+                Lead.city.ilike(query_filter),
+                Lead.product_interest.ilike(query_filter),
+                Lead.lead_no.ilike(query_filter),
+                Lead.assigned_to.ilike(query_filter),
+                Lead.notes.ilike(query_filter),
+            )
+        )
+
+    leads = lead_query.order_by(Lead.created_at.desc(), Lead.id.desc()).all()
     crm_users = db.query(CRMUser).order_by(CRMUser.name).all()
-    return templates.TemplateResponse("crm_leads.html", {"request": request, "leads": leads, "statuses": LEAD_STATUSES, "q": q, "crm_users": crm_users})
+    return templates.TemplateResponse(
+        "crm_leads.html",
+        {
+            "request": request,
+            "leads": leads,
+            "statuses": LEAD_STATUSES,
+            "crm_users": crm_users,
+            "query": search_query,
+            "range_type": selected_range,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
+    )
 
 
 @app.post("/crm/leads")
