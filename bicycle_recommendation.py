@@ -78,6 +78,9 @@ def infer_guided_state(context: list[dict]) -> tuple[str | None, int | None, str
                 pending = "results"
                 preference = detect_bicycle_preference(message) or preference
                 age = extract_child_age(message) or age
+            elif re.search(r"\b(?:boys|girls) size (?:12|16|20|24|26)\b", lowered):
+                pending = "results"
+                preference = detect_bicycle_preference(message) or preference
         elif pending == "gender":
             detected = detect_bicycle_preference(message)
             if detected:
@@ -125,6 +128,11 @@ def available_bicycle_matches(
     if any(not unavailable for unavailable, *_ in matches):
         matches = [item for item in matches if not item[0]]
     return [product for *_, product in matches[:limit]]
+
+
+def has_available_variant(products: list[dict]) -> bool:
+    return any(variant.get("available") for product in products
+               for variant in product.get("variants", []))
 
 
 def format_lkr_price(value: object) -> str:

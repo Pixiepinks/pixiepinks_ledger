@@ -269,7 +269,8 @@ def test_bicycle_images_use_shopify_url_cap_at_three_and_failure_falls_back(monk
         "featured_image_verified": True, "variants": [{"title": "26 inch", "price": "37100",
                                                           "available": True}],
     } for number in range(4)]
-    monkeypatch.setattr(main, "search_products", lambda query: products)
+    monkeypatch.setattr(main, "search_bicycles_by_collection", lambda *args, **kwargs:
+                        {"collection": {"title": 'Boys Size 26"'}, "products": products})
     main._reply_to_text_message("94770000000", "wamid.images",
                                 "bicycle for my 12 year old boy", "Customer")
     assert len(images) == 3
@@ -283,11 +284,12 @@ def test_missing_featured_image_uses_text_recommendation(monkeypatch):
     texts = []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda to, body: texts.append(body) or True)
     monkeypatch.setattr(main, "send_whatsapp_image", lambda *args: (_ for _ in ()).throw(AssertionError()))
-    monkeypatch.setattr(main, "search_products", lambda query: [{
+    monkeypatch.setattr(main, "search_bicycles_by_collection", lambda *args, **kwargs: {
+        "collection": {"title": 'Boys Size 26"'}, "products": [{
         "title": "Image-free Bike", "url": "https://www.pixiepinks.shop/products/no-image",
         "featured_image": None, "featured_image_verified": False,
         "variants": [{"title": "26 inch", "price": "37100", "available": True}],
-    }])
+        }]})
     main._reply_to_text_message("94770000000", "wamid.noimage",
                                 "bicycle for my 12 year old boy", "Customer")
     assert any("Image-free Bike" in text and "Rs. 37,100" in text for text in texts)

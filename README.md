@@ -1,5 +1,25 @@
 # PixiePinks Ledger (MVP)
 
+## Shopify bicycle collections
+
+Guided recommendations use Shopify collection membership as their authority.
+The expected storefront handles are `boys-size-12`, `boys-size-16`,
+`boys-size-20`, `boys-size-26`, and the corresponding `girls-size-*` handles.
+Admin GraphQL supplies the actual collection ID, title, and handle at runtime;
+no collection GIDs are hardcoded.
+
+The implementation environment had no Shopify credentials and its network
+proxy blocked the public storefront, so those navigation handles could not be
+independently enumerated. The service fails closed if an expected handle does
+not resolve, making corrections local to `BICYCLE_COLLECTIONS` in
+`shopify_catalog_service.py`.
+
+There is intentionally no gender-specific 24-inch mapping. Ages 8–10 still
+produce 24 inches as a sizing starting point, but the bot explains that no
+verified collection is configured and never substitutes 20 or 26 inches.
+Collection reads use the existing Shopify `read_products` scope; no write scope
+or catalogue mutation is required.
+
 A tiny double-entry accounting app for your shop. Built with FastAPI + SQLite + Jinja2 + HTMX.
 
 ## Features

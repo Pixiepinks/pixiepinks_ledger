@@ -14,6 +14,7 @@ from settings import settings
 logger = logging.getLogger(__name__)
 TOKEN_MARGIN_SECONDS = 300
 MAX_CANDIDATES = 30
+MAX_COLLECTION_CANDIDATES = 20
 STOREFRONT_ROOT = "https://www.pixiepinks.shop"
 SEARCH_FIELDS = ("title", "product_type", "vendor", "tag")
 PRODUCT_SYNONYMS = {
@@ -122,6 +123,36 @@ query SearchProducts($first: Int!, $query: String!) {
         inventoryQuantity inventoryItem { tracked }
         selectedOptions { name value }
       } }
+    }
+  }
+}
+"""
+
+# Expected navigation labels are represented by stable handles rather than
+# numeric IDs, and are kept in one place so a merchandising rename is simple.
+BICYCLE_COLLECTIONS = {
+    ("boy", 12): {"title": 'Boys Size 12"', "handle": "boys-size-12"},
+    ("boy", 16): {"title": 'Boys Size 16"', "handle": "boys-size-16"},
+    ("boy", 20): {"title": 'Boys Size 20"', "handle": "boys-size-20"},
+    ("boy", 26): {"title": 'Boys Size 26"', "handle": "boys-size-26"},
+    ("girl", 12): {"title": 'Girls Size 12"', "handle": "girls-size-12"},
+    ("girl", 16): {"title": 'Girls Size 16"', "handle": "girls-size-16"},
+    ("girl", 20): {"title": 'Girls Size 20"', "handle": "girls-size-20"},
+    ("girl", 26): {"title": 'Girls Size 26"', "handle": "girls-size-26"},
+}
+
+COLLECTION_PRODUCTS_QUERY = """
+query BicycleCollection($handle: String!, $first: Int!) {
+  collectionByHandle(handle: $handle) {
+    id title handle
+    products(first: $first, sortKey: BEST_SELLING) {
+      nodes { id title handle productType vendor tags status
+        featuredImage { url }
+        variants(first: 50) { nodes { id title sku price availableForSale
+          inventoryQuantity inventoryItem { tracked }
+          selectedOptions { name value }
+        } }
+      }
     }
   }
 }
@@ -273,6 +304,55 @@ def search_products(query: str, limit: int = 5) -> list[dict]:
         if len(products) >= min(max(limit, 0), 5):
             break
     return products
+
+
+def bicycle_collection(preference: str, wheel_size: int) -> dict | None:
+    """Return the configured business collection; 24-inch is intentionally absent."""
+    configured = BICYCLE_COLLECTIONS.get((preference, int(wheel_size)))
+    return dict(configured) if configured else None
+
+
+def search_bicycles_by_collection(
+    preference: str, wheel_size: int, query: str = "", limit: int = 5
+) -> dict:
+    """Read a bounded collection and return only its member products.
+
+    A missing collection never falls through to the opposite gender's catalogue.
+    The returned collection identity is the identity Shopify actually resolved.
+    """
+    expected = bicycle_collection(preference, wheel_size)
+    if expected is None:
+        return {"collection": None, "products": [], "reason": "unsupported_size"}
+    data = client.graphql(COLLECTION_PRODUCTS_QUERY, {
+        "handle": expected["handle"], "first": MAX_COLLECTION_CANDIDATES,
+    })
+    collection = data.get("collectionByHandle")
+    if not collection or collection.get("handle") != expected["handle"]:
+        return {"collection": None, "products": [], "reason": "missing_collection"}
+
+    # Membership is authoritative for gender and wheel size. Customer filters
+    # (price/colour) are still verified against live variants.
+    filters = parse_filters(query)
+    filters["size"] = None
+    terms = [term for term in parse_search_intent(query)["terms"]
+             if term not in {"boy", "boys", "girl", "girls", "bicycle"}]
+    products = []
+    for node in collection.get("products", {}).get("nodes", []):
+        if terms and not _matches_product_terms(node, terms):
+            continue
+        normalized = _normalize_product(node, filters)
+        if normalized:
+            normalized["bicycle_collection"] = {
+                "id": collection.get("id"), "title": collection.get("title"),
+                "handle": collection.get("handle"), "preference": preference,
+                "wheel_size": wheel_size,
+            }
+            products.append(normalized)
+        if len(products) >= min(max(limit, 0), 10):
+            break
+    return {"collection": {"id": collection.get("id"), "title": collection.get("title"),
+                           "handle": collection.get("handle")},
+            "products": products, "reason": "ok"}
 
 
 def diagnose_catalog_connectivity(catalog_client: ShopifyCatalogClient | None = None) -> dict:
