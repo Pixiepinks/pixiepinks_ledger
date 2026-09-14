@@ -51,7 +51,10 @@ from whatsapp_service import (
     send_whatsapp_image,
     send_whatsapp_text,
 )
-from shopify_catalog_service import ShopifyCatalogError, parse_search_intent, search_products
+from shopify_catalog_service import (
+    ShopifyCatalogError, bicycle_collection, parse_search_intent,
+    search_bicycles_by_collection, search_products,
+)
 from bicycle_recommendation import (
     asks_about_fit,
     available_bicycle_matches,
@@ -59,6 +62,7 @@ from bicycle_recommendation import (
     extract_child_age,
     format_bicycle_product,
     format_bicycle_results,
+    has_available_variant,
     infer_guided_state,
     is_bicycle_request,
     recommended_bicycle_size,
@@ -205,7 +209,10 @@ def _reply_to_text_message(
             explicit_age = extract_child_age(text_body, standalone=bicycle_stage == "age")
             preference = explicit_preference or preference
             age = explicit_age if explicit_age is not None else age
-            direct_size = parse_search_intent(text_body)["filters"]["size"]
+            intent = parse_search_intent(text_body)
+            direct_size = intent["filters"]["size"]
+            if direct_size and explicit_preference:
+                age = None
             bicycle_related = is_bicycle_request(text_body) or bicycle_stage in {
                 "gender", "age", "results"
             }
@@ -219,17 +226,34 @@ def _reply_to_text_message(
             elif bicycle_related and not direct_size and age is None:
                 pronoun = "he" if preference == "boy" else "she"
                 reply = f"Great. How old is {pronoun}?"
-            elif bicycle_related and not direct_size and preference and age is not None:
-                size = recommended_bicycle_size(age)
-                search_query = f"bicycle size {size}"
-                if bicycle_stage == "results":
-                    search_query = f"{search_query} {text_body}"
+            elif bicycle_related and preference and (age is not None or direct_size):
+                size = int(direct_size) if direct_size else recommended_bicycle_size(age)
+                collection_config = bicycle_collection(preference, size)
+                if collection_config is None:
+                    reply = (f"A {size}-inch bicycle is an age-based starting recommendation, "
+                             f"but we do not have a verified {preference} {size}-inch collection. "
+                             "I won't substitute another size or category. Would you like our "
+                             "team to help confirm a suitable catalogue option?")
+                    products_result = None
+                else:
+                    products_result = True
+                search_query = text_body if (direct_size or bicycle_stage == "results") else ""
                 try:
-                    products = search_products(search_query)
+                    result = (search_bicycles_by_collection(preference, size, search_query, limit=10)
+                              if products_result else None)
                 except ShopifyCatalogError:
                     logger.warning("Live Shopify catalogue unavailable message_id=%s", message_id)
                     reply = SHOPIFY_FALLBACK_REPLY
                 else:
+                    if result is None:
+                        products = []
+                    elif result["collection"] is None:
+                        reply = (f"I couldn't verify the {preference}s size {size}-inch Shopify "
+                                 "collection, so I won't send potentially mismatched bicycles. "
+                                 "Our team can check this category for you.")
+                        products = []
+                    else:
+                        products = result["products"]
                     matches = available_bicycle_matches(
                         products, preference, limit=5 if bicycle_stage == "results" else 3,
                         cheapest="cheaper" in text_body.casefold(),
@@ -240,18 +264,24 @@ def _reply_to_text_message(
                                   if str(product.get("url") or product.get("title", "")).casefold()
                                   not in old_text]
                         matches = unseen or matches
-                    intro = (f"For a {age}-year-old {preference}, a {size}-inch bicycle is "
-                             "usually a good starting point. 🚲")
-                    if matches:
-                        qualifier = "available " if any(
-                            variant.get("available") for product in matches
-                            for variant in product.get("variants", [])
-                        ) else ""
-                        intro += f"\nHere are some {qualifier}options from our live catalogue:"
+                    intro = ((f"For a {age}-year-old {preference}, a {size}-inch bicycle is "
+                              "usually a good starting point. 🚲") if age is not None else
+                             f"🚲 {preference.title()}s Size {size}\"")
+                    if matches and has_available_variant(matches):
+                        matches = [product for product in matches
+                                   if has_available_variant([product])]
+                        intro += "\nHere are some available options from our live Shopify collection:"
                         bicycle_delivery = (intro, matches[:3])
                         reply = intro
-                    else:
-                        reply = format_bicycle_results(age, preference, size, matches)
+                    elif result and result.get("collection") and products:
+                        reply = (intro + f"\n\nWe have {size}-inch {preference}s bicycles listed, "
+                                 "but the matching options are currently shown as unavailable "
+                                 "in our live catalogue.")
+                    elif result and result.get("collection"):
+                        reply = (format_bicycle_results(age, preference, size, matches)
+                                 if age is not None else
+                                 f"I couldn't find matching available bicycles in the verified "
+                                 f"{preference}s size {size}-inch collection right now.")
             elif needs_product_catalog(text_body, context):
                 prior_inbound = next((item["message_text"] for item in reversed(context)
                                       if item["direction"] == "inbound"), "")

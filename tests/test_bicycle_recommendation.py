@@ -25,6 +25,13 @@ def _reply(monkeypatch, text, searches=None, products=None):
         main, "search_products",
         lambda query: (searches.append(query) if searches is not None else None) or (products or []),
     )
+    monkeypatch.setattr(
+        main, "search_bicycles_by_collection",
+        lambda gender, size, query="", limit=5: (
+            searches.append((gender, size, query)) if searches is not None else None
+        ) or {"collection": {"title": f"{gender} {size}"}, "products": products or [],
+              "reason": "ok"},
+    )
     main._reply_to_text_message("94771111111", "current", text, "Customer")
     return sent[0][1]
 
@@ -82,7 +89,7 @@ def test_pending_answers_use_persisted_history_then_query(monkeypatch):
     )
     third = _reply(monkeypatch, "7", searches)
     assert "20-inch bicycle is usually a good starting point" in third
-    assert searches == ["bicycle size 20"]
+    assert searches == [("boy", 20, "")]
 
 
 def test_complete_request_queries_and_preserves_live_values_with_max_three(monkeypatch):
@@ -96,9 +103,11 @@ def test_complete_request_queries_and_preserves_live_values_with_max_three(monke
         "variants": [{"title": "20 inch", "price": f"{37000 + number}.00",
                       "available": True, "selected_options": {"Size": "20 inch"}}],
     } for number in range(1, 5)]
-    monkeypatch.setattr(main, "search_products", lambda query: searches.append(query) or products)
+    monkeypatch.setattr(main, "search_bicycles_by_collection", lambda gender, size, query="", limit=5:
+                        searches.append((gender, size, query)) or
+                        {"collection": {"title": 'Boys Size 20"'}, "products": products})
     main._reply_to_text_message("94771111111", "current", "I need a bicycle for my 7 year old boy", "Customer")
-    assert searches == ["bicycle size 20"]
+    assert searches == [("boy", 20, "")]
     combined = "\n".join(body for _, body in sent)
     assert "Live Bike 1" in combined and "Rs. 37,001" in combined
     assert "https://shop/products/1" in combined
@@ -114,7 +123,7 @@ def test_production_style_twelve_year_old_uses_26_inch_search(monkeypatch):
                                      whatsapp_message_id="current")
     reply = _reply(monkeypatch, "12 years", searches)
     assert "26-inch" in reply
-    assert searches == ["bicycle size 26"]
+    assert searches == [("boy", 26, "")]
 
 
 def test_in_stock_products_are_preferred_and_out_of_stock_is_fallback():
@@ -126,13 +135,18 @@ def test_in_stock_products_are_preferred_and_out_of_stock_is_fallback():
     assert available_bicycle_matches([unavailable], None)[0]["title"] == "No Stock"
 
 
-@pytest.mark.parametrize("customer_text", ["Show me size 20 bicycles",
-                                      "Show me girls size 16 bicycles"])
-def test_direct_size_request_bypasses_guided_flow(monkeypatch, customer_text):
+def test_direct_size_request_without_gender_uses_general_catalog(monkeypatch):
     searches = []
     monkeypatch.setattr(main, "generate_customer_reply", lambda *args: "catalog reply")
-    assert _reply(monkeypatch, customer_text, searches) == "catalog reply"
-    assert searches == [customer_text]
+    assert _reply(monkeypatch, "Show me size 20 bicycles", searches) == "catalog reply"
+    assert searches == ["Show me size 20 bicycles"]
+
+
+def test_direct_gender_and_size_bypasses_age_question(monkeypatch):
+    searches = []
+    reply = _reply(monkeypatch, "Show me girls size 16 bicycles", searches)
+    assert "How old" not in reply
+    assert searches == [("girl", 16, "Show me girls size 16 bicycles")]
 
 
 def test_available_matches_do_not_invent_gender_from_colour():
@@ -152,3 +166,40 @@ def test_fit_answer_is_cautious_and_does_not_query(monkeypatch):
     reply = _reply(monkeypatch, "Will this fit?", searches)
     assert "height and inseam" in reply and "cannot guarantee" in reply
     assert searches == []
+
+
+def test_boy_regression_only_collection_products_reach_image_sender(monkeypatch):
+    images = []
+    product = {"title": "Boys Racer", "featured_image": "https://cdn.shopify.com/boy.jpg",
+               "featured_image_verified": True, "url": "https://shop/boy",
+               "variants": [{"title": "Default Title", "price": "49500", "available": True}]}
+    monkeypatch.setattr(main, "search_bicycles_by_collection", lambda *args, **kwargs:
+                        {"collection": {"title": 'Boys Size 26"'}, "products": [product]})
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
+    monkeypatch.setattr(main, "send_whatsapp_image",
+                        lambda _, url, caption: images.append((url, caption)) or True)
+    main._reply_to_text_message("94772222222", "regression", "bike for my 12 year old boy", None)
+    assert len(images) == 1 and images[0][0] == "https://cdn.shopify.com/boy.jpg"
+    assert "Boys Racer" in images[0][1] and "Rs. 49,500" in images[0][1]
+
+
+def test_unavailable_collection_does_not_send_an_image(monkeypatch):
+    sent, images = [], []
+    product = {"title": "No Stock", "featured_image": "https://cdn.shopify.com/no.jpg",
+               "featured_image_verified": True,
+               "variants": [{"price": "1", "available": False}]}
+    monkeypatch.setattr(main, "search_bicycles_by_collection", lambda *args, **kwargs:
+                        {"collection": {"title": 'Girls Size 26"'}, "products": [product]})
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda _, body: sent.append(body) or True)
+    monkeypatch.setattr(main, "send_whatsapp_image", lambda *args: images.append(args) or True)
+    main._reply_to_text_message("94773333333", "nostock", "girls size 26 bicycles", None)
+    assert images == []
+    assert "currently shown as unavailable" in sent[0]
+
+
+def test_missing_24_collection_is_explicit_and_does_not_query(monkeypatch):
+    monkeypatch.setattr(main, "search_bicycles_by_collection",
+                        lambda *args: (_ for _ in ()).throw(AssertionError()))
+    reply = _reply(monkeypatch, "bicycle for my 9 year old boy")
+    assert "do not have a verified boy 24-inch collection" in reply
+    assert "won't substitute" in reply
