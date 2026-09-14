@@ -10,6 +10,11 @@ BICYCLE_SIZE_BY_MINIMUM_AGE = ((11, 26), (8, 24), (6, 20), (4, 16), (2, 12))
 BOY_TERMS = ("boy", "boys", "son", "පුතා")
 GIRL_TERMS = ("girl", "girls", "daughter", "දුව")
 BICYCLE_TERMS = ("bicycle", "bicycles", "bike", "bikes", "බයිසික")
+RESULT_FOLLOW_UP_TERMS = (
+    "show more", "another one", "another", "more options", "cheaper", "under ",
+    "below ", "any ", "colour", "color", "red", "blue", "pink", "black",
+    "white", "lumala",
+)
 
 
 def recommended_bicycle_size(age: int) -> int:
@@ -38,7 +43,7 @@ def extract_child_age(text: str, *, standalone: bool = False) -> int | None:
         match = re.fullmatch(r"(?:age\s*)?(\d{1,2})(?:\s*(?:years?|yrs?)(?:\s*old)?)?", normalized)
     else:
         match = re.search(
-            r"(?<!\d)(\d{1,2})\s*(?:[- ]?years?[- ]?old|yrs?\s*old|වයස|අවුරුදු)",
+            r"(?<!\d)(\d{1,2})\s*(?:[- ]?years?(?:[- ]?old)?|yrs?(?:\s*old)?|වයස|අවුරුදු)",
             normalized,
         )
     if not match:
@@ -50,6 +55,22 @@ def extract_child_age(text: str, *, standalone: bool = False) -> int | None:
 def is_bicycle_request(text: str) -> bool:
     normalized = text.casefold()
     return any(term in normalized for term in BICYCLE_TERMS)
+
+
+def is_generic_bicycle_request(text: str) -> bool:
+    """Identify a fresh, detail-free bicycle enquiry rather than a result follow-up."""
+    normalized = " ".join(text.casefold().strip().rstrip("?!. ").split())
+    return normalized in {
+        "bicycle", "bicycles", "bike", "bikes", "do you have bicycles",
+        "do you have a bicycle", "do you have bikes", "i need a bicycle",
+        "i need bicycle", "show me bicycles", "show me bikes",
+    }
+
+
+def is_bicycle_results_follow_up(text: str) -> bool:
+    """Return true only for language that naturally modifies prior results."""
+    normalized = " ".join(text.casefold().split())
+    return any(term in normalized for term in RESULT_FOLLOW_UP_TERMS)
 
 
 def asks_about_fit(text: str) -> bool:

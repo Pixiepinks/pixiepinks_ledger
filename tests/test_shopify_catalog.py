@@ -290,3 +290,21 @@ def test_missing_and_empty_collections_fail_closed(monkeypatch):
     monkeypatch.setattr(shopify, "client", ShopifyCatalogClient(fake))
     empty = shopify.search_bicycles_by_collection("boy", 26)
     assert empty["collection"]["handle"] == "boys-size-26" and empty["products"] == []
+
+
+def test_bicycle_collection_diagnostic_returns_only_safe_relevant_fields():
+    class DiagnosticClient:
+        def graphql(self, query, variables):
+            return {"collections": {"nodes": [
+                {"title": 'Girls Size 20"', "handle": "actual-girls-20",
+                 "productsCount": {"count": 4}},
+                {"title": "Chocolate Gifts", "handle": "gifts",
+                 "productsCount": {"count": 9}},
+            ]}}
+
+    report = shopify.diagnose_bicycle_collections(DiagnosticClient())
+    assert report == [{"title": 'Girls Size 20"', "handle": "actual-girls-20",
+                       "product_count": 4}]
+    serialized = str(report).casefold()
+    assert all(secret not in serialized for secret in
+               ("access_token", "client_secret", "meta_token", "openai"))
