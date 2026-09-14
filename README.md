@@ -106,3 +106,14 @@ python -c 'from shopify_catalog_service import diagnose_catalog_connectivity; pr
 The diagnostic uses the unfiltered `products(first: 5)` query and reports only status,
 count, titles, product types, vendors, and handles. It never returns or logs credentials
 or access tokens.
+
+To verify the real bicycle collection titles and handles from a Railway shell, without
+printing credentials, run:
+
+```bash
+python -m shopify_catalog_service --bicycle-collections
+```
+
+This read-only diagnostic lists only collection titles matching a boys/girls wheel-size
+category, their actual Shopify handles, and product counts. Compare that output with
+`BICYCLE_COLLECTIONS`; the menu label is not treated as proof of a collection handle.

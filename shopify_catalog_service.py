@@ -1,5 +1,7 @@
 """Small, read-only Shopify Admin GraphQL catalogue client."""
 
+import argparse
+import json
 import logging
 import re
 import threading
@@ -166,6 +168,14 @@ query CatalogDiagnostic {
 }
 """
 
+BICYCLE_COLLECTION_DIAGNOSTIC_QUERY = """
+query BicycleCollectionDiagnostic($first: Int!) {
+  collections(first: $first) {
+    nodes { title handle productsCount { count } }
+  }
+}
+"""
+
 
 def parse_filters(query: str) -> dict:
     text = query.casefold()
@@ -322,12 +332,22 @@ def search_bicycles_by_collection(
     """
     expected = bicycle_collection(preference, wheel_size)
     if expected is None:
+        logger.info("Bicycle collection resolution requested_gender=%s requested_wheel_size=%s "
+                    "expected_title=%s expected_handle=%s resolved=false resolved_title=%s "
+                    "resolved_handle=%s product_count=0", preference, wheel_size, None, None,
+                    None, None)
         return {"collection": None, "products": [], "reason": "unsupported_size"}
     data = client.graphql(COLLECTION_PRODUCTS_QUERY, {
         "handle": expected["handle"], "first": MAX_COLLECTION_CANDIDATES,
     })
     collection = data.get("collectionByHandle")
     if not collection or collection.get("handle") != expected["handle"]:
+        logger.info("Bicycle collection resolution requested_gender=%s requested_wheel_size=%s "
+                    "expected_title=%s expected_handle=%s resolved=false resolved_title=%s "
+                    "resolved_handle=%s product_count=0", preference, wheel_size,
+                    expected["title"], expected["handle"],
+                    collection.get("title") if collection else None,
+                    collection.get("handle") if collection else None)
         return {"collection": None, "products": [], "reason": "missing_collection"}
 
     # Membership is authoritative for gender and wheel size. Customer filters
@@ -350,6 +370,11 @@ def search_bicycles_by_collection(
             products.append(normalized)
         if len(products) >= min(max(limit, 0), 10):
             break
+    logger.info("Bicycle collection resolution requested_gender=%s requested_wheel_size=%s "
+                "expected_title=%s expected_handle=%s resolved=true resolved_title=%s "
+                "resolved_handle=%s product_count=%s", preference, wheel_size,
+                expected["title"], expected["handle"], collection.get("title"),
+                collection.get("handle"), len(products))
     return {"collection": {"id": collection.get("id"), "title": collection.get("title"),
                            "handle": collection.get("handle")},
             "products": products, "reason": "ok"}
@@ -382,3 +407,31 @@ def diagnose_catalog_connectivity(catalog_client: ShopifyCatalogClient | None = 
     logger.info("Shopify diagnostic authentication=success graphql=success products=%s details=%s",
                 report["product_count"], report["products"])
     return report
+
+
+def diagnose_bicycle_collections(catalog_client: ShopifyCatalogClient | None = None) -> list[dict]:
+    """List relevant live collection identities without returning configuration or secrets."""
+    diagnostic_client = catalog_client or client
+    data = diagnostic_client.graphql(BICYCLE_COLLECTION_DIAGNOSTIC_QUERY, {"first": 100})
+    collections = []
+    for node in data.get("collections", {}).get("nodes", []):
+        title = str(node.get("title") or "")
+        if re.search(r"\b(?:boys?|girls?)\b.*\b(?:12|16|20|24|26)\b", title, re.I):
+            collections.append({
+                "title": title,
+                "handle": node.get("handle"),
+                "product_count": (node.get("productsCount") or {}).get("count"),
+            })
+    logger.info("Shopify bicycle collection diagnostic count=%s collections=%s",
+                len(collections), collections)
+    return collections
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run safe, read-only Shopify diagnostics")
+    parser.add_argument("--bicycle-collections", action="store_true")
+    args = parser.parse_args()
+    if args.bicycle_collections:
+        print(json.dumps(diagnose_bicycle_collections(), indent=2))
+    else:
+        print(json.dumps(diagnose_catalog_connectivity(), indent=2))

@@ -126,6 +126,65 @@ def test_production_style_twelve_year_old_uses_26_inch_search(monkeypatch):
     assert searches == [("boy", 26, "")]
 
 
+def _completed_boy_26_history():
+    main._store_conversation_message("94771111111", "inbound", "boy")
+    main._store_conversation_message("94771111111", "inbound", "12 years")
+    main._store_conversation_message(
+        "94771111111", "outbound",
+        "For a 12-year-old boy, a 26-inch bicycle is usually a good starting point. 🚲",
+    )
+
+
+def test_current_complete_request_replaces_stale_boy_26_state(monkeypatch):
+    _completed_boy_26_history()
+    searches = []
+    reply = _reply(monkeypatch, "I want bicycle for 6 years girl", searches)
+    assert "6-year-old girl" in reply and "20-inch" in reply
+    assert searches == [("girl", 20, "")]
+    assert all(search[:2] != ("girl", 26) for search in searches)
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("5 year old girl", ("girl", 16, "")),
+    ("I need a bicycle for my 7 year old son", ("boy", 20, "")),
+    ("show me boys size 20 bicycles", ("boy", 20, "show me boys size 20 bicycles")),
+])
+def test_current_demographics_override_completed_history(monkeypatch, text, expected):
+    _completed_boy_26_history()
+    searches = []
+    _reply(monkeypatch, text, searches)
+    assert searches == [expected]
+
+
+def test_explicit_size_wins_over_age_derived_size(monkeypatch):
+    searches = []
+    _reply(monkeypatch, "I need a size 20 bicycle for my 12 year old boy", searches)
+    assert searches == [("boy", 20, "I need a size 20 bicycle for my 12 year old boy")]
+
+
+def test_completed_result_then_generic_bicycle_request_starts_fresh(monkeypatch):
+    _completed_boy_26_history()
+    searches = []
+    reply = _reply(monkeypatch, "Do you have bicycles?", searches)
+    assert reply == "Yes, we do 🚲 Is the bicycle for a boy or a girl?"
+    assert searches == []
+
+
+@pytest.mark.parametrize("text", ["show more", "cheaper ones", "any Lumala?"])
+def test_result_followups_retain_completed_collection(monkeypatch, text):
+    _completed_boy_26_history()
+    searches = []
+    _reply(monkeypatch, text, searches)
+    assert searches == [("boy", 26, text)]
+
+
+def test_new_bicycle_gender_does_not_reuse_completed_age(monkeypatch):
+    _completed_boy_26_history()
+    searches = []
+    assert _reply(monkeypatch, "I want bicycle for girl", searches) == "Great. How old is she?"
+    assert searches == []
+
+
 def test_in_stock_products_are_preferred_and_out_of_stock_is_fallback():
     unavailable = {"title": "No Stock", "variants": [{"price": "1", "available": False}]}
     available = {"title": "In Stock", "variants": [{"price": "2", "available": True}]}

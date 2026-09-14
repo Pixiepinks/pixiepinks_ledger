@@ -65,6 +65,8 @@ from bicycle_recommendation import (
     has_available_variant,
     infer_guided_state,
     is_bicycle_request,
+    is_bicycle_results_follow_up,
+    is_generic_bicycle_request,
     recommended_bicycle_size,
 )
 
@@ -207,13 +209,32 @@ def _reply_to_text_message(
             preference, age, bicycle_stage = infer_guided_state(context)
             explicit_preference = detect_bicycle_preference(text_body)
             explicit_age = extract_child_age(text_body, standalone=bicycle_stage == "age")
-            preference = explicit_preference or preference
-            age = explicit_age if explicit_age is not None else age
             intent = parse_search_intent(text_body)
             direct_size = intent["filters"]["size"]
-            if direct_size and explicit_preference:
+            had_bicycle_context = bicycle_stage in {"gender", "age", "results"}
+
+            # Parse the current message before consulting history. A detail-free
+            # bicycle enquiry after completed results begins a fresh guided flow;
+            # result modifiers are the only messages that inherit completed state.
+            generic_new_request = is_generic_bicycle_request(text_body)
+            result_follow_up = (bicycle_stage == "results"
+                                and is_bicycle_results_follow_up(text_body))
+            if bicycle_stage == "results" and generic_new_request:
+                preference, age, bicycle_stage = None, None, None
+            elif explicit_preference and (explicit_age is not None or direct_size):
+                # A self-contained demographic/size request replaces a completed
+                # recommendation and must not be handled as "show more".
+                preference, age, bicycle_stage = None, None, None
+            elif (is_bicycle_request(text_body) and explicit_preference
+                  and explicit_age is None and not direct_size and not result_follow_up):
+                # "I want a bicycle for a boy" is a new request, not a request
+                # to apply the old child's age to a different child.
                 age = None
-            bicycle_related = is_bicycle_request(text_body) or bicycle_stage in {
+            preference = explicit_preference or preference
+            age = explicit_age if explicit_age is not None else age
+            if direct_size and explicit_preference:
+                age = explicit_age  # retain only age stated in this same message
+            bicycle_related = is_bicycle_request(text_body) or had_bicycle_context or bicycle_stage in {
                 "gender", "age", "results"
             }
 
