@@ -1,20 +1,53 @@
+import hashlib
+import hmac
+import json
 import logging
 from datetime import date, datetime, timedelta
 from urllib.parse import quote, urlparse
 
-from fastapi import FastAPI, Request, Depends, Form, HTTPException, Query, Response, status
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func, inspect, text, or_
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from settings import settings
 from database import SessionLocal, engine
-from models import Account, JournalEntry, JournalLine, User, Base, Customer, Supplier, Item, Lead, LeadNote, LeadTask, CRMUser
+from models import (
+    Account,
+    Base,
+    CRMUser,
+    Customer,
+    Item,
+    JournalEntry,
+    JournalLine,
+    Lead,
+    LeadNote,
+    LeadTask,
+    ProcessedWhatsAppMessage,
+    Supplier,
+    User,
+)
 from seed import init_db
 from utils_auth import hash_password, verify_password
+from whatsapp_service import (
+    FIXED_AUTO_REPLY,
+    UNSUPPORTED_MESSAGE_REPLY,
+    send_whatsapp_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +106,106 @@ def verify_meta_webhook(
 
 
 @app.post("/webhook")
-async def receive_meta_webhook(request: Request):
+async def receive_meta_webhook(request: Request, background_tasks: BackgroundTasks):
+    raw_body = await request.body()
+    if settings.META_APP_SECRET:
+        supplied_signature = request.headers.get("X-Hub-Signature-256", "")
+        expected_signature = "sha256=" + hmac.new(
+            settings.META_APP_SECRET.encode("utf-8"), raw_body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(supplied_signature, expected_signature):
+            logger.warning("Rejected WhatsApp webhook with an invalid signature")
+            raise HTTPException(status_code=403, detail="Invalid webhook signature")
+    else:
+        logger.warning("META_APP_SECRET is not configured; webhook signature was not verified")
+
     try:
-        payload = await request.json()
-    except ValueError:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
         logger.warning("Received a Meta webhook request with invalid JSON")
         return {"status": "ok"}
 
-    logger.info("Received Meta webhook payload: %s", payload)
+    if not isinstance(payload, dict):
+        logger.warning("Ignored WhatsApp webhook whose JSON root is not an object")
+        return {"status": "ok"}
+
+    entries = payload.get("entry")
+    for entry in entries if isinstance(entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        changes = entry.get("changes")
+        for change in changes if isinstance(changes, list) else []:
+            if not isinstance(change, dict) or change.get("field") not in (None, "messages"):
+                continue
+            value = change.get("value")
+            if not isinstance(value, dict):
+                continue
+
+            contacts = value.get("contacts")
+            profile_names = {
+                contact.get("wa_id"): contact.get("profile", {}).get("name")
+                for contact in (contacts if isinstance(contacts, list) else [])
+                if isinstance(contact, dict) and isinstance(contact.get("profile"), dict)
+            }
+            messages = value.get("messages", [])
+            if not isinstance(messages, list):
+                continue
+            for message in messages:
+                if not isinstance(message, dict):
+                    continue
+                message_id = message.get("id")
+                sender = message.get("from")
+                message_type = message.get("type")
+                if not all(isinstance(item, str) and item for item in (message_id, sender, message_type)):
+                    logger.warning("Ignored malformed WhatsApp message object")
+                    continue
+
+                try:
+                    received_at = datetime.utcfromtimestamp(int(message.get("timestamp")))
+                except (TypeError, ValueError, OSError, OverflowError):
+                    received_at = datetime.utcnow()
+
+                record = ProcessedWhatsAppMessage(
+                    message_id=message_id,
+                    sender_phone=sender,
+                    message_type=message_type,
+                    received_at=received_at,
+                    processed_at=datetime.utcnow(),
+                )
+                with SessionLocal() as db:
+                    try:
+                        db.add(record)
+                        db.commit()
+                    except IntegrityError:
+                        db.rollback()
+                        logger.info("Ignored duplicate WhatsApp message message_id=%s", message_id)
+                        continue
+                    except SQLAlchemyError:
+                        db.rollback()
+                        logger.exception("Could not record WhatsApp message message_id=%s", message_id)
+                        continue
+
+                profile_name = profile_names.get(sender)
+                text_body = None
+                if message_type == "text" and isinstance(message.get("text"), dict):
+                    text_body = message["text"].get("body")
+                logger.info(
+                    "WhatsApp inbound message_id=%s sender=%s type=%s profile_name=%s",
+                    message_id,
+                    sender,
+                    message_type,
+                    profile_name,
+                )
+                if message_type == "text" and isinstance(text_body, str):
+                    background_tasks.add_task(send_whatsapp_text, sender, FIXED_AUTO_REPLY)
+                elif message_type in {
+                    "image", "audio", "video", "document", "sticker", "location",
+                    "contacts", "reaction", "interactive",
+                }:
+                    background_tasks.add_task(
+                        send_whatsapp_text, sender, UNSUPPORTED_MESSAGE_REPLY
+                    )
+
     return {"status": "ok"}
 
 

@@ -1,4 +1,6 @@
 import os
+from typing import Optional
+
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
@@ -17,6 +19,10 @@ class Settings(BaseSettings):
     META_VERIFY_TOKEN: str = os.getenv(
         "META_VERIFY_TOKEN", "change-this-local-meta-verify-token"
     )
+    META_WHATSAPP_ACCESS_TOKEN: Optional[str] = None
+    META_WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
+    META_GRAPH_API_VERSION: str = "v26.0"
+    META_APP_SECRET: Optional[str] = None
 
 
 settings = Settings()
