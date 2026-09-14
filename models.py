@@ -133,3 +133,17 @@ class LeadTask(Base):
     status = Column(String, default="PENDING")
     note = Column(Text)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ----------------------
+# WhatsApp webhook idempotency
+# ----------------------
+class ProcessedWhatsAppMessage(Base):
+    __tablename__ = "processed_whatsapp_messages"
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(String(255), unique=True, nullable=False, index=True)
+    sender_phone = Column(String(50), nullable=False)
+    message_type = Column(String(50), nullable=False)
+    received_at = Column(DateTime, nullable=False)
+    processed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
