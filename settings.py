@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     META_APP_SECRET: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4.1-mini"
+    SHOPIFY_SHOP: Optional[str] = None
+    SHOPIFY_CLIENT_ID: Optional[str] = None
+    SHOPIFY_CLIENT_SECRET: Optional[str] = None
+    SHOPIFY_API_VERSION: str = "2026-07"
 
 
 settings = Settings()

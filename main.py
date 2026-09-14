@@ -50,6 +50,7 @@ from whatsapp_service import (
     UNSUPPORTED_MESSAGE_REPLY,
     send_whatsapp_text,
 )
+from shopify_catalog_service import ShopifyCatalogError, search_products
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,28 @@ HUMAN_HANDOVER_PHRASES = (
     "talk to someone", "representative", "speak to a person", "මනුස්සයෙක්",
     "කෙනෙක් එක්ක කතා", "සේවකයෙක්", "නියෝජිතයෙක්", "මට කතා කරන්න",
 )
+SHOPIFY_FALLBACK_REPLY = (
+    "I’m unable to check our live product catalogue right now. "
+    "Our team can assist you shortly."
+)
+PRODUCT_TERMS = (
+    "product", "bicycle", "bike", "bag", "toy", "chocolate", "stationery", "gift",
+    "price", "cost", "stock", "available", "availability", "size", "colour", "color",
+    "variant", "brand", "model", "under rs", "below", "lkr", "how much", "recommend",
+    "බයිසික", "මිල", "තියෙනවද", "පාට", "ප්‍රමාණ", "රු ", "ට අඩු",
+)
+FOLLOW_UP_TERMS = ("this", "that", "one", "second", "pink ones", "it", "මේ", "ඒක")
+
+
+def needs_product_catalog(message: str, recent_context: list | None = None) -> bool:
+    normalized = " ".join(message.casefold().split())
+    if (any(term in normalized for term in PRODUCT_TERMS)
+            or normalized.startswith(("do you have ", "have you got ", "show me "))):
+        return True
+    if any(term in normalized for term in FOLLOW_UP_TERMS):
+        context = " ".join(item.get("message_text", "") for item in (recent_context or [])[-4:]).casefold()
+        return any(term in context for term in PRODUCT_TERMS)
+    return False
 
 
 def requests_human_handover(message: str) -> bool:
@@ -164,11 +187,25 @@ def _reply_to_text_message(
                 {"direction": item.direction, "message_text": item.message_text}
                 for item in reversed(history)
             ]
-            reply = generate_customer_reply(text_body, profile_name, context)
+            if needs_product_catalog(text_body, context):
+                prior_inbound = next((item["message_text"] for item in reversed(context)
+                                      if item["direction"] == "inbound"), "")
+                search_query = f"{prior_inbound} {text_body}" if prior_inbound else text_body
+                try:
+                    catalog_results = search_products(search_query)
+                except ShopifyCatalogError:
+                    logger.warning("Live Shopify catalogue unavailable message_id=%s", message_id)
+                    reply = SHOPIFY_FALLBACK_REPLY
+                else:
+                    reply = generate_customer_reply(
+                        text_body, profile_name, context, catalog_results
+                    )
+            else:
+                reply = generate_customer_reply(text_body, profile_name, context)
         except Exception:
             logger.exception("Unexpected AI integration failure message_id=%s", message_id)
             reply = FALLBACK_REPLY
-        response_kind = "fallback" if reply == FALLBACK_REPLY else "ai"
+        response_kind = "fallback" if reply in (FALLBACK_REPLY, SHOPIFY_FALLBACK_REPLY) else "ai"
         logger.info("WhatsApp reply path=%s message_id=%s sender=%s", response_kind, message_id, sender)
 
     sent = send_whatsapp_text(sender, reply)

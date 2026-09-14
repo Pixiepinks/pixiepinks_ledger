@@ -225,3 +225,67 @@ def test_missing_outbound_configuration(monkeypatch):
     monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_ACCESS_TOKEN", None)
     monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_PHONE_NUMBER_ID", None)
     assert whatsapp_service.send_whatsapp_text("94770000000", "Reply") is False
+
+
+def test_product_question_queries_shopify_and_supplies_results(monkeypatch):
+    sent = []
+    searches = []
+    ai_calls = []
+    products = [{"title": "Verified bicycle", "variants": []}]
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: sent.append(args))
+    monkeypatch.setattr(main, "search_products", lambda query: searches.append(query) or products)
+    monkeypatch.setattr(
+        main, "generate_customer_reply",
+        lambda *args: ai_calls.append(args) or "Here is the verified bicycle.",
+    )
+    response = TestClient(main.app).post(
+        "/webhook", json=_message_payload(message_id="wamid.product", body="Do you have bicycles?")
+    )
+    assert response.status_code == 200
+    assert searches == ["Do you have bicycles?"]
+    assert ai_calls[0][3] == products
+    assert sent == [("94770000000", "Here is the verified bicycle.")]
+
+
+def test_non_product_greeting_does_not_query_shopify(monkeypatch):
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
+    monkeypatch.setattr(
+        main, "search_products", lambda *args: (_ for _ in ()).throw(AssertionError())
+    )
+    monkeypatch.setattr(main, "generate_customer_reply", lambda *args: "Hello!")
+    response = TestClient(main.app).post(
+        "/webhook", json=_message_payload(message_id="wamid.greeting", body="Hello")
+    )
+    assert response.status_code == 200
+
+
+def test_shopify_failure_uses_catalog_fallback_and_webhook_stays_ok(monkeypatch):
+    sent = []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: sent.append(args))
+    monkeypatch.setattr(
+        main, "search_products",
+        lambda *args: (_ for _ in ()).throw(main.ShopifyCatalogError("safe")),
+    )
+    monkeypatch.setattr(
+        main, "generate_customer_reply", lambda *args: (_ for _ in ()).throw(AssertionError())
+    )
+    response = TestClient(main.app).post(
+        "/webhook", json=_message_payload(message_id="wamid.shopify-fail", body="Any bikes in stock?")
+    )
+    assert response.status_code == 200
+    assert sent == [("94770000000", main.SHOPIFY_FALLBACK_REPLY)]
+
+
+def test_handover_bypasses_shopify_too(monkeypatch):
+    sent = []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: sent.append(args))
+    monkeypatch.setattr(
+        main, "search_products", lambda *args: (_ for _ in ()).throw(AssertionError())
+    )
+    response = TestClient(main.app).post(
+        "/webhook", json=_message_payload(
+            message_id="wamid.handover-product", body="I need a human to check bicycle stock"
+        )
+    )
+    assert response.status_code == 200
+    assert sent == [("94770000000", main.HUMAN_HANDOVER_REPLY)]
