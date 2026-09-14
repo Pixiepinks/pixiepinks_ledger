@@ -355,6 +355,17 @@ def search_products(query: str, limit: int = 5) -> list[dict]:
     return products
 
 
+def get_product_by_handle(handle: str) -> dict | None:
+    """Fetch one product by its stable handle and return fresh Shopify facts."""
+    if not isinstance(handle, str) or not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9-]*", handle):
+        return None
+    data = client.graphql(PRODUCT_QUERY, {"first": 2, "query": f"handle:{handle}"})
+    for node in data.get("products", {}).get("nodes", []):
+        if node.get("handle") == handle:
+            return _normalize_product(node, parse_filters(""))
+    return None
+
+
 def bicycle_collection(preference: str, wheel_size: int) -> dict | None:
     """Return the configured business collection; 24-inch is intentionally absent."""
     title = BICYCLE_COLLECTIONS.get((preference, int(wheel_size)))

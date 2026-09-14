@@ -29,7 +29,20 @@ def is_shopify_image_url(image_url: str) -> bool:
     )
 
 
-def send_whatsapp_image(recipient: str, image_url: str, caption: str | None = None) -> bool:
+def _message_id(response: httpx.Response) -> str | None:
+    """Extract Meta's outbound wamid without trusting any other response data."""
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        return None
+    messages = payload.get("messages") if isinstance(payload, dict) else None
+    value = messages[0].get("id") if isinstance(messages, list) and messages and isinstance(messages[0], dict) else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def send_whatsapp_image(
+    recipient: str, image_url: str, caption: str | None = None, *, return_message_id: bool = False
+) -> bool | str | None:
     """Send a verified Shopify image through the existing Meta Cloud API."""
     if not is_shopify_image_url(image_url):
         logger.warning("WhatsApp image skipped recipient=%s reason=untrusted_url", recipient)
@@ -62,10 +75,13 @@ def send_whatsapp_image(recipient: str, image_url: str, caption: str | None = No
         return False
     logger.info("WhatsApp image succeeded recipient=%s status_code=%s",
                 recipient, response.status_code)
-    return True
+    message_id = _message_id(response)
+    return message_id if return_message_id else True
 
 
-def send_whatsapp_text(recipient: str, body: str) -> bool:
+def send_whatsapp_text(
+    recipient: str, body: str, *, return_message_id: bool = False
+) -> bool | str | None:
     """Send a text through Meta without allowing failures to escape the worker."""
     access_token = settings.META_WHATSAPP_ACCESS_TOKEN
     phone_number_id = settings.META_WHATSAPP_PHONE_NUMBER_ID
@@ -112,4 +128,5 @@ def send_whatsapp_text(recipient: str, body: str) -> bool:
         recipient,
         response.status_code,
     )
-    return True
+    message_id = _message_id(response)
+    return message_id if return_message_id else True
