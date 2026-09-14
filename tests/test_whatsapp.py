@@ -227,6 +227,72 @@ def test_missing_outbound_configuration(monkeypatch):
     assert whatsapp_service.send_whatsapp_text("94770000000", "Reply") is False
 
 
+def test_shopify_image_outbound_request_shape_and_configuration(monkeypatch):
+    monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_ACCESS_TOKEN", "secret-token")
+    monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_PHONE_NUMBER_ID", "123456")
+    monkeypatch.setattr(whatsapp_service.settings, "META_GRAPH_API_VERSION", "v26.0")
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return httpx.Response(200, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(whatsapp_service.httpx, "post", fake_post)
+    image_url = "https://cdn.shopify.com/s/files/1/0000/products/bike.jpg"
+    assert whatsapp_service.send_whatsapp_image("94770000000", image_url, "Bike") is True
+    assert captured["url"] == "https://graph.facebook.com/v26.0/123456/messages"
+    assert captured["json"] == {
+        "messaging_product": "whatsapp", "to": "94770000000", "type": "image",
+        "image": {"link": image_url, "caption": "Bike"},
+    }
+
+
+def test_image_sender_rejects_arbitrary_url_without_http_call(monkeypatch):
+    monkeypatch.setattr(
+        whatsapp_service.httpx, "post", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError())
+    )
+    assert whatsapp_service.send_whatsapp_image("94770000000", "http://evil.example/bike.jpg") is False
+
+
+def test_bicycle_images_use_shopify_url_cap_at_three_and_failure_falls_back(monkeypatch):
+    texts, images = [], []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda to, body: texts.append(body) or True)
+
+    def image_sender(to, url, caption):
+        images.append((url, caption))
+        return len(images) != 2
+
+    monkeypatch.setattr(main, "send_whatsapp_image", image_sender)
+    products = [{
+        "title": f"Bike {number}", "url": f"https://www.pixiepinks.shop/products/bike-{number}",
+        "featured_image": f"https://cdn.shopify.com/bike-{number}.jpg",
+        "featured_image_verified": True, "variants": [{"title": "26 inch", "price": "37100",
+                                                          "available": True}],
+    } for number in range(4)]
+    monkeypatch.setattr(main, "search_products", lambda query: products)
+    main._reply_to_text_message("94770000000", "wamid.images",
+                                "bicycle for my 12 year old boy", "Customer")
+    assert len(images) == 3
+    assert images[0][0] == products[0]["featured_image"]
+    assert "Rs. 37,100" in images[0][1]
+    assert any("Bike 1" in text for text in texts)  # failed second image's text fallback
+    assert not any("Bike 3" in caption for _, caption in images)
+
+
+def test_missing_featured_image_uses_text_recommendation(monkeypatch):
+    texts = []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda to, body: texts.append(body) or True)
+    monkeypatch.setattr(main, "send_whatsapp_image", lambda *args: (_ for _ in ()).throw(AssertionError()))
+    monkeypatch.setattr(main, "search_products", lambda query: [{
+        "title": "Image-free Bike", "url": "https://www.pixiepinks.shop/products/no-image",
+        "featured_image": None, "featured_image_verified": False,
+        "variants": [{"title": "26 inch", "price": "37100", "available": True}],
+    }])
+    main._reply_to_text_message("94770000000", "wamid.noimage",
+                                "bicycle for my 12 year old boy", "Customer")
+    assert any("Image-free Bike" in text and "Rs. 37,100" in text for text in texts)
+
+
 def test_generic_bicycle_question_starts_guided_flow_without_shopify(monkeypatch):
     sent = []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: sent.append(args))

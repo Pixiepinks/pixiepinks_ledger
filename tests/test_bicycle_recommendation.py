@@ -87,17 +87,43 @@ def test_pending_answers_use_persisted_history_then_query(monkeypatch):
 
 def test_complete_request_queries_and_preserves_live_values_with_max_three(monkeypatch):
     searches = []
+    sent = []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: sent.append(args) or True)
+    monkeypatch.setattr(main, "send_whatsapp_image", lambda *args: False)
     products = [{
         "title": f"Live Bike {number}", "product_type": "Bicycle", "tags": [],
         "url": f"https://shop/products/{number}",
         "variants": [{"title": "20 inch", "price": f"{37000 + number}.00",
                       "available": True, "selected_options": {"Size": "20 inch"}}],
     } for number in range(1, 5)]
-    reply = _reply(monkeypatch, "I need a bicycle for my 7 year old boy", searches, products)
+    monkeypatch.setattr(main, "search_products", lambda query: searches.append(query) or products)
+    main._reply_to_text_message("94771111111", "current", "I need a bicycle for my 7 year old boy", "Customer")
     assert searches == ["bicycle size 20"]
-    assert "Live Bike 1" in reply and "Rs. 37,001" in reply
-    assert "https://shop/products/1" in reply
-    assert "Live Bike 3" in reply and "Live Bike 4" not in reply
+    combined = "\n".join(body for _, body in sent)
+    assert "Live Bike 1" in combined and "Rs. 37,001" in combined
+    assert "https://shop/products/1" in combined
+    assert "Live Bike 3" in combined and "Live Bike 4" not in combined
+
+
+def test_production_style_twelve_year_old_uses_26_inch_search(monkeypatch):
+    searches = []
+    assert "boy or a girl" in _reply(monkeypatch, "bicycle", searches)
+    main._store_conversation_message("94771111111", "inbound", "boy")
+    assert "How old is he" in _reply(monkeypatch, "boy", searches)
+    main._store_conversation_message("94771111111", "inbound", "12 years",
+                                     whatsapp_message_id="current")
+    reply = _reply(monkeypatch, "12 years", searches)
+    assert "26-inch" in reply
+    assert searches == ["bicycle size 26"]
+
+
+def test_in_stock_products_are_preferred_and_out_of_stock_is_fallback():
+    unavailable = {"title": "No Stock", "variants": [{"price": "1", "available": False}]}
+    available = {"title": "In Stock", "variants": [{"price": "2", "available": True}]}
+    assert [item["title"] for item in available_bicycle_matches(
+        [unavailable, available], None
+    )] == ["In Stock"]
+    assert available_bicycle_matches([unavailable], None)[0]["title"] == "No Stock"
 
 
 @pytest.mark.parametrize("customer_text", ["Show me size 20 bicycles",

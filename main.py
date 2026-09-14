@@ -48,6 +48,7 @@ from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
     UNSUPPORTED_MESSAGE_REPLY,
+    send_whatsapp_image,
     send_whatsapp_text,
 )
 from shopify_catalog_service import ShopifyCatalogError, parse_search_intent, search_products
@@ -56,6 +57,7 @@ from bicycle_recommendation import (
     available_bicycle_matches,
     detect_bicycle_preference,
     extract_child_age,
+    format_bicycle_product,
     format_bicycle_results,
     infer_guided_state,
     is_bicycle_request,
@@ -173,6 +175,7 @@ def _reply_to_text_message(
     sender: str, message_id: str, text_body: str, profile_name: str | None
 ) -> None:
     """Generate and send after Meta has already received its HTTP 200 acknowledgement."""
+    bicycle_delivery = None
     if requests_human_handover(text_body):
         reply = HUMAN_HANDOVER_REPLY
         response_kind = "handover"
@@ -228,10 +231,27 @@ def _reply_to_text_message(
                     reply = SHOPIFY_FALLBACK_REPLY
                 else:
                     matches = available_bicycle_matches(
-                        products, preference, limit=3,
+                        products, preference, limit=5 if bicycle_stage == "results" else 3,
                         cheapest="cheaper" in text_body.casefold(),
                     )
-                    reply = format_bicycle_results(age, preference, size, matches)
+                    if bicycle_stage == "results":
+                        old_text = " ".join(item["message_text"] for item in context).casefold()
+                        unseen = [product for product in matches
+                                  if str(product.get("url") or product.get("title", "")).casefold()
+                                  not in old_text]
+                        matches = unseen or matches
+                    intro = (f"For a {age}-year-old {preference}, a {size}-inch bicycle is "
+                             "usually a good starting point. 🚲")
+                    if matches:
+                        qualifier = "available " if any(
+                            variant.get("available") for product in matches
+                            for variant in product.get("variants", [])
+                        ) else ""
+                        intro += f"\nHere are some {qualifier}options from our live catalogue:"
+                        bicycle_delivery = (intro, matches[:3])
+                        reply = intro
+                    else:
+                        reply = format_bicycle_results(age, preference, size, matches)
             elif needs_product_catalog(text_body, context):
                 prior_inbound = next((item["message_text"] for item in reversed(context)
                                       if item["direction"] == "inbound"), "")
@@ -257,6 +277,33 @@ def _reply_to_text_message(
         response_kind = "fallback" if reply in (FALLBACK_REPLY, SHOPIFY_FALLBACK_REPLY) else "ai"
         logger.info("WhatsApp reply path=%s message_id=%s sender=%s", response_kind, message_id, sender)
 
+    if bicycle_delivery:
+        intro, products = bicycle_delivery
+        sent = send_whatsapp_text(sender, intro)
+        _store_conversation_message(sender, "outbound", intro, customer_name=profile_name,
+                                    response_kind="bicycle")
+        for product in products:
+            product_text = format_bicycle_product(product)
+            image_url = product.get("featured_image")
+            image_sent = False
+            if product.get("featured_image_verified") and image_url:
+                try:
+                    image_sent = send_whatsapp_image(sender, image_url, product_text)
+                except Exception:
+                    # Outbound media must never turn Meta's webhook retry into duplicate batches.
+                    logger.exception("Unexpected WhatsApp image failure message_id=%s sender=%s",
+                                     message_id, sender)
+            if not image_sent:
+                send_whatsapp_text(sender, product_text)
+            _store_conversation_message(sender, "outbound", product_text,
+                                        customer_name=profile_name, response_kind="bicycle_product")
+        follow_up = "Would you like more options, or to filter by colour, brand or budget?"
+        send_whatsapp_text(sender, follow_up)
+        _store_conversation_message(sender, "outbound", follow_up,
+                                    customer_name=profile_name, response_kind="bicycle")
+        logger.info("WhatsApp bicycle results sent count=%s message_id=%s sender=%s",
+                    len(products), message_id, sender)
+        return
     sent = send_whatsapp_text(sender, reply)
     logger.info("WhatsApp outbound result=%s message_id=%s sender=%s", sent, message_id, sender)
     _store_conversation_message(

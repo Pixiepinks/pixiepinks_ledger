@@ -143,7 +143,11 @@ def parse_filters(query: str) -> dict:
     maximum = re.search(rf"(?:under|below|less than|up to)\s*{number}", text)
     sinhala_maximum = re.search(rf"{number}\s*ට\s*අඩු", text)
     minimum = re.search(rf"(?:over|above|more than|at least)\s*{number}", text)
-    size = re.search(r"(?:size\s*|\b)(12|16|20|24|26)\s*(?:inch(?:es)?|\"|in)?\b", text)
+    # A bare age such as "12 years" must never be mistaken for an explicit wheel size.
+    size = re.search(
+        r"(?:\bsize\s*(12|16|20|24|26)(?:\s*(?:inch(?:es)?|\"|in))?(?=\s|$)|"
+        r"\b(12|16|20|24|26)\s*(?:inch(?:es)?|\"|in)(?=\s|$))", text,
+    )
     colours = ("pink", "blue", "red", "green", "black", "white", "yellow", "purple",
                "orange", "grey", "gray", "රෝස", "නිල්", "රතු", "කළු", "සුදු")
     colour = next((item for item in colours if re.search(
@@ -159,7 +163,7 @@ def parse_filters(query: str) -> dict:
         "min_price": money(between.group(1) if between else minimum.group(1) if minimum else None),
         "max_price": money(between.group(2) if between else maximum.group(1) if maximum
                            else sinhala_maximum.group(1) if sinhala_maximum else None),
-        "size": size.group(1) if size else None,
+        "size": next((group for group in size.groups() if group), None) if size else None,
         "colour": colour,
     }
 
@@ -245,6 +249,7 @@ def _normalize_product(node: dict, filters: dict) -> dict | None:
             "product_type": node.get("productType"), "vendor": node.get("vendor"),
             "tags": node.get("tags") or [], "status": node.get("status"),
             "featured_image": (node.get("featuredImage") or {}).get("url"),
+            "featured_image_verified": bool((node.get("featuredImage") or {}).get("url")),
             "url": f"{STOREFRONT_ROOT}/products/{handle}" if handle else None,
             "variants": variants}
 
