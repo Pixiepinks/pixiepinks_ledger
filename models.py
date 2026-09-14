@@ -147,3 +147,18 @@ class ProcessedWhatsAppMessage(Base):
     message_type = Column(String(50), nullable=False)
     received_at = Column(DateTime, nullable=False)
     processed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class WhatsAppConversationMessage(Base):
+    """A small, provider-token-free history used for customer-service context."""
+
+    __tablename__ = "whatsapp_conversation_messages"
+
+    id = Column(Integer, primary_key=True)
+    phone_number = Column(String(50), nullable=False, index=True)
+    customer_name = Column(String(255), nullable=True)
+    direction = Column(String(20), nullable=False)
+    message_text = Column(Text, nullable=False)
+    whatsapp_message_id = Column(String(255), nullable=True, index=True)
+    response_kind = Column(String(20), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
