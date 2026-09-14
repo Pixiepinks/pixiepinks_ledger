@@ -172,6 +172,7 @@ def parse_search_intent(text: str) -> dict:
             "what", "how", "much", "price", "available", "stock", "size", "under",
             "below", "less", "than", "between", "and", "rs", "lkr", "anything",
             "that", "second", "first", "third", "ones", "in", "inch", "inches",
+            "another", "more", "cheaper", "please", "show",
             "තියෙනවද", "රු", "ට", "අඩු"}
     words = [word for word in cleaned.split() if word.casefold() not in stop and not re.fullmatch(r"[\d,]+", word)]
     singular = {"bicycles": "bicycle", "bikes": "bicycle", "bike": "bicycle",
