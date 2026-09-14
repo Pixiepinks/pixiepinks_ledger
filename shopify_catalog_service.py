@@ -130,22 +130,30 @@ query SearchProducts($first: Int!, $query: String!) {
 }
 """
 
-# Expected navigation labels are represented by stable handles rather than
-# numeric IDs, and are kept in one place so a merchandising rename is simple.
+# These titles were verified in Shopify Admin.  Handles are deliberately not
+# guessed: Shopify resolves each title at runtime and supplies its live handle.
 BICYCLE_COLLECTIONS = {
-    ("boy", 12): {"title": 'Boys Size 12"', "handle": "boys-size-12"},
-    ("boy", 16): {"title": 'Boys Size 16"', "handle": "boys-size-16"},
-    ("boy", 20): {"title": 'Boys Size 20"', "handle": "boys-size-20"},
-    ("boy", 26): {"title": 'Boys Size 26"', "handle": "boys-size-26"},
-    ("girl", 12): {"title": 'Girls Size 12"', "handle": "girls-size-12"},
-    ("girl", 16): {"title": 'Girls Size 16"', "handle": "girls-size-16"},
-    ("girl", 20): {"title": 'Girls Size 20"', "handle": "girls-size-20"},
-    ("girl", 26): {"title": 'Girls Size 26"', "handle": "girls-size-26"},
+    ("boy", 12): 'Size 12" Boys Bicycles',
+    ("boy", 16): 'Size 16" Boys Bicycles',
+    ("boy", 20): 'Size 20" Boys Bicycles',
+    ("boy", 26): 'Size 26" Boys Bicycles',
+    ("girl", 12): 'Size 12" Girls Bicycles',
+    ("girl", 16): 'Size 16" Girls Bicycles',
+    ("girl", 20): 'Size 20" Girls Bicycles',
+    ("girl", 26): 'Size 26" Girls Bicycles',
 }
 
+COLLECTION_LOOKUP_QUERY = """
+query BicycleCollectionLookup($first: Int!, $query: String!) {
+  collections(first: $first, query: $query) {
+    nodes { id title handle productsCount { count } }
+  }
+}
+"""
+
 COLLECTION_PRODUCTS_QUERY = """
-query BicycleCollection($handle: String!, $first: Int!) {
-  collectionByHandle(handle: $handle) {
+query BicycleCollectionProducts($id: ID!, $first: Int!) {
+  collection(id: $id) {
     id title handle
     products(first: $first, sortKey: BEST_SELLING) {
       nodes { id title handle productType vendor tags status
@@ -257,11 +265,13 @@ def _matches_product_terms(node: dict, terms: list[str]) -> bool:
                for term in terms)
 
 
-def _normalize_product(node: dict, filters: dict) -> dict | None:
+def _normalize_product(node: dict, filters: dict, *, available_only: bool = False) -> dict | None:
     variants = []
     product_haystack = " ".join([str(node.get("title", "")),
                                   *(str(tag) for tag in node.get("tags", []))]).casefold()
     for raw in node.get("variants", {}).get("nodes", []):
+        if available_only and not raw.get("availableForSale"):
+            continue
         options = {item.get("name", ""): item.get("value", "") for item in raw.get("selectedOptions", [])}
         haystack = " ".join([str(raw.get("title", "")), *options.values()]).casefold()
         if filters["size"] and not re.search(rf"(?<!\d){re.escape(filters['size'])}(?!\d)", haystack):
@@ -347,8 +357,65 @@ def search_products(query: str, limit: int = 5) -> list[dict]:
 
 def bicycle_collection(preference: str, wheel_size: int) -> dict | None:
     """Return the configured business collection; 24-inch is intentionally absent."""
-    configured = BICYCLE_COLLECTIONS.get((preference, int(wheel_size)))
-    return dict(configured) if configured else None
+    title = BICYCLE_COLLECTIONS.get((preference, int(wheel_size)))
+    return {"title": title} if title else None
+
+
+def _title_search(title: str) -> str:
+    """Quote a trusted configured title for Shopify's search grammar."""
+    return 'title:"' + title.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def get_bicycle_collection(
+    preference: str, wheel_size: int, catalog_client: ShopifyCatalogClient | None = None
+) -> dict | None:
+    """Resolve and exactly verify a configured collection using live Shopify data."""
+    expected = bicycle_collection(preference, wheel_size)
+    if expected is None:
+        return None
+    data = (catalog_client or client).graphql(
+        COLLECTION_LOOKUP_QUERY,
+        {"first": 10, "query": _title_search(expected["title"])},
+    )
+    matches = [
+        node for node in data.get("collections", {}).get("nodes", [])
+        if node.get("title") == expected["title"] and node.get("id") and node.get("handle")
+    ]
+    if len(matches) != 1:
+        return None
+    node = matches[0]
+    return {"id": node["id"], "title": node["title"], "handle": node["handle"],
+            "product_count": (node.get("productsCount") or {}).get("count")}
+
+
+def get_products_from_collection(
+    collection: dict, query: str = "", limit: int = 10,
+    catalog_client: ShopifyCatalogClient | None = None,
+) -> list[dict]:
+    """Fetch available products through an already verified collection relationship."""
+    data = (catalog_client or client).graphql(COLLECTION_PRODUCTS_QUERY, {
+        "id": collection["id"], "first": MAX_COLLECTION_CANDIDATES,
+    })
+    resolved = data.get("collection")
+    if (not resolved or resolved.get("id") != collection["id"]
+            or resolved.get("title") != collection["title"]
+            or resolved.get("handle") != collection["handle"]):
+        return []
+
+    filters = parse_filters(query)
+    filters["size"] = None
+    terms = [term for term in parse_search_intent(query)["terms"]
+             if term not in {"boy", "boys", "girl", "girls", "bicycle"}]
+    products = []
+    for node in resolved.get("products", {}).get("nodes", []):
+        if terms and not _matches_product_terms(node, terms):
+            continue
+        normalized = _normalize_product(node, filters, available_only=True)
+        if normalized:
+            products.append(normalized)
+        if len(products) >= min(max(limit, 0), 10):
+            break
+    return products
 
 
 def search_bicycles_by_collection(
@@ -362,50 +429,28 @@ def search_bicycles_by_collection(
     expected = bicycle_collection(preference, wheel_size)
     if expected is None:
         logger.info("Bicycle collection resolution requested_gender=%s requested_wheel_size=%s "
-                    "expected_title=%s expected_handle=%s resolved=false resolved_title=%s "
-                    "resolved_handle=%s product_count=0", preference, wheel_size, None, None,
-                    None, None)
+                    "expected_title=%s resolved=false product_count=0",
+                    preference, wheel_size, None)
         return {"collection": None, "products": [], "reason": "unsupported_size"}
-    data = client.graphql(COLLECTION_PRODUCTS_QUERY, {
-        "handle": expected["handle"], "first": MAX_COLLECTION_CANDIDATES,
-    })
-    collection = data.get("collectionByHandle")
-    if not collection or collection.get("handle") != expected["handle"]:
+    collection = get_bicycle_collection(preference, wheel_size)
+    if not collection:
         logger.info("Bicycle collection resolution requested_gender=%s requested_wheel_size=%s "
-                    "expected_title=%s expected_handle=%s resolved=false resolved_title=%s "
-                    "resolved_handle=%s product_count=0", preference, wheel_size,
-                    expected["title"], expected["handle"],
-                    collection.get("title") if collection else None,
-                    collection.get("handle") if collection else None)
+                    "expected_title=%s resolved=false product_count=0", preference, wheel_size,
+                    expected["title"])
         return {"collection": None, "products": [], "reason": "missing_collection"}
-
-    # Membership is authoritative for gender and wheel size. Customer filters
-    # (price/colour) are still verified against live variants.
-    filters = parse_filters(query)
-    filters["size"] = None
-    terms = [term for term in parse_search_intent(query)["terms"]
-             if term not in {"boy", "boys", "girl", "girls", "bicycle"}]
-    products = []
-    for node in collection.get("products", {}).get("nodes", []):
-        if terms and not _matches_product_terms(node, terms):
-            continue
-        normalized = _normalize_product(node, filters)
-        if normalized:
-            normalized["bicycle_collection"] = {
-                "id": collection.get("id"), "title": collection.get("title"),
-                "handle": collection.get("handle"), "preference": preference,
-                "wheel_size": wheel_size,
-            }
-            products.append(normalized)
-        if len(products) >= min(max(limit, 0), 10):
-            break
+    products = get_products_from_collection(collection, query, limit)
+    for product in products:
+        product["bicycle_collection"] = {
+            "id": collection["id"], "title": collection["title"],
+            "handle": collection["handle"], "preference": preference,
+            "wheel_size": wheel_size,
+        }
     logger.info("Bicycle collection resolution requested_gender=%s requested_wheel_size=%s "
-                "expected_title=%s expected_handle=%s resolved=true resolved_title=%s "
-                "resolved_handle=%s product_count=%s", preference, wheel_size,
-                expected["title"], expected["handle"], collection.get("title"),
-                collection.get("handle"), len(products))
-    return {"collection": {"id": collection.get("id"), "title": collection.get("title"),
-                           "handle": collection.get("handle")},
+                "expected_title=%s resolved=true resolved_title=%s resolved_handle=%s "
+                "product_count=%s", preference, wheel_size, expected["title"],
+                collection["title"], collection["handle"], len(products))
+    return {"collection": {"id": collection["id"], "title": collection["title"],
+                           "handle": collection["handle"]},
             "products": products, "reason": "ok"}
 
 
@@ -442,10 +487,11 @@ def diagnose_bicycle_collections(catalog_client: ShopifyCatalogClient | None = N
     """List relevant live collection identities without returning configuration or secrets."""
     diagnostic_client = catalog_client or client
     data = diagnostic_client.graphql(BICYCLE_COLLECTION_DIAGNOSTIC_QUERY, {"first": 100})
+    expected_titles = set(BICYCLE_COLLECTIONS.values())
     collections = []
     for node in data.get("collections", {}).get("nodes", []):
         title = str(node.get("title") or "")
-        if re.search(r"\b(?:boys?|girls?)\b.*\b(?:12|16|20|24|26)\b", title, re.I):
+        if title in expected_titles:
             collections.append({
                 "title": title,
                 "handle": node.get("handle"),

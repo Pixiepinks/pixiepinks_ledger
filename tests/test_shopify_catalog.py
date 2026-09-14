@@ -260,8 +260,15 @@ def test_colour_filter():
     assert shopify._normalize_product(node, shopify.parse_filters("blue bicycle")) is None
 
 
-def collection_payload(title='Boys Size 26"', handle="boys-size-26", nodes=None):
-    return response(200, {"data": {"collectionByHandle": {
+def collection_lookup_payload(title='Size 26" Boys Bicycles', handle="live-boys-26"):
+    return response(200, {"data": {"collections": {"nodes": [{
+        "id": "gid://shopify/Collection/26", "title": title, "handle": handle,
+        "productsCount": {"count": 1},
+    }]}}})
+
+
+def collection_payload(title='Size 26" Boys Bicycles', handle="live-boys-26", nodes=None):
+    return response(200, {"data": {"collection": {
         "id": "gid://shopify/Collection/26", "title": title, "handle": handle,
         "products": {"nodes": nodes if nodes is not None else
                      graphql_payload().json()["data"]["products"]["nodes"]},
@@ -269,50 +276,78 @@ def collection_payload(title='Boys Size 26"', handle="boys-size-26", nodes=None)
 
 
 def test_collection_mapping_is_deterministic_and_24_is_not_invented():
-    assert shopify.bicycle_collection("boy", 26) == {
-        "title": 'Boys Size 26"', "handle": "boys-size-26"
+    assert shopify.BICYCLE_COLLECTIONS == {
+        ("boy", 12): 'Size 12" Boys Bicycles',
+        ("boy", 16): 'Size 16" Boys Bicycles',
+        ("boy", 20): 'Size 20" Boys Bicycles',
+        ("boy", 26): 'Size 26" Boys Bicycles',
+        ("girl", 12): 'Size 12" Girls Bicycles',
+        ("girl", 16): 'Size 16" Girls Bicycles',
+        ("girl", 20): 'Size 20" Girls Bicycles',
+        ("girl", 26): 'Size 26" Girls Bicycles',
     }
-    assert shopify.bicycle_collection("girl", 12)["handle"] == "girls-size-12"
+    assert shopify.bicycle_collection("boy", 26) == {"title": 'Size 26" Boys Bicycles'}
     assert shopify.bicycle_collection("boy", 24) is None
 
 
 def test_collection_search_is_bounded_and_preserves_shopify_identity(monkeypatch):
-    fake = FakeHTTP([token_payload(), collection_payload()])
+    fake = FakeHTTP([token_payload(), collection_lookup_payload(), collection_payload()])
     monkeypatch.setattr(shopify, "client", ShopifyCatalogClient(fake))
     result = shopify.search_bicycles_by_collection("boy", 26, "under Rs 50000")
     assert result["collection"] == {"id": "gid://shopify/Collection/26",
-                                    "title": 'Boys Size 26"', "handle": "boys-size-26"}
+                                    "title": 'Size 26" Boys Bicycles',
+                                    "handle": "live-boys-26"}
     assert result["products"][0]["variants"][0]["price"] == "39999.00"
     assert result["products"][0]["bicycle_collection"]["preference"] == "boy"
     assert fake.calls[1][1]["json"]["variables"] == {
-        "handle": "boys-size-26", "first": shopify.MAX_COLLECTION_CANDIDATES
+        "first": 10, "query": 'title:"Size 26\\" Boys Bicycles"'
+    }
+    assert fake.calls[2][1]["json"]["variables"] == {
+        "id": "gid://shopify/Collection/26", "first": shopify.MAX_COLLECTION_CANDIDATES
     }
 
 
 def test_missing_and_empty_collections_fail_closed(monkeypatch):
-    fake = FakeHTTP([token_payload(), response(200, {"data": {"collectionByHandle": None}})])
+    fake = FakeHTTP([token_payload(), response(200, {"data": {"collections": {"nodes": []}}})])
     monkeypatch.setattr(shopify, "client", ShopifyCatalogClient(fake))
     assert shopify.search_bicycles_by_collection("girl", 26)["reason"] == "missing_collection"
 
-    fake = FakeHTTP([token_payload(), collection_payload(nodes=[])])
+    fake = FakeHTTP([token_payload(), collection_lookup_payload(), collection_payload(nodes=[])])
     monkeypatch.setattr(shopify, "client", ShopifyCatalogClient(fake))
     empty = shopify.search_bicycles_by_collection("boy", 26)
-    assert empty["collection"]["handle"] == "boys-size-26" and empty["products"] == []
+    assert empty["collection"]["handle"] == "live-boys-26" and empty["products"] == []
 
 
 def test_bicycle_collection_diagnostic_returns_only_safe_relevant_fields():
     class DiagnosticClient:
         def graphql(self, query, variables):
             return {"collections": {"nodes": [
-                {"title": 'Girls Size 20"', "handle": "actual-girls-20",
+                {"title": 'Size 20" Girls Bicycles', "handle": "actual-girls-20",
                  "productsCount": {"count": 4}},
                 {"title": "Chocolate Gifts", "handle": "gifts",
                  "productsCount": {"count": 9}},
             ]}}
 
     report = shopify.diagnose_bicycle_collections(DiagnosticClient())
-    assert report == [{"title": 'Girls Size 20"', "handle": "actual-girls-20",
+    assert report == [{"title": 'Size 20" Girls Bicycles', "handle": "actual-girls-20",
                        "product_count": 4}]
     serialized = str(report).casefold()
     assert all(secret not in serialized for secret in
                ("access_token", "client_secret", "meta_token", "openai"))
+
+
+def test_exact_title_is_required_and_live_handle_is_not_assumed(monkeypatch):
+    fake = FakeHTTP([token_payload(), collection_lookup_payload(
+        title='Size 26" Bicycles', handle="generic-size-26"
+    )])
+    monkeypatch.setattr(shopify, "client", ShopifyCatalogClient(fake))
+    result = shopify.search_bicycles_by_collection("boy", 26)
+    assert result == {"collection": None, "products": [], "reason": "missing_collection"}
+
+
+def test_collection_products_only_include_available_variants(monkeypatch):
+    node = graphql_payload().json()["data"]["products"]["nodes"][0]
+    node["variants"]["nodes"][0]["availableForSale"] = False
+    fake = FakeHTTP([token_payload(), collection_lookup_payload(), collection_payload(nodes=[node])])
+    monkeypatch.setattr(shopify, "client", ShopifyCatalogClient(fake))
+    assert shopify.search_bicycles_by_collection("boy", 26)["products"] == []

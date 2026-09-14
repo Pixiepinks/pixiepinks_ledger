@@ -293,6 +293,17 @@ def test_direct_gender_and_size_bypasses_age_question(monkeypatch):
     assert searches == [("girl", 16, "Show me girls size 16 bicycles")]
 
 
+def test_more_after_direct_size_reuses_the_same_verified_collection(monkeypatch):
+    searches = []
+    _reply(monkeypatch, "show size 20 boys bicycles", searches)
+    main._store_conversation_message("94771111111", "inbound", "more")
+    _reply(monkeypatch, "more", searches)
+    assert searches == [
+        ("boy", 20, "show size 20 boys bicycles"),
+        ("boy", 20, "more"),
+    ]
+
+
 def test_available_matches_do_not_invent_gender_from_colour():
     products = [
         {"title": "Pink Comet", "tags": ["pink"], "variants": [{"available": True}]},
