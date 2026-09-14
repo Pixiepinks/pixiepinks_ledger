@@ -51,6 +51,16 @@ from whatsapp_service import (
     send_whatsapp_text,
 )
 from shopify_catalog_service import ShopifyCatalogError, parse_search_intent, search_products
+from bicycle_recommendation import (
+    asks_about_fit,
+    available_bicycle_matches,
+    detect_bicycle_preference,
+    extract_child_age,
+    format_bicycle_results,
+    infer_guided_state,
+    is_bicycle_request,
+    recommended_bicycle_size,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +197,42 @@ def _reply_to_text_message(
                 {"direction": item.direction, "message_text": item.message_text}
                 for item in reversed(history)
             ]
-            if needs_product_catalog(text_body, context):
+            preference, age, bicycle_stage = infer_guided_state(context)
+            explicit_preference = detect_bicycle_preference(text_body)
+            explicit_age = extract_child_age(text_body, standalone=bicycle_stage == "age")
+            preference = explicit_preference or preference
+            age = explicit_age if explicit_age is not None else age
+            direct_size = parse_search_intent(text_body)["filters"]["size"]
+            bicycle_related = is_bicycle_request(text_body) or bicycle_stage in {
+                "gender", "age", "results"
+            }
+
+            if bicycle_related and asks_about_fit(text_body):
+                reply = ("Age provides only a starting point for bicycle sizing; it cannot "
+                         "guarantee the fit. The child's height and inseam can help confirm "
+                         "the best size.")
+            elif bicycle_related and not direct_size and preference is None:
+                reply = "Yes, we do 🚲 Is the bicycle for a boy or a girl?"
+            elif bicycle_related and not direct_size and age is None:
+                pronoun = "he" if preference == "boy" else "she"
+                reply = f"Great. How old is {pronoun}?"
+            elif bicycle_related and not direct_size and preference and age is not None:
+                size = recommended_bicycle_size(age)
+                search_query = f"bicycle size {size}"
+                if bicycle_stage == "results":
+                    search_query = f"{search_query} {text_body}"
+                try:
+                    products = search_products(search_query)
+                except ShopifyCatalogError:
+                    logger.warning("Live Shopify catalogue unavailable message_id=%s", message_id)
+                    reply = SHOPIFY_FALLBACK_REPLY
+                else:
+                    matches = available_bicycle_matches(
+                        products, preference, limit=3,
+                        cheapest="cheaper" in text_body.casefold(),
+                    )
+                    reply = format_bicycle_results(age, preference, size, matches)
+            elif needs_product_catalog(text_body, context):
                 prior_inbound = next((item["message_text"] for item in reversed(context)
                                       if item["direction"] == "inbound"), "")
                 # Prior context is useful only for true follow-ups. Adding it to a

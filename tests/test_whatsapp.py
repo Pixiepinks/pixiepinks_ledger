@@ -227,24 +227,17 @@ def test_missing_outbound_configuration(monkeypatch):
     assert whatsapp_service.send_whatsapp_text("94770000000", "Reply") is False
 
 
-def test_product_question_queries_shopify_and_supplies_results(monkeypatch):
+def test_generic_bicycle_question_starts_guided_flow_without_shopify(monkeypatch):
     sent = []
-    searches = []
-    ai_calls = []
-    products = [{"title": "Verified bicycle", "variants": []}]
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: sent.append(args))
-    monkeypatch.setattr(main, "search_products", lambda query: searches.append(query) or products)
     monkeypatch.setattr(
-        main, "generate_customer_reply",
-        lambda *args: ai_calls.append(args) or "Here is the verified bicycle.",
+        main, "search_products", lambda *args: (_ for _ in ()).throw(AssertionError())
     )
     response = TestClient(main.app).post(
         "/webhook", json=_message_payload(message_id="wamid.product", body="Do you have bicycles?")
     )
     assert response.status_code == 200
-    assert searches == ["Do you have bicycles?"]
-    assert ai_calls[0][3] == products
-    assert sent == [("94770000000", "Here is the verified bicycle.")]
+    assert sent == [("94770000000", "Yes, we do 🚲 Is the bicycle for a boy or a girl?")]
 
 
 def test_complete_product_request_does_not_add_unrelated_history(monkeypatch):
@@ -284,7 +277,9 @@ def test_shopify_failure_uses_catalog_fallback_and_webhook_stays_ok(monkeypatch)
         main, "generate_customer_reply", lambda *args: (_ for _ in ()).throw(AssertionError())
     )
     response = TestClient(main.app).post(
-        "/webhook", json=_message_payload(message_id="wamid.shopify-fail", body="Any bikes in stock?")
+        "/webhook", json=_message_payload(
+            message_id="wamid.shopify-fail", body="Any size 20 bikes in stock?"
+        )
     )
     assert response.status_code == 200
     assert sent == [("94770000000", main.SHOPIFY_FALLBACK_REPLY)]
