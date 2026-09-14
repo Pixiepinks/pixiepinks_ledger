@@ -170,6 +170,62 @@ def test_completed_result_then_generic_bicycle_request_starts_fresh(monkeypatch)
     assert searches == []
 
 
+def test_completed_result_then_greeting_ignores_stale_bicycle_state(monkeypatch):
+    _completed_boy_26_history()
+    searches = []
+    contexts = []
+    monkeypatch.setattr(
+        main, "generate_customer_reply",
+        lambda _text, _name, context, *args: contexts.append(context) or
+        "Hi! How can I help you today?",
+    )
+    assert _reply(monkeypatch, "hi", searches) == "Hi! How can I help you today?"
+    assert searches == []
+    assert contexts == [[]]
+
+
+@pytest.mark.parametrize("text,term", [
+    ("do you have chocolates?", "chocolate"),
+    ("show me school bags", "school"),
+])
+def test_completed_result_then_new_category_uses_normal_catalog(monkeypatch, text, term):
+    _completed_boy_26_history()
+    searches = []
+    contexts = []
+    monkeypatch.setattr(
+        main, "generate_customer_reply",
+        lambda _text, _name, context, _products: contexts.append(context) or "catalog reply",
+    )
+    assert _reply(monkeypatch, text, searches) == "catalog reply"
+    assert searches == [text]
+    assert term in searches[0].casefold()
+    assert contexts == [[]]
+
+
+def test_rejected_old_size_begins_a_clean_bicycle_request(monkeypatch):
+    _completed_boy_26_history()
+    searches = []
+    reply = _reply(monkeypatch, "no need 26 i need new bicycles", searches)
+    assert reply == "Yes, we do 🚲 Is the bicycle for a boy or a girl?"
+    assert searches == []
+
+
+def test_explicit_new_size_discards_completed_size(monkeypatch):
+    _completed_boy_26_history()
+    searches = []
+    _reply(monkeypatch, "boys size 20 bicycles", searches)
+    assert searches == [("boy", 20, "boys size 20 bicycles")]
+
+
+def test_handover_still_precedes_completed_bicycle_context(monkeypatch):
+    _completed_boy_26_history()
+    searches = []
+    assert _reply(monkeypatch, "I want to speak to a person about bicycles", searches) == (
+        main.HUMAN_HANDOVER_REPLY
+    )
+    assert searches == []
+
+
 @pytest.mark.parametrize("text", ["show more", "cheaper ones", "any Lumala?"])
 def test_result_followups_retain_completed_collection(monkeypatch, text):
     _completed_boy_26_history()
