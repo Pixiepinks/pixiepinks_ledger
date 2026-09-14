@@ -75,3 +75,14 @@ The app requires only `read_products`, `read_inventory`, and `read_locations`; i
 not write products or inventory. `SHOPIFY_API_VERSION` is optional and defaults to
 `2026-07`. If Shopify configuration or the live service is unavailable, product requests
 degrade to a safe customer-facing response without disrupting webhook acknowledgement.
+
+To safely check authentication, GraphQL access, and a five-product sample in the
+configured environment, run:
+
+```bash
+python -c 'from shopify_catalog_service import diagnose_catalog_connectivity; print(diagnose_catalog_connectivity())'
+```
+
+The diagnostic uses the unfiltered `products(first: 5)` query and reports only status,
+count, titles, product types, vendors, and handles. It never returns or logs credentials
+or access tokens.

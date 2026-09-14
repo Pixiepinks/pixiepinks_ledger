@@ -123,6 +123,80 @@ def test_search_normalizes_filters_price_size_and_availability(monkeypatch):
     assert "X-Shopify-Access-Token" in graph_call[1]["headers"]
 
 
+@pytest.mark.parametrize("customer_text", [
+    "Do you have bicycles?",
+    "Do you have bikes?",
+    "Show me size 20 bicycles",
+    "bicycles under Rs 40000",
+    "pink bicycles",
+])
+def test_bicycle_customer_phrases_find_mocked_shopify_product(monkeypatch, customer_text):
+    fake = FakeHTTP([token_payload(), graphql_payload()])
+    monkeypatch.setattr(shopify, "client", ShopifyCatalogClient(fake))
+
+    products = shopify.search_products(customer_text)
+
+    assert [product["title"] for product in products] == ["Lumala Pixie"]
+    search = fake.calls[1][1]["json"]["variables"]["query"]
+    assert "title:bicycle*" in search
+    assert "product_type:bicycle*" in search
+    assert "vendor:bicycle*" in search
+    assert "tag:bicycle*" in search
+    assert "title:bike*" in search
+    assert "Do" not in search and "40000" not in search and "pink" not in search
+
+
+@pytest.mark.parametrize("customer_text", [
+    "bicycles", "Do you have bicycles?", "Show me size 20 bicycles",
+])
+def test_exact_bicycle_shopify_search_syntax(customer_text):
+    expected = (
+        "(title:bicycle* OR product_type:bicycle* OR vendor:bicycle* OR tag:bicycle* "
+        "OR title:bike* OR product_type:bike* OR vendor:bike* OR tag:bike*)"
+    )
+    assert shopify._shopify_search_query(customer_text) == expected
+
+
+@pytest.mark.parametrize("field", ["title", "productType", "vendor", "tags"])
+def test_bicycle_candidate_can_match_each_supported_product_field(monkeypatch, field):
+    payload = graphql_payload().json()
+    node = payload["data"]["products"]["nodes"][0]
+    node.update({"title": "Pixie", "productType": "Kids", "vendor": "Acme", "tags": []})
+    node[field] = ["bicycles"] if field == "tags" else "Bicycles"
+    fake = FakeHTTP([token_payload(), response(200, payload)])
+    monkeypatch.setattr(shopify, "client", ShopifyCatalogClient(fake))
+    assert shopify.search_products("Do you have bikes?")[0]["handle"] == "lumala-pixie"
+
+
+def test_safe_catalog_diagnostic_uses_unfiltered_products_query(caplog):
+    payload = {"data": {"products": {"nodes": [{
+        "title": "Pixie Bicycle", "productType": "Bicycle", "vendor": "PixiePinks",
+        "handle": "pixie-bicycle",
+    }]}}}
+    fake = FakeHTTP([token_payload(), response(200, payload)])
+    with caplog.at_level(logging.INFO):
+        report = shopify.diagnose_catalog_connectivity(ShopifyCatalogClient(fake))
+    assert report == {
+        "authentication": "success", "graphql": "success", "product_count": 1,
+        "products": [{"title": "Pixie Bicycle", "product_type": "Bicycle",
+                      "vendor": "PixiePinks", "handle": "pixie-bicycle"}],
+    }
+    graphql_call = fake.calls[1][1]["json"]
+    assert graphql_call["variables"] == {}
+    assert "products(first: 5)" in graphql_call["query"]
+    assert "$query" not in graphql_call["query"]
+    assert "super-secret" not in caplog.text
+    assert "temporary-token" not in caplog.text
+
+
+def test_safe_catalog_diagnostic_reports_authentication_failure():
+    fake = FakeHTTP([response(401, {})])
+    assert shopify.diagnose_catalog_connectivity(ShopifyCatalogClient(fake)) == {
+        "authentication": "failure", "graphql": "not_attempted", "product_count": 0,
+        "products": [],
+    }
+
+
 @pytest.mark.parametrize("text, expected", [
     ("under Rs 40000", "40000"), ("below Rs. 40,000", "40000"),
     ("less than LKR 40000", "40000"), ("රු 40000 ට අඩු", "40000"),
