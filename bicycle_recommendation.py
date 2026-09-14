@@ -80,7 +80,9 @@ def is_generic_bicycle_request(text: str) -> bool:
 def is_bicycle_results_follow_up(text: str) -> bool:
     """Return true only for language that naturally modifies prior results."""
     normalized = " ".join(text.casefold().split())
-    return any(term in normalized for term in RESULT_FOLLOW_UP_TERMS)
+    return normalized.strip("?!. ") == "more" or any(
+        term in normalized for term in RESULT_FOLLOW_UP_TERMS
+    )
 
 
 def is_new_bicycle_request(text: str) -> bool:
@@ -164,6 +166,21 @@ def infer_guided_state(context: list[dict]) -> tuple[str | None, int | None, str
             preference = detect_bicycle_preference(message)
             age = extract_child_age(message)
     return preference, age, pending
+
+
+def infer_bicycle_result_size(context: list[dict]) -> int | None:
+    """Recover an explicit wheel size from the most recent result heading."""
+    for item in reversed(context):
+        if item.get("direction") != "outbound":
+            continue
+        message = str(item.get("message_text", ""))
+        match = re.search(r"\b(?:boys|girls)\s+size\s+(12|16|20|26)(?:\s*\"|\b)",
+                          message, re.I)
+        if match:
+            return int(match.group(1))
+        if "usually a good starting point" in message.casefold():
+            return None
+    return None
 
 
 def _product_gender(product: dict) -> str | None:

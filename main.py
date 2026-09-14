@@ -63,6 +63,7 @@ from bicycle_recommendation import (
     format_bicycle_product,
     format_bicycle_results,
     has_available_variant,
+    infer_bicycle_result_size,
     infer_guided_state,
     is_bicycle_request,
     is_bicycle_results_follow_up,
@@ -215,6 +216,7 @@ def _reply_to_text_message(
                 # derive the pending question from the turn immediately before it.
                 state_context = context[:-1]
             preference, age, bicycle_stage = infer_guided_state(state_context)
+            prior_result_size = infer_bicycle_result_size(state_context)
             explicit_preference = detect_bicycle_preference(text_body)
             explicit_age = extract_child_age(text_body, standalone=bicycle_stage == "age")
             intent = parse_search_intent(text_body)
@@ -232,6 +234,8 @@ def _reply_to_text_message(
                 bicycle_stage == "results"
                 and (is_bicycle_results_follow_up(text_body) or asks_about_fit(text_body))
             )
+            if result_follow_up and not direct_size:
+                direct_size = prior_result_size
             demographic_request = (
                 bicycle_stage == "results" and explicit_preference is not None
                 and explicit_age is not None
@@ -260,8 +264,8 @@ def _reply_to_text_message(
             if is_product_image_request(text_body):
                 # Reconstruct the last result intent, then fetch Shopify again;
                 # assistant prose is never treated as current product data.
-                if bicycle_stage == "results" and preference and age is not None:
-                    size = recommended_bicycle_size(age)
+                if bicycle_stage == "results" and preference and (age is not None or prior_result_size):
+                    size = prior_result_size or recommended_bicycle_size(age)
                     collection_config = bicycle_collection(preference, size)
                     try:
                         result = (search_bicycles_by_collection(preference, size, limit=10)
