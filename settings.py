@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     META_WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
     META_GRAPH_API_VERSION: str = "v26.0"
     META_APP_SECRET: Optional[str] = None
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4.1-mini"
 
 
 settings = Settings()

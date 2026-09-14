@@ -37,3 +37,19 @@ uvicorn main:app --reload
 - Owner draws: debit Owner's Equity (or Drawings); credit Cash/Bank.
 
 You can expand the chart of accounts under /accounts to match your shop.
+
+## WhatsApp AI customer service
+
+Incoming WhatsApp text messages use the OpenAI Responses API for short customer-service
+replies. The existing Meta webhook verification and outbound Cloud API configuration are
+still required. Configure these additional Railway variables:
+
+```text
+OPENAI_API_KEY=<secret>
+OPENAI_MODEL=gpt-4.1-mini
+```
+
+`OPENAI_MODEL` is optional and defaults to `gpt-4.1-mini`. If the API key is absent or
+OpenAI cannot produce a reply, the customer receives a fixed safe fallback instead.
+Recent inbound and outbound messages are stored in the existing application database;
+the application creates the `whatsapp_conversation_messages` table during startup.

@@ -2,6 +2,7 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 from datetime import date, datetime, timedelta
 from urllib.parse import quote, urlparse
 
@@ -40,11 +41,12 @@ from models import (
     ProcessedWhatsAppMessage,
     Supplier,
     User,
+    WhatsAppConversationMessage,
 )
+from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
-    FIXED_AUTO_REPLY,
     UNSUPPORTED_MESSAGE_REPLY,
     send_whatsapp_text,
 )
@@ -87,6 +89,105 @@ LEAD_STATUSES = [
     "DELIVERED",
     "LOST",
 ]
+
+HUMAN_HANDOVER_REPLY = (
+    "Certainly. I'll leave this conversation for the PixiePinks team to assist you."
+)
+HUMAN_HANDOVER_PHRASES = (
+    "human", "agent", "person", "staff", "customer service", "call me",
+    "talk to someone", "representative", "speak to a person", "මනුස්සයෙක්",
+    "කෙනෙක් එක්ක කතා", "සේවකයෙක්", "නියෝජිතයෙක්", "මට කතා කරන්න",
+)
+
+
+def requests_human_handover(message: str) -> bool:
+    normalized = " ".join(message.casefold().split())
+    return any(
+        phrase in normalized
+        if any(ord(character) > 127 for character in phrase)
+        else re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized) is not None
+        for phrase in HUMAN_HANDOVER_PHRASES
+    )
+
+
+def _store_conversation_message(
+    phone_number: str,
+    direction: str,
+    message_text: str,
+    *,
+    customer_name: str | None = None,
+    whatsapp_message_id: str | None = None,
+    response_kind: str | None = None,
+    created_at: datetime | None = None,
+) -> None:
+    try:
+        with SessionLocal() as db:
+            db.add(WhatsAppConversationMessage(
+                phone_number=phone_number,
+                customer_name=customer_name,
+                direction=direction,
+                message_text=message_text,
+                whatsapp_message_id=whatsapp_message_id,
+                response_kind=response_kind,
+                created_at=created_at or datetime.utcnow(),
+            ))
+            db.commit()
+    except SQLAlchemyError:
+        logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+
+
+def _reply_to_text_message(
+    sender: str, message_id: str, text_body: str, profile_name: str | None
+) -> None:
+    """Generate and send after Meta has already received its HTTP 200 acknowledgement."""
+    if requests_human_handover(text_body):
+        reply = HUMAN_HANDOVER_REPLY
+        response_kind = "handover"
+        logger.info("WhatsApp human handover requested message_id=%s sender=%s", message_id, sender)
+    else:
+        try:
+            with SessionLocal() as db:
+                history = (
+                    db.query(WhatsAppConversationMessage)
+                    .filter(
+                        WhatsAppConversationMessage.phone_number == sender,
+                        or_(
+                            WhatsAppConversationMessage.whatsapp_message_id.is_(None),
+                            WhatsAppConversationMessage.whatsapp_message_id != message_id,
+                        ),
+                    )
+                    .order_by(WhatsAppConversationMessage.created_at.desc())
+                    .limit(8)
+                    .all()
+                )
+            context = [
+                {"direction": item.direction, "message_text": item.message_text}
+                for item in reversed(history)
+            ]
+            reply = generate_customer_reply(text_body, profile_name, context)
+        except Exception:
+            logger.exception("Unexpected AI integration failure message_id=%s", message_id)
+            reply = FALLBACK_REPLY
+        response_kind = "fallback" if reply == FALLBACK_REPLY else "ai"
+        logger.info("WhatsApp reply path=%s message_id=%s sender=%s", response_kind, message_id, sender)
+
+    sent = send_whatsapp_text(sender, reply)
+    logger.info("WhatsApp outbound result=%s message_id=%s sender=%s", sent, message_id, sender)
+    _store_conversation_message(
+        sender, "outbound", reply, customer_name=profile_name, response_kind=response_kind
+    )
+
+
+def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
+    sent = send_whatsapp_text(sender, UNSUPPORTED_MESSAGE_REPLY)
+    logger.info("WhatsApp unsupported-message outbound result=%s sender=%s", sent, sender)
+    _store_conversation_message(
+        sender,
+        "outbound",
+        UNSUPPORTED_MESSAGE_REPLY,
+        customer_name=profile_name,
+        response_kind="unsupported",
+    )
 
 
 # ---------------------- Meta WhatsApp Webhook ----------------------
@@ -197,13 +298,31 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     profile_name,
                 )
                 if message_type == "text" and isinstance(text_body, str):
-                    background_tasks.add_task(send_whatsapp_text, sender, FIXED_AUTO_REPLY)
+                    cleaned_body = text_body.strip()[:2_000]
+                    if not cleaned_body:
+                        logger.info("Ignored empty WhatsApp text message message_id=%s", message_id)
+                        continue
+                    _store_conversation_message(
+                        sender,
+                        "inbound",
+                        cleaned_body,
+                        customer_name=profile_name,
+                        whatsapp_message_id=message_id,
+                        created_at=received_at,
+                    )
+                    background_tasks.add_task(
+                        _reply_to_text_message,
+                        sender,
+                        message_id,
+                        cleaned_body,
+                        profile_name,
+                    )
                 elif message_type in {
                     "image", "audio", "video", "document", "sticker", "location",
                     "contacts", "reaction", "interactive",
                 }:
                     background_tasks.add_task(
-                        send_whatsapp_text, sender, UNSUPPORTED_MESSAGE_REPLY
+                        _send_unsupported_reply, sender, profile_name
                     )
 
     return {"status": "ok"}
