@@ -13,7 +13,13 @@ BICYCLE_TERMS = ("bicycle", "bicycles", "bike", "bikes", "බයිසික")
 RESULT_FOLLOW_UP_TERMS = (
     "show more", "another one", "another", "more options", "cheaper", "under ",
     "below ", "any ", "colour", "color", "red", "blue", "pink", "black",
-    "white", "lumala",
+    "white", "lumala", "first one", "second one", "third one",
+    "show boys ones", "show girls ones",
+)
+
+NEW_BICYCLE_REQUEST_TERMS = (
+    "i need", "i want", "need another", "new bicycle", "new bike",
+    "no need", "do you have", "show me",
 )
 
 
@@ -73,6 +79,20 @@ def is_bicycle_results_follow_up(text: str) -> bool:
     return any(term in normalized for term in RESULT_FOLLOW_UP_TERMS)
 
 
+def is_new_bicycle_request(text: str) -> bool:
+    """Identify an explicit request whose filters must come only from this message."""
+    if not is_bicycle_request(text):
+        return False
+    normalized = " ".join(text.casefold().split())
+    return (
+        is_generic_bicycle_request(text)
+        or any(term in normalized for term in NEW_BICYCLE_REQUEST_TERMS)
+        or detect_bicycle_preference(text) is not None
+        or re.search(r"\bsize\s*(?:12|16|20|24|26)\b", normalized) is not None
+        or extract_child_age(text) is not None
+    )
+
+
 def asks_about_fit(text: str) -> bool:
     normalized = " ".join(text.casefold().split())
     return any(phrase in normalized for phrase in (
@@ -102,14 +122,30 @@ def infer_guided_state(context: list[dict]) -> tuple[str | None, int | None, str
             elif re.search(r"\b(?:boys|girls) size (?:12|16|20|24|26)\b", lowered):
                 pending = "results"
                 preference = detect_bicycle_preference(message) or preference
+            elif pending == "results" and not (
+                "🚲" in message or "bicycle" in lowered
+                or "more options" in lowered or "filter by" in lowered
+            ):
+                preference, age, pending = None, None, None
         elif pending == "gender":
             detected = detect_bicycle_preference(message)
             if detected:
                 preference, pending = detected, "age"
+            else:
+                preference, age, pending = None, None, None
         elif pending == "age":
             detected_age = extract_child_age(message, standalone=True)
             if detected_age is not None:
                 age, pending = detected_age, "results"
+            else:
+                preference, age, pending = None, None, None
+        elif pending == "results" and not (
+            is_bicycle_request(message)
+            or is_bicycle_results_follow_up(message)
+            or asks_about_fit(message)
+        ):
+            # A category switch or ordinary chat ends the active result turn.
+            preference, age, pending = None, None, None
     return preference, age, pending
 
 

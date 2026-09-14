@@ -66,7 +66,7 @@ from bicycle_recommendation import (
     infer_guided_state,
     is_bicycle_request,
     is_bicycle_results_follow_up,
-    is_generic_bicycle_request,
+    is_new_bicycle_request,
     recommended_bicycle_size,
 )
 
@@ -206,20 +206,57 @@ def _reply_to_text_message(
                 {"direction": item.direction, "message_text": item.message_text}
                 for item in reversed(history)
             ]
-            preference, age, bicycle_stage = infer_guided_state(context)
+            state_context = context
+            if (context and context[-1]["direction"] == "inbound"
+                    and " ".join(context[-1]["message_text"].casefold().split())
+                    == " ".join(text_body.casefold().split())):
+                # Some callers persist the current inbound row before dispatch;
+                # derive the pending question from the turn immediately before it.
+                state_context = context[:-1]
+            preference, age, bicycle_stage = infer_guided_state(state_context)
             explicit_preference = detect_bicycle_preference(text_body)
             explicit_age = extract_child_age(text_body, standalone=bicycle_stage == "age")
             intent = parse_search_intent(text_body)
             direct_size = intent["filters"]["size"]
             had_bicycle_context = bicycle_stage in {"gender", "age", "results"}
 
-            # Parse the current message before consulting history. A detail-free
-            # bicycle enquiry after completed results begins a fresh guided flow;
-            # result modifiers are the only messages that inherit completed state.
-            generic_new_request = is_generic_bicycle_request(text_body)
-            result_follow_up = (bicycle_stage == "results"
-                                and is_bicycle_results_follow_up(text_body))
-            if bicycle_stage == "results" and generic_new_request:
+            # Current-message intent is the gate. History supplies values only to
+            # an immediate pending answer or a recognizable results follow-up.
+            explicit_bicycle = is_bicycle_request(text_body)
+            pending_answer = (
+                (bicycle_stage == "gender" and explicit_preference is not None)
+                or (bicycle_stage == "age" and explicit_age is not None)
+            )
+            result_follow_up = (
+                bicycle_stage == "results"
+                and (is_bicycle_results_follow_up(text_body) or asks_about_fit(text_body))
+            )
+            demographic_request = (
+                bicycle_stage == "results" and explicit_preference is not None
+                and explicit_age is not None
+            )
+            new_bicycle_request = is_new_bicycle_request(text_body) or demographic_request
+            bicycle_related = explicit_bicycle or pending_answer or result_follow_up
+            bicycle_related = bicycle_related or demographic_request
+            ignored_stale_context = had_bicycle_context and not bicycle_related
+            current_intent = (
+                "bicycle_new" if new_bicycle_request else
+                "bicycle_pending_answer" if pending_answer else
+                "bicycle_follow_up" if result_follow_up else
+                "bicycle" if explicit_bicycle else
+                "product" if needs_product_catalog(text_body, context) else "general"
+            )
+            logger.debug(
+                "WhatsApp routing intent=%s bicycle_flow=%s pending_bicycle_question=%s "
+                "new_bicycle_request=%s bicycle_follow_up=%s ignored_stale_bicycle_context=%s",
+                current_intent, bicycle_related, bicycle_stage in {"gender", "age"},
+                new_bicycle_request, result_follow_up, ignored_stale_context,
+            )
+            # Do not pass a stale guided bicycle transcript into the general AI
+            # or product answer after the customer has switched intent.
+            routing_context = [] if ignored_stale_context else context
+
+            if new_bicycle_request:
                 preference, age, bicycle_stage = None, None, None
             elif explicit_preference and (explicit_age is not None or direct_size):
                 # A self-contained demographic/size request replaces a completed
@@ -234,9 +271,6 @@ def _reply_to_text_message(
             age = explicit_age if explicit_age is not None else age
             if direct_size and explicit_preference:
                 age = explicit_age  # retain only age stated in this same message
-            bicycle_related = is_bicycle_request(text_body) or had_bicycle_context or bicycle_stage in {
-                "gender", "age", "results"
-            }
 
             if bicycle_related and asks_about_fit(text_body):
                 reply = ("Age provides only a starting point for bicycle sizing; it cannot "
@@ -303,8 +337,8 @@ def _reply_to_text_message(
                                  if age is not None else
                                  f"I couldn't find matching available bicycles in the verified "
                                  f"{preference}s size {size}-inch collection right now.")
-            elif needs_product_catalog(text_body, context):
-                prior_inbound = next((item["message_text"] for item in reversed(context)
+            elif needs_product_catalog(text_body, routing_context):
+                prior_inbound = next((item["message_text"] for item in reversed(routing_context)
                                       if item["direction"] == "inbound"), "")
                 # Prior context is useful only for true follow-ups. Adding it to a
                 # complete request introduces unrelated mandatory Shopify terms.
@@ -318,10 +352,10 @@ def _reply_to_text_message(
                     reply = SHOPIFY_FALLBACK_REPLY
                 else:
                     reply = generate_customer_reply(
-                        text_body, profile_name, context, catalog_results
+                        text_body, profile_name, routing_context, catalog_results
                     )
             else:
-                reply = generate_customer_reply(text_body, profile_name, context)
+                reply = generate_customer_reply(text_body, profile_name, routing_context)
         except Exception:
             logger.exception("Unexpected AI integration failure message_id=%s", message_id)
             reply = FALLBACK_REPLY
