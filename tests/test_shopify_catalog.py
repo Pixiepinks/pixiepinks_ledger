@@ -37,6 +37,13 @@ def token_payload(token="temporary-token", expires=86399):
     return response(200, {"access_token": token, "expires_in": expires, "scope": "read_products"})
 
 
+def test_age_is_not_parsed_as_wheel_size_but_explicit_size_is():
+    assert shopify.parse_filters("12 years")["size"] is None
+    assert shopify.parse_filters("bicycle for my 12 year old boy")["size"] is None
+    assert shopify.parse_filters("size 20 bicycles")["size"] == "20"
+    assert shopify.parse_filters('20" bicycles')["size"] == "20"
+
+
 def graphql_payload():
     return response(200, {"data": {"products": {"nodes": [{
         "id": "gid://shopify/Product/1", "title": "Lumala Pixie", "handle": "lumala-pixie",

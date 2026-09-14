@@ -103,24 +103,48 @@ def _product_gender(product: dict) -> str | None:
 def available_bicycle_matches(
     products: list[dict], preference: str | None, limit: int = 3, *, cheapest: bool = False
 ) -> list[dict]:
-    """Keep live available variants and rank explicit preference ahead of neutral data."""
+    """Rank live variants, returning unavailable ones only when no stock matches exist."""
     matches = []
     for product in products:
         available = [variant for variant in product.get("variants", []) if variant.get("available")]
-        if available:
+        variants = available or list(product.get("variants", []))
+        if variants:
             copy = dict(product)
-            copy["variants"] = available
+            copy["variants"] = variants
             gender = _product_gender(copy)
             if preference and gender and gender != preference:
                 continue
             rank = 0 if preference and gender == preference else 1
             try:
-                lowest_price = min(Decimal(str(item["price"])) for item in available)
+                lowest_price = min(Decimal(str(item["price"])) for item in variants)
             except (InvalidOperation, KeyError):
                 lowest_price = Decimal("Infinity")
-            matches.append((rank, lowest_price, copy))
-    matches.sort(key=lambda item: (item[1], item[0]) if cheapest else (item[0], item[1]))
-    return [product for _, _, product in matches[:limit]]
+            matches.append((not bool(available), rank, lowest_price, copy))
+    matches.sort(key=lambda item: (item[0], item[2], item[1]) if cheapest
+                 else (item[0], item[1], item[2]))
+    if any(not unavailable for unavailable, *_ in matches):
+        matches = [item for item in matches if not item[0]]
+    return [product for *_, product in matches[:limit]]
+
+
+def format_lkr_price(value: object) -> str:
+    """Format a Shopify LKR numeric string without changing its value."""
+    try:
+        amount = f"{Decimal(str(value)):,.2f}".rstrip("0").rstrip(".")
+    except (InvalidOperation, TypeError):
+        amount = str(value or "")
+    return f"Rs. {amount}"
+
+
+def format_bicycle_product(product: dict) -> str:
+    """Build the short caption/text fallback solely from normalized Shopify facts."""
+    variant = product["variants"][0]
+    variant_title = str(variant.get("title") or "").strip()
+    title = str(product.get("title") or "Bicycle")
+    label = f"{title} – {variant_title}" if variant_title and variant_title != "Default Title" else title
+    availability = "✅ Available" if variant.get("available") else "❌ Currently unavailable"
+    return "\n\n".join((f"🚲 {label}", f"💰 {format_lkr_price(variant.get('price'))}",
+                         availability, f"🔗 {product.get('url') or ''}"))
 
 
 def format_bicycle_results(age: int, preference: str, size: int, products: list[dict]) -> str:
@@ -132,14 +156,12 @@ def format_bicycle_results(age: int, preference: str, size: int, products: list[
     lines = [intro, "", "Here are some available options based on size/catalog information:", ""]
     for index, product in enumerate(products[:3], 1):
         variant = product["variants"][0]
-        try:
-            price = f"{Decimal(str(variant['price'])):,.2f}".rstrip("0").rstrip(".")
-        except (InvalidOperation, KeyError):
-            price = str(variant.get("price", ""))
+        price = format_lkr_price(variant.get("price"))
         variant_title = str(variant.get("title") or "").strip()
         title = str(product.get("title") or "Bicycle")
         label = f"{title} – {variant_title}" if variant_title and variant_title != "Default Title" else title
-        lines.extend([f"{index}. {label}", f"💰 Rs. {price}", "✅ Available",
+        availability = "✅ Available" if variant.get("available") else "❌ Currently unavailable"
+        lines.extend([f"{index}. {label}", f"💰 {price}", availability,
                       f"🔗 {product.get('url') or ''}", ""])
     lines.append("Would you like more options or to filter by colour/budget?")
     return "\n".join(lines).strip()
