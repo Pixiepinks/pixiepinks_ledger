@@ -8,7 +8,10 @@ import main
 import ai_service
 import whatsapp_service
 from database import Base, SessionLocal, engine
-from models import ProcessedWhatsAppMessage, WhatsAppConversationMessage
+from models import (
+    ProcessedWhatsAppMessage, WhatsAppConversationMessage,
+    WhatsAppOutboundProductMessage,
+)
 
 
 def _message_payload(message_id="wamid.123", message_type="text", body="Hello"):
@@ -34,6 +37,7 @@ def setup_function():
     with SessionLocal() as db:
         db.query(ProcessedWhatsAppMessage).delete()
         db.query(WhatsAppConversationMessage).delete()
+        db.query(WhatsAppOutboundProductMessage).delete()
         db.commit()
     main.settings.META_APP_SECRET = None
     main.settings.OPENAI_API_KEY = None
@@ -446,3 +450,103 @@ def test_handover_bypasses_shopify_too(monkeypatch):
     )
     assert response.status_code == 200
     assert sent == [("94770000000", main.HUMAN_HANDOVER_REPLY)]
+
+
+def _live_product(handle="second-bike", available=True, price="16400"):
+    return {
+        "id": "gid://shopify/Product/2", "handle": handle, "title": "Kenton Racer",
+        "url": f"https://www.pixiepinks.shop/products/{handle}",
+        "featured_image": "https://cdn.shopify.com/bike.jpg",
+        "featured_image_verified": True,
+        "variants": [{"title": "Default Title", "price": price, "available": available}],
+    }
+
+
+def test_meta_context_id_resolves_exact_product_and_requeries_shopify(monkeypatch):
+    with SessionLocal() as db:
+        for number in range(1, 4):
+            db.add(WhatsAppOutboundProductMessage(
+                whatsapp_message_id=f"wamid.product-{number}",
+                customer_phone="94770000000", shopify_product_handle=f"bike-{number}",
+            ))
+        db.commit()
+    lookups, sent = [], []
+    monkeypatch.setattr(main, "get_product_by_handle",
+                        lambda handle: lookups.append(handle) or _live_product(handle, price="17900"))
+    monkeypatch.setattr(main, "send_whatsapp_text",
+                        lambda _to, body: sent.append(body) or True)
+    payload = _message_payload(message_id="wamid.reply", body="I want this")
+    payload["entry"][0]["changes"][0]["value"]["messages"][0]["context"] = {
+        "id": "wamid.product-2", "from": "15550001111", "forwarded": False,
+    }
+    assert TestClient(main.app).post("/webhook", json=payload).status_code == 200
+    assert lookups == ["bike-2"]
+    assert "Kenton Racer" in sent[0] and "Rs. 17,900" in sent[0]
+    assert "Would you like to place an order?" in sent[0]
+
+
+def test_product_reply_price_availability_link_and_languages(monkeypatch):
+    with SessionLocal() as db:
+        db.add(WhatsAppOutboundProductMessage(
+            whatsapp_message_id="wamid.selected", customer_phone="94770000000",
+            shopify_product_handle="selected-bike",
+        ))
+        db.commit()
+    sent = []
+    monkeypatch.setattr(main, "get_product_by_handle", lambda _handle: _live_product())
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda _to, body: sent.append(body) or True)
+    for text in ("how much?", "is this available?", "send link", "මේක ඕන", "meka ona"):
+        main._reply_to_text_message("94770000000", f"in-{len(sent)}", text, "Customer",
+                                    "wamid.selected")
+    assert "Rs. 16,400" in sent[0]
+    assert "currently available" in sent[1]
+    assert "https://www.pixiepinks.shop/products/second-bike" in sent[2]
+    assert all("Kenton Racer" in item for item in (sent[3], sent[4]))
+
+
+def test_unavailable_reply_and_unknown_context_are_safe(monkeypatch):
+    with SessionLocal() as db:
+        db.add(WhatsAppOutboundProductMessage(
+            whatsapp_message_id="wamid.sold", customer_phone="94770000000",
+            shopify_product_handle="sold-bike",
+        ))
+        db.commit()
+    sent = []
+    monkeypatch.setattr(main, "get_product_by_handle",
+                        lambda _handle: _live_product(available=False))
+    monkeypatch.setattr(main, "generate_customer_reply", lambda *args: "Please clarify the product.")
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda _to, body: sent.append(body) or True)
+    main._reply_to_text_message("94770000000", "in-sold", "I want this", None, "wamid.sold")
+    main._reply_to_text_message("94770000000", "in-unknown", "I want this", None, "wamid.unknown")
+    assert "currently unavailable" in sent[0]
+    assert "Available" not in sent[0]
+    assert sent[1] in ("Please clarify the product.", main.SHOPIFY_FALLBACK_REPLY)
+
+
+def test_successful_product_send_maps_wamid_and_failed_send_does_not(monkeypatch):
+    product = _live_product()
+    monkeypatch.setattr(main, "send_whatsapp_image",
+                        lambda *args, **kwargs: "wamid.outbound-product")
+    assert main._send_product_message("94770000000", product, "caption") == "wamid.outbound-product"
+    with SessionLocal() as db:
+        mapping = db.query(WhatsAppOutboundProductMessage).one()
+        assert (mapping.whatsapp_message_id, mapping.shopify_product_handle) == (
+            "wamid.outbound-product", "second-bike")
+        db.delete(mapping)
+        db.commit()
+    monkeypatch.setattr(main, "send_whatsapp_image", lambda *args, **kwargs: False)
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args, **kwargs: False)
+    assert main._send_product_message("94770000000", product, "caption") is None
+    with SessionLocal() as db:
+        assert db.query(WhatsAppOutboundProductMessage).count() == 0
+
+
+def test_meta_sender_can_return_outbound_message_id(monkeypatch):
+    monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_ACCESS_TOKEN", "token")
+    monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_PHONE_NUMBER_ID", "123")
+    response = httpx.Response(200, json={"messages": [{"id": "wamid.meta-response"}]},
+                              request=httpx.Request("POST", "https://graph.facebook.com"))
+    monkeypatch.setattr(whatsapp_service.httpx, "post", lambda *args, **kwargs: response)
+    assert whatsapp_service.send_whatsapp_image(
+        "94770000000", "https://cdn.shopify.com/bike.jpg", return_message_id=True
+    ) == "wamid.meta-response"

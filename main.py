@@ -42,6 +42,7 @@ from models import (
     Supplier,
     User,
     WhatsAppConversationMessage,
+    WhatsAppOutboundProductMessage,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -53,7 +54,7 @@ from whatsapp_service import (
 )
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
-    parse_search_intent, search_bicycles_by_collection, search_products,
+    get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
 )
 from bicycle_recommendation import (
     asks_about_fit,
@@ -178,8 +179,90 @@ def _store_conversation_message(
         logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
 
 
+def _store_product_message(message_id: str | None, phone: str, product: dict) -> None:
+    handle = product.get("handle")
+    if not message_id or not handle:
+        return
+    try:
+        with SessionLocal() as db:
+            db.add(WhatsAppOutboundProductMessage(
+                whatsapp_message_id=message_id, customer_phone=phone,
+                shopify_product_handle=handle, product_title=product.get("title"),
+            ))
+            db.commit()
+    except IntegrityError:
+        logger.info("Outbound product mapping already exists message_id=%s", message_id)
+    except SQLAlchemyError:
+        logger.exception("Could not store outbound product mapping message_id=%s", message_id)
+
+
+def _send_product_message(sender: str, product: dict, text: str) -> str | None:
+    """Send image (or text fallback) and return only a real Meta message ID."""
+    result = None
+    image_url = product.get("featured_image")
+    if product.get("featured_image_verified") and image_url:
+        try:
+            result = send_whatsapp_image(sender, image_url, text, return_message_id=True)
+        except TypeError:  # compatibility with simple injected/test senders
+            try:
+                result = send_whatsapp_image(sender, image_url, text)
+            except Exception:
+                logger.exception("Unexpected WhatsApp product image failure sender=%s", sender)
+                result = None
+        except Exception:
+            logger.exception("Unexpected WhatsApp product image failure sender=%s", sender)
+    if not result:
+        try:
+            result = send_whatsapp_text(sender, text, return_message_id=True)
+        except TypeError:
+            result = send_whatsapp_text(sender, text)
+    message_id = result if isinstance(result, str) else None
+    _store_product_message(message_id, sender, product)
+    return message_id
+
+
+def _variant_choices(product: dict) -> list[str]:
+    choices = []
+    for variant in product.get("variants", []):
+        title = str(variant.get("title") or "").strip()
+        if title and title.casefold() != "default title" and title not in choices:
+            choices.append(title)
+    return choices
+
+
+def _format_replied_product(product: dict, customer_text: str) -> str:
+    normalized = " ".join(customer_text.casefold().strip().rstrip("?!. ").split())
+    title = product.get("title") or "this product"
+    url = product.get("url") or ""
+    variants = product.get("variants") or []
+    available = [variant for variant in variants if variant.get("available")]
+    choices = _variant_choices(product)
+    asks_link = "link" in normalized
+    asks_name = "name" in normalized
+    asks_price = any(term in normalized for term in ("how much", "price", "cost", "කීය", "kiyada"))
+    asks_stock = any(term in normalized for term in ("available", "stock", "තියෙනවද", "thiyenawada"))
+    if asks_link:
+        return f"Here is the link for {title}:\n{url}"
+    if asks_name:
+        return f"The product is: {title}"
+    if asks_price and len(variants) == 1:
+        return format_product(product)
+    if asks_stock and not available:
+        return f"Sorry, {title} is currently unavailable. Would you like to see alternatives?"
+    if choices and len(choices) > 1 and not (asks_price or asks_stock):
+        return f"Sure 😊 Which option would you like: {', '.join(choices)}?"
+    if not available:
+        return f"Sorry, {title} is currently unavailable. Would you like to see alternatives?"
+    if asks_stock:
+        return f"✅ {title} is currently available."
+    if asks_price and len(variants) > 1:
+        return f"Which option would you like a price for: {', '.join(choices)}?" if choices else format_product(product)
+    return f"Great 😊 You selected:\n\n{format_product(product)}\n\nWould you like to place an order?"
+
+
 def _reply_to_text_message(
-    sender: str, message_id: str, text_body: str, profile_name: str | None
+    sender: str, message_id: str, text_body: str, profile_name: str | None,
+    context_message_id: str | None = None,
 ) -> None:
     """Generate and send after Meta has already received its HTTP 200 acknowledgement."""
     bicycle_delivery = None
@@ -189,7 +272,29 @@ def _reply_to_text_message(
         response_kind = "handover"
         logger.info("WhatsApp human handover requested message_id=%s sender=%s", message_id, sender)
     else:
+        response_kind = None
         try:
+            replied_mapping = None
+            if context_message_id:
+                with SessionLocal() as db:
+                    replied_mapping = db.query(WhatsAppOutboundProductMessage).filter_by(
+                        whatsapp_message_id=context_message_id, customer_phone=sender,
+                    ).one_or_none()
+                    replied_handle = (replied_mapping.shopify_product_handle
+                                      if replied_mapping else None)
+            else:
+                replied_handle = None
+            if replied_handle:
+                replied_product = get_product_by_handle(replied_handle)
+                reply = (_format_replied_product(replied_product, text_body) if replied_product
+                         else "Sorry, I couldn't verify that product in our live catalogue right now.")
+                response_kind = "product_reply"
+                logger.info("Resolved WhatsApp product reply context_id=%s handle=%s",
+                            context_message_id, replied_handle)
+            else:
+                reply = None
+            if reply is not None:
+                raise StopIteration
             with SessionLocal() as db:
                 history = (
                     db.query(WhatsAppConversationMessage)
@@ -395,10 +500,13 @@ def _reply_to_text_message(
                     )
             else:
                 reply = generate_customer_reply(text_body, profile_name, routing_context)
+        except StopIteration:
+            pass
         except Exception:
             logger.exception("Unexpected AI integration failure message_id=%s", message_id)
             reply = FALLBACK_REPLY
-        response_kind = "fallback" if reply in (FALLBACK_REPLY, SHOPIFY_FALLBACK_REPLY) else "ai"
+        response_kind = (response_kind if response_kind == "product_reply" else
+                         "fallback" if reply in (FALLBACK_REPLY, SHOPIFY_FALLBACK_REPLY) else "ai")
         logger.info("WhatsApp reply path=%s message_id=%s sender=%s", response_kind, message_id, sender)
 
     if bicycle_delivery:
@@ -408,17 +516,7 @@ def _reply_to_text_message(
                                     response_kind="bicycle")
         for product in products:
             product_text = format_bicycle_product(product)
-            image_url = product.get("featured_image")
-            image_sent = False
-            if product.get("featured_image_verified") and image_url:
-                try:
-                    image_sent = send_whatsapp_image(sender, image_url, product_text)
-                except Exception:
-                    # Outbound media must never turn Meta's webhook retry into duplicate batches.
-                    logger.exception("Unexpected WhatsApp image failure message_id=%s sender=%s",
-                                     message_id, sender)
-            if not image_sent:
-                send_whatsapp_text(sender, product_text)
+            _send_product_message(sender, product, product_text)
             _store_conversation_message(sender, "outbound", product_text,
                                         customer_name=profile_name, response_kind="bicycle_product")
         follow_up = "Would you like more options, or to filter by colour, brand or budget?"
@@ -434,16 +532,7 @@ def _reply_to_text_message(
                                     response_kind="product_images")
         for product in product_image_delivery:
             product_text = format_product(product)
-            image_url = product.get("featured_image")
-            image_sent = False
-            if product.get("featured_image_verified") and image_url:
-                try:
-                    image_sent = send_whatsapp_image(sender, image_url, product_text)
-                except Exception:
-                    logger.exception("Unexpected WhatsApp product image failure message_id=%s sender=%s",
-                                     message_id, sender)
-            if not image_sent:
-                send_whatsapp_text(sender, product_text)
+            _send_product_message(sender, product, product_text)
             _store_conversation_message(sender, "outbound", product_text,
                                         customer_name=profile_name,
                                         response_kind="product_image")
@@ -569,6 +658,11 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                 text_body = None
                 if message_type == "text" and isinstance(message.get("text"), dict):
                     text_body = message["text"].get("body")
+                message_context = message.get("context")
+                context_message_id = (message_context.get("id")
+                                      if isinstance(message_context, dict) else None)
+                if not isinstance(context_message_id, str) or not context_message_id:
+                    context_message_id = None
                 logger.info(
                     "WhatsApp inbound message_id=%s sender=%s type=%s profile_name=%s",
                     message_id,
@@ -595,6 +689,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         message_id,
                         cleaned_body,
                         profile_name,
+                        context_message_id,
                     )
                 elif message_type in {
                     "image", "audio", "video", "document", "sticker", "location",

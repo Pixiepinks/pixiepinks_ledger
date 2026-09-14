@@ -162,3 +162,16 @@ class WhatsAppConversationMessage(Base):
     whatsapp_message_id = Column(String(255), nullable=True, index=True)
     response_kind = Column(String(20), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class WhatsAppOutboundProductMessage(Base):
+    """A Meta message reference to a Shopify product, not a catalogue snapshot."""
+
+    __tablename__ = "whatsapp_outbound_product_messages"
+
+    id = Column(Integer, primary_key=True)
+    whatsapp_message_id = Column(String(255), unique=True, nullable=False, index=True)
+    customer_phone = Column(String(50), nullable=False, index=True)
+    shopify_product_handle = Column(String(255), nullable=False, index=True)
+    product_title = Column(String(500), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
