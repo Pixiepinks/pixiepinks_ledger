@@ -52,8 +52,8 @@ from whatsapp_service import (
     send_whatsapp_text,
 )
 from shopify_catalog_service import (
-    ShopifyCatalogError, bicycle_collection, parse_search_intent,
-    search_bicycles_by_collection, search_products,
+    ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
+    parse_search_intent, search_bicycles_by_collection, search_products,
 )
 from bicycle_recommendation import (
     asks_about_fit,
@@ -182,6 +182,7 @@ def _reply_to_text_message(
 ) -> None:
     """Generate and send after Meta has already received its HTTP 200 acknowledgement."""
     bicycle_delivery = None
+    product_image_delivery = None
     if requests_human_handover(text_body):
         reply = HUMAN_HANDOVER_REPLY
         response_kind = "handover"
@@ -256,7 +257,41 @@ def _reply_to_text_message(
             # or product answer after the customer has switched intent.
             routing_context = [] if ignored_stale_context else context
 
-            if new_bicycle_request:
+            if is_product_image_request(text_body):
+                # Reconstruct the last result intent, then fetch Shopify again;
+                # assistant prose is never treated as current product data.
+                if bicycle_stage == "results" and preference and age is not None:
+                    size = recommended_bicycle_size(age)
+                    collection_config = bicycle_collection(preference, size)
+                    try:
+                        result = (search_bicycles_by_collection(preference, size, limit=10)
+                                  if collection_config else None)
+                        products = available_bicycle_matches(
+                            result["products"] if result and result.get("collection") else [],
+                            preference, limit=3,
+                        )
+                    except ShopifyCatalogError:
+                        products = None
+                else:
+                    prior_query = next((
+                        item["message_text"] for item in reversed(context)
+                        if item["direction"] == "inbound"
+                        and not is_product_image_request(item["message_text"])
+                        and needs_product_catalog(item["message_text"])
+                    ), None)
+                    try:
+                        products = search_products(prior_query, limit=3) if prior_query else []
+                    except ShopifyCatalogError:
+                        products = None
+                if products is None:
+                    reply = SHOPIFY_FALLBACK_REPLY
+                elif products:
+                    reply = "Here are the latest product pictures from our live catalogue:"
+                    product_image_delivery = products[:3]
+                else:
+                    reply = ("I couldn't find recent matching Shopify products to show. "
+                             "Please tell me which product or category you would like pictures of.")
+            elif new_bicycle_request:
                 preference, age, bicycle_stage = None, None, None
             elif explicit_preference and (explicit_age is not None or direct_size):
                 # A self-contained demographic/size request replaces a completed
@@ -388,6 +423,28 @@ def _reply_to_text_message(
                                     customer_name=profile_name, response_kind="bicycle")
         logger.info("WhatsApp bicycle results sent count=%s message_id=%s sender=%s",
                     len(products), message_id, sender)
+        return
+    if product_image_delivery:
+        send_whatsapp_text(sender, reply)
+        _store_conversation_message(sender, "outbound", reply, customer_name=profile_name,
+                                    response_kind="product_images")
+        for product in product_image_delivery:
+            product_text = format_product(product)
+            image_url = product.get("featured_image")
+            image_sent = False
+            if product.get("featured_image_verified") and image_url:
+                try:
+                    image_sent = send_whatsapp_image(sender, image_url, product_text)
+                except Exception:
+                    logger.exception("Unexpected WhatsApp product image failure message_id=%s sender=%s",
+                                     message_id, sender)
+            if not image_sent:
+                send_whatsapp_text(sender, product_text)
+            _store_conversation_message(sender, "outbound", product_text,
+                                        customer_name=profile_name,
+                                        response_kind="product_image")
+        logger.info("WhatsApp product images sent count=%s message_id=%s sender=%s",
+                    len(product_image_delivery), message_id, sender)
         return
     sent = send_whatsapp_text(sender, reply)
     logger.info("WhatsApp outbound result=%s message_id=%s sender=%s", sent, message_id, sender)

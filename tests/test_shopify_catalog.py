@@ -8,6 +8,14 @@ import shopify_catalog_service as shopify
 from shopify_catalog_service import ShopifyCatalogClient, ShopifyCatalogError
 
 
+@pytest.mark.parametrize("text", [
+    "pictures ewanna", "send pictures", "show photos", "පින්තූර එවන්න",
+    "photos එවන්න", "පින්තූර පෙන්නන්න",
+])
+def test_product_image_follow_up_phrases(text):
+    assert shopify.is_product_image_request(text)
+
+
 class FakeHTTP:
     def __init__(self, responses):
         self.responses = list(responses)

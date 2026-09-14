@@ -77,6 +77,35 @@ def test_known_preference_skips_redundant_question(monkeypatch, customer_text, q
     assert searches == []
 
 
+def test_exact_girls_bicycle_pending_age_retains_gender_and_uses_size_16(monkeypatch):
+    searches = []
+    first = _reply(monkeypatch, "do you have girls bicycles", searches)
+    assert first == "Great. How old is she?"
+    main._store_conversation_message(
+        "94771111111", "inbound", "5 years", whatsapp_message_id="current"
+    )
+    second = _reply(monkeypatch, "5 years", searches)
+    assert "5-year-old girl" in second
+    assert "16-inch" in second
+    assert "boy or a girl" not in second
+    assert searches == [("girl", 16, "")]
+
+
+def test_pending_boy_age_answer_retains_gender_and_uses_size_20(monkeypatch):
+    searches = []
+    assert _reply(monkeypatch, "do you have boys bicycles", searches) == "Great. How old is he?"
+    main._store_conversation_message(
+        "94771111111", "inbound", "7 years", whatsapp_message_id="current"
+    )
+    reply = _reply(monkeypatch, "7 years", searches)
+    assert "boy or a girl" not in reply
+    assert searches == [("boy", 20, "")]
+
+
+def test_pending_age_accepts_sinhala_prefix():
+    assert extract_child_age("අවුරුදු 5", standalone=True) == 5
+
+
 def test_pending_answers_use_persisted_history_then_query(monkeypatch):
     searches = []
     first = _reply(monkeypatch, "Bicycles", searches)

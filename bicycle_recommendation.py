@@ -46,7 +46,11 @@ def detect_bicycle_preference(text: str) -> str | None:
 def extract_child_age(text: str, *, standalone: bool = False) -> int | None:
     normalized = text.casefold().strip()
     if standalone:
-        match = re.fullmatch(r"(?:age\s*)?(\d{1,2})(?:\s*(?:years?|yrs?)(?:\s*old)?)?", normalized)
+        match = re.fullmatch(
+            r"(?:(?:age|වයස|අවුරුදු)\s*)?(\d{1,2})"
+            r"(?:\s*(?:years?|yrs?)(?:\s*old)?|\s*(?:වයස|අවුරුදු))?",
+            normalized,
+        )
     else:
         match = re.search(
             r"(?<!\d)(\d{1,2})\s*(?:[- ]?years?(?:[- ]?old)?|yrs?(?:\s*old)?|වයස|අවුරුදු)",
@@ -113,8 +117,15 @@ def infer_guided_state(context: list[dict]) -> tuple[str | None, int | None, str
             if "boy or a girl" in lowered or "boy or girl" in lowered:
                 pending = "gender"
                 preference, age = None, None
-            elif "how old is" in lowered:
+            elif "how old is" in lowered or "child's age" in lowered:
                 pending = "age"
+                # The immediately pending question is authoritative.  Preserve
+                # the demographic encoded by the assistant's pronoun even when
+                # the original customer turn occurred before this history scan.
+                if re.search(r"\b(?:she|her)\b", lowered):
+                    preference = "girl"
+                elif re.search(r"\b(?:he|him)\b", lowered):
+                    preference = "boy"
             elif "usually a good starting point" in lowered:
                 pending = "results"
                 preference = detect_bicycle_preference(message) or preference
@@ -146,6 +157,12 @@ def infer_guided_state(context: list[dict]) -> tuple[str | None, int | None, str
         ):
             # A category switch or ordinary chat ends the active result turn.
             preference, age, pending = None, None, None
+        elif pending is None and is_bicycle_request(message):
+            # Capture details from the request which caused the next assistant
+            # question. This supports gender-neutral wording such as
+            # "What is the child's age?" as well as he/she prompts.
+            preference = detect_bicycle_preference(message)
+            age = extract_child_age(message)
     return preference, age, pending
 
 

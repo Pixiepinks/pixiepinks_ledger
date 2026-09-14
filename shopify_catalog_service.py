@@ -298,6 +298,35 @@ def _normalize_product(node: dict, filters: dict) -> dict | None:
 client = ShopifyCatalogClient()
 
 
+IMAGE_REQUEST_PHRASES = (
+    "send picture", "send photo", "show picture", "show photo",
+    "pictures please", "photos please", "pictures ewanna", "photos ewanna",
+    "images ewanna", "pic ewanna", "picture ewanna", "photo ewanna",
+    "pictures එවන්න", "photos එවන්න", "images එවන්න", "pic එවන්න",
+    "පින්තූර එවන්න", "ෆොටෝ එවන්න", "පින්තූර පෙන්නන්න",
+)
+
+
+def is_product_image_request(text: str) -> bool:
+    """Recognize a short request for media from the preceding product result."""
+    normalized = " ".join(text.casefold().strip().rstrip("?!. ").split())
+    return any(phrase in normalized for phrase in IMAGE_REQUEST_PHRASES)
+
+
+def format_product(product: dict) -> str:
+    """Format a generic product using only normalized, live Shopify fields."""
+    variant = product["variants"][0]
+    try:
+        amount = f"{Decimal(str(variant.get('price'))):,.2f}".rstrip("0").rstrip(".")
+    except (InvalidOperation, TypeError):
+        amount = str(variant.get("price") or "")
+    availability = "✅ Available" if variant.get("available") else "❌ Currently unavailable"
+    return "\n\n".join((
+        f"🛍️ {product.get('title') or 'Product'}", f"💰 Rs. {amount}", availability,
+        f"🔗 {product.get('url') or ''}",
+    ))
+
+
 def search_products(query: str, limit: int = 5) -> list[dict]:
     """Search a bounded candidate set and filter its variants using live Shopify facts."""
     intent = parse_search_intent(query)

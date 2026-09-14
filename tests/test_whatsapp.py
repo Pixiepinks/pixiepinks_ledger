@@ -295,6 +295,86 @@ def test_missing_featured_image_uses_text_recommendation(monkeypatch):
     assert any("Image-free Bike" in text and "Rs. 37,100" in text for text in texts)
 
 
+def test_toy_picture_follow_up_requeries_shopify_caps_three_and_survives_failures(monkeypatch):
+    texts, images, searches = [], [], []
+    main._store_conversation_message("94770000000", "inbound", "do you have toys")
+    main._store_conversation_message("94770000000", "outbound", "Toy results")
+    products = [{
+        "title": f"Toy {number}",
+        "url": f"https://www.pixiepinks.shop/products/toy-{number}",
+        "featured_image": (None if number == 2 else
+                           f"https://cdn.shopify.com/toy-{number}.jpg"),
+        "featured_image_verified": number != 2,
+        "variants": [{"title": "Default Title", "price": str(2400 + number),
+                      "available": True}],
+    } for number in range(4)]
+    monkeypatch.setattr(main, "search_products",
+                        lambda query, limit=5: searches.append((query, limit)) or products)
+    monkeypatch.setattr(main, "send_whatsapp_text",
+                        lambda _to, body: texts.append(body) or True)
+
+    def send_image(_to, url, caption):
+        images.append((url, caption))
+        if "toy-1" in url:
+            raise RuntimeError("Meta unavailable")
+        return True
+
+    monkeypatch.setattr(main, "send_whatsapp_image", send_image)
+    monkeypatch.setattr(main, "search_bicycles_by_collection",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
+
+    main._reply_to_text_message("94770000000", "wamid.toy-pics", "pictures ewanna", "Customer")
+
+    assert searches == [("do you have toys", 3)]  # live re-verification uses original intent
+    assert len(images) == 2
+    assert images[0][0] == products[0]["featured_image"]
+    assert all("Toy 3" not in caption for _, caption in images)
+    assert any("Toy 1" in text for text in texts)  # Meta exception fallback
+    assert any("Toy 2" in text for text in texts)  # missing-image fallback
+
+
+def test_bag_photo_follow_up_uses_bag_context(monkeypatch):
+    searches = []
+    main._store_conversation_message("94770000000", "inbound", "show me school bags")
+    main._store_conversation_message("94770000000", "outbound", "Bag results")
+    monkeypatch.setattr(main, "search_products",
+                        lambda query, limit=5: searches.append(query) or [])
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
+    main._reply_to_text_message("94770000000", "wamid.bag-pics", "send photos", "Customer")
+    assert searches == ["show me school bags"]
+
+
+def test_inbound_idempotency_prevents_duplicate_product_image_batch(monkeypatch):
+    main._store_conversation_message("94770000000", "inbound", "do you have toys")
+    main._store_conversation_message("94770000000", "outbound", "Toy results")
+    product = {
+        "title": "Live Toy", "url": "https://www.pixiepinks.shop/products/live-toy",
+        "featured_image": "https://cdn.shopify.com/live-toy.jpg",
+        "featured_image_verified": True,
+        "variants": [{"title": "Default Title", "price": "2450", "available": True}],
+    }
+    images = []
+    monkeypatch.setattr(main, "search_products", lambda query, limit=5: [product])
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
+    monkeypatch.setattr(main, "send_whatsapp_image",
+                        lambda *args: images.append(args) or True)
+    payload = _message_payload(message_id="wamid.picture-once", body="send pictures")
+    client = TestClient(main.app)
+    assert client.post("/webhook", json=payload).status_code == 200
+    assert client.post("/webhook", json=payload).status_code == 200
+    assert len(images) == 1
+
+
+def test_handover_overrides_product_image_follow_up(monkeypatch):
+    monkeypatch.setattr(main, "search_products",
+                        lambda *args: (_ for _ in ()).throw(AssertionError()))
+    sent = []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda _to, body: sent.append(body) or True)
+    main._reply_to_text_message("94770000000", "wamid.handover-pics",
+                                "send pictures to a human agent", "Customer")
+    assert sent == [main.HUMAN_HANDOVER_REPLY]
+
+
 def test_generic_bicycle_question_starts_guided_flow_without_shopify(monkeypatch):
     sent = []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: sent.append(args))
