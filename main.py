@@ -1,7 +1,8 @@
+import logging
 from datetime import date, datetime, timedelta
 from urllib.parse import quote, urlparse
 
-from fastapi import FastAPI, Request, Depends, Form, HTTPException, status
+from fastapi import FastAPI, Request, Depends, Form, HTTPException, Query, Response, status
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -14,6 +15,8 @@ from database import SessionLocal, engine
 from models import Account, JournalEntry, JournalLine, User, Base, Customer, Supplier, Item, Lead, LeadNote, LeadTask, CRMUser
 from seed import init_db
 from utils_auth import hash_password, verify_password
+
+logger = logging.getLogger(__name__)
 
 # ---------------------- App & Middleware ----------------------
 app = FastAPI(title=settings.APP_NAME)
@@ -51,6 +54,34 @@ LEAD_STATUSES = [
     "DELIVERED",
     "LOST",
 ]
+
+
+# ---------------------- Meta WhatsApp Webhook ----------------------
+@app.get("/webhook")
+def verify_meta_webhook(
+    mode: str | None = Query(default=None, alias="hub.mode"),
+    verify_token: str | None = Query(default=None, alias="hub.verify_token"),
+    challenge: str | None = Query(default=None, alias="hub.challenge"),
+):
+    if (
+        mode == "subscribe"
+        and verify_token == settings.META_VERIFY_TOKEN
+        and challenge is not None
+    ):
+        return Response(content=challenge, media_type="text/plain", status_code=200)
+    raise HTTPException(status_code=403, detail="Webhook verification failed")
+
+
+@app.post("/webhook")
+async def receive_meta_webhook(request: Request):
+    try:
+        payload = await request.json()
+    except ValueError:
+        logger.warning("Received a Meta webhook request with invalid JSON")
+        return {"status": "ok"}
+
+    logger.info("Received Meta webhook payload: %s", payload)
+    return {"status": "ok"}
 
 
 def _generate_lead_no(db: Session, dt: date | None = None) -> str:
