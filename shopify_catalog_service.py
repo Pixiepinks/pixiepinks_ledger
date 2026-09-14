@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 TOKEN_MARGIN_SECONDS = 300
 MAX_CANDIDATES = 30
 STOREFRONT_ROOT = "https://www.pixiepinks.shop"
+SEARCH_FIELDS = ("title", "product_type", "vendor", "tag")
+PRODUCT_SYNONYMS = {
+    "bicycle": ("bicycle", "bike"),
+    "bike": ("bicycle", "bike"),
+}
 
 
 class ShopifyCatalogError(RuntimeError):
@@ -122,6 +127,14 @@ query SearchProducts($first: Int!, $query: String!) {
 }
 """
 
+DIAGNOSTIC_QUERY = """
+query CatalogDiagnostic {
+  products(first: 5) {
+    nodes { title productType vendor handle }
+  }
+}
+"""
+
 
 def parse_filters(query: str) -> dict:
     text = query.casefold()
@@ -151,7 +164,9 @@ def parse_filters(query: str) -> dict:
     }
 
 
-def _shopify_search_query(text: str) -> str:
+def parse_search_intent(text: str) -> dict:
+    """Separate product concepts from variant/price filters in customer language."""
+    filters = parse_filters(text)
     cleaned = re.sub(r"[^\w\-]+", " ", text, flags=re.UNICODE)
     stop = {"do", "you", "have", "show", "me", "any", "is", "this", "the", "one",
             "what", "how", "much", "price", "available", "stock", "size", "under",
@@ -159,10 +174,41 @@ def _shopify_search_query(text: str) -> str:
             "that", "second", "first", "third", "ones", "in", "inch", "inches",
             "තියෙනවද", "රු", "ට", "අඩු"}
     words = [word for word in cleaned.split() if word.casefold() not in stop and not re.fullmatch(r"[\d,]+", word)]
-    singular = {"bicycles": "bicycle", "bikes": "bike", "bags": "bag",
+    singular = {"bicycles": "bicycle", "bikes": "bicycle", "bike": "bicycle",
+                "bags": "bag",
                 "toys": "toy", "chocolates": "chocolate"}
-    terms = [singular.get(word.casefold(), word) for word in words[:8]]
-    return " AND ".join(f"{term}*" for term in terms) if terms else "status:active"
+    colours = {str(filters["colour"])} if filters["colour"] else set()
+    terms = []
+    for word in words:
+        normalized = singular.get(word.casefold(), word.casefold())
+        if normalized in colours:
+            continue
+        if normalized not in terms:
+            terms.append(normalized)
+    return {"terms": terms[:4], "filters": filters}
+
+
+def _shopify_search_query(text: str) -> str:
+    """Build Shopify search grammar from parsed concepts, never raw prose."""
+    concepts = parse_search_intent(text)["terms"]
+    if not concepts:
+        return "status:active"
+    clauses = []
+    for concept in concepts:
+        aliases = PRODUCT_SYNONYMS.get(concept, (concept,))
+        field_terms = [f"{field}:{alias}*" for alias in aliases for field in SEARCH_FIELDS]
+        clauses.append("(" + " OR ".join(field_terms) + ")")
+    return " AND ".join(clauses)
+
+
+def _matches_product_terms(node: dict, terms: list[str]) -> bool:
+    """Defensively confirm that each parsed concept occurs in a supported field."""
+    haystack = " ".join([
+        str(node.get("title", "")), str(node.get("productType", "")),
+        str(node.get("vendor", "")), *(str(tag) for tag in node.get("tags", [])),
+    ]).casefold()
+    return all(any(alias in haystack for alias in PRODUCT_SYNONYMS.get(term, (term,)))
+               for term in terms)
 
 
 def _normalize_product(node: dict, filters: dict) -> dict | None:
@@ -207,14 +253,46 @@ client = ShopifyCatalogClient()
 
 def search_products(query: str, limit: int = 5) -> list[dict]:
     """Search a bounded candidate set and filter its variants using live Shopify facts."""
-    filters = parse_filters(query)
+    intent = parse_search_intent(query)
+    filters = intent["filters"]
     data = client.graphql(PRODUCT_QUERY, {"first": MAX_CANDIDATES,
                                          "query": _shopify_search_query(query)})
     products = []
     for node in data.get("products", {}).get("nodes", []):
+        if not _matches_product_terms(node, intent["terms"]):
+            continue
         normalized = _normalize_product(node, filters)
         if normalized:
             products.append(normalized)
         if len(products) >= min(max(limit, 0), 5):
             break
     return products
+
+
+def diagnose_catalog_connectivity(catalog_client: ShopifyCatalogClient | None = None) -> dict:
+    """Return and log only non-secret authentication and small catalogue facts."""
+    diagnostic_client = catalog_client or client
+    report = {"authentication": "failure", "graphql": "not_attempted",
+              "product_count": 0, "products": []}
+    try:
+        diagnostic_client.get_token()
+        report["authentication"] = "success"
+    except ShopifyCatalogError:
+        logger.info("Shopify diagnostic authentication=failure")
+        return report
+    try:
+        data = diagnostic_client.graphql(DIAGNOSTIC_QUERY, {})
+    except ShopifyCatalogError:
+        report["graphql"] = "failure"
+        logger.info("Shopify diagnostic authentication=success graphql=failure")
+        return report
+    report["graphql"] = "success"
+    for node in data.get("products", {}).get("nodes", [])[:5]:
+        report["products"].append({
+            "title": node.get("title"), "product_type": node.get("productType"),
+            "vendor": node.get("vendor"), "handle": node.get("handle"),
+        })
+    report["product_count"] = len(report["products"])
+    logger.info("Shopify diagnostic authentication=success graphql=success products=%s details=%s",
+                report["product_count"], report["products"])
+    return report

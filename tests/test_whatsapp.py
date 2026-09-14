@@ -247,6 +247,20 @@ def test_product_question_queries_shopify_and_supplies_results(monkeypatch):
     assert sent == [("94770000000", "Here is the verified bicycle.")]
 
 
+def test_complete_product_request_does_not_add_unrelated_history(monkeypatch):
+    searches = []
+    monkeypatch.setattr(main, "search_products", lambda query: searches.append(query) or [])
+    monkeypatch.setattr(main, "generate_customer_reply", lambda *args: "No matches")
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
+    main._store_conversation_message("94770000000", "inbound", "Hello there")
+
+    main._reply_to_text_message(
+        "94770000000", "wamid.clean-search", "Show me size 20 bicycles", "Customer"
+    )
+
+    assert searches == ["Show me size 20 bicycles"]
+
+
 def test_non_product_greeting_does_not_query_shopify(monkeypatch):
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
     monkeypatch.setattr(

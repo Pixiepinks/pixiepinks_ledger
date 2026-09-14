@@ -50,7 +50,7 @@ from whatsapp_service import (
     UNSUPPORTED_MESSAGE_REPLY,
     send_whatsapp_text,
 )
-from shopify_catalog_service import ShopifyCatalogError, search_products
+from shopify_catalog_service import ShopifyCatalogError, parse_search_intent, search_products
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +190,11 @@ def _reply_to_text_message(
             if needs_product_catalog(text_body, context):
                 prior_inbound = next((item["message_text"] for item in reversed(context)
                                       if item["direction"] == "inbound"), "")
-                search_query = f"{prior_inbound} {text_body}" if prior_inbound else text_body
+                # Prior context is useful only for true follow-ups. Adding it to a
+                # complete request introduces unrelated mandatory Shopify terms.
+                search_query = text_body
+                if not parse_search_intent(text_body)["terms"] and prior_inbound:
+                    search_query = f"{prior_inbound} {text_body}"
                 try:
                     catalog_results = search_products(search_query)
                 except ShopifyCatalogError:
