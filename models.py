@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum
+from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
@@ -175,3 +175,39 @@ class WhatsAppOutboundProductMessage(Base):
     shopify_product_handle = Column(String(255), nullable=False, index=True)
     product_title = Column(String(500), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class WhatsAppOrderIntent(Base):
+    """A resumable sales intent. It never represents a Shopify order or payment."""
+
+    __tablename__ = "whatsapp_order_intents"
+
+    id = Column(Integer, primary_key=True)
+    customer_whatsapp_phone = Column(String(50), nullable=False, index=True)
+    contact_person_name = Column(String(255))
+    delivery_address = Column(Text)
+    primary_phone = Column(String(20))
+    alternative_phone = Column(String(20))
+    shopify_product_reference = Column(String(255))
+    shopify_product_handle = Column(String(255), nullable=False)
+    shopify_variant_reference = Column(String(255))
+    product_title = Column(String(500), nullable=False)
+    variant_title = Column(String(500))
+    product_url = Column(Text)
+    product_image_url = Column(Text)
+    product_price = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(8), nullable=False, default="LKR")
+    product_category = Column(String(100), nullable=False)
+    bicycle_gender = Column(String(10))
+    bicycle_age = Column(Integer)
+    bicycle_size = Column(Integer)
+    initial_service_offered = Column(Boolean, nullable=False, default=False)
+    initial_service_requested = Column(Boolean)
+    initial_service_charge = Column(Numeric(14, 2), nullable=False, default=0)
+    delivery_charge = Column(Numeric(14, 2), nullable=False, default=0)
+    final_total = Column(Numeric(14, 2), nullable=False)
+    status = Column(String(50), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    details_completed_at = Column(DateTime)
+    payment_handover_at = Column(DateTime)

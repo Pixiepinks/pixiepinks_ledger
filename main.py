@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from urllib.parse import quote, urlparse
 
 from fastapi import (
@@ -42,6 +43,7 @@ from models import (
     Supplier,
     User,
     WhatsAppConversationMessage,
+    WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
@@ -70,6 +72,10 @@ from bicycle_recommendation import (
     is_bicycle_results_follow_up,
     is_new_bicycle_request,
     recommended_bicycle_size,
+)
+from order_intent_service import (
+    OrderIntentStatus, calculate_total, delivery_window, extract_sri_lankan_phones,
+    get_bicycle_initial_service_charge, is_cancellation, service_decision,
 )
 
 logger = logging.getLogger(__name__)
@@ -260,6 +266,151 @@ def _format_replied_product(product: dict, customer_text: str) -> str:
     return f"Great 😊 You selected:\n\n{format_product(product)}\n\nWould you like to place an order?"
 
 
+def _product_is_bicycle(product: dict) -> bool:
+    facts = " ".join((str(product.get("title") or ""),
+                      str(product.get("product_type") or ""),
+                      *(str(tag) for tag in product.get("tags", []))))
+    return is_bicycle_request(facts)
+
+
+def _variant_size(variant: dict) -> int | None:
+    facts = " ".join((str(variant.get("title") or ""),
+                      *(str(value) for value in variant.get("selected_options", {}).values())))
+    match = re.search(r"(?<!\d)(12|16|20|26)(?:\s*(?:inch|inches|\"))?(?!\d)", facts, re.I)
+    return int(match.group(1)) if match else None
+
+
+def _start_bicycle_intent(sender: str, product: dict) -> str | None:
+    available = [item for item in product.get("variants", []) if item.get("available")]
+    if len(available) != 1 or not _product_is_bicycle(product):
+        return None
+    variant = available[0]
+    size = _variant_size(variant)
+    charge = get_bicycle_initial_service_charge(size)
+    if charge is None:
+        return "Please select the bicycle size before I quote the optional service charge."
+    price = Decimal(str(variant["price"]))
+    with SessionLocal() as db:
+        intent = WhatsAppOrderIntent(
+            customer_whatsapp_phone=sender, shopify_product_reference=product.get("id"),
+            shopify_product_handle=product["handle"], shopify_variant_reference=variant.get("id"),
+            product_title=product.get("title") or "Bicycle", variant_title=variant.get("title"),
+            product_url=product.get("url"), product_image_url=product.get("featured_image"),
+            product_price=price, currency=variant.get("currency") or "LKR",
+            product_category="bicycle", bicycle_size=size, initial_service_offered=True,
+            initial_service_charge=Decimal("0"), delivery_charge=Decimal("0"),
+            final_total=price, status=OrderIntentStatus.AWAITING_SERVICE_DECISION.value,
+        )
+        db.add(intent)
+        db.commit()
+    return ("Would you like us to do the bicycle's optional initial service/greasing "
+            f"before delivery? 🔧\n\nFor this {size}-inch bicycle, the service charge is "
+            f"Rs. {charge:,.0f}. This service is optional.")
+
+
+def _active_order_reply(sender: str, text_body: str) -> str | None:
+    """Advance privacy-sensitive checkout without sending its fields to OpenAI."""
+    # A clear category switch pauses checkout rather than interpreting a product
+    # request as a service answer or delivery field.
+    if needs_product_catalog(text_body) and not is_bicycle_request(text_body):
+        return None
+    with SessionLocal() as db:
+        intent = (db.query(WhatsAppOrderIntent).filter(
+            WhatsAppOrderIntent.customer_whatsapp_phone == sender,
+            WhatsAppOrderIntent.status.in_([
+                OrderIntentStatus.AWAITING_SERVICE_DECISION.value,
+                OrderIntentStatus.COLLECTING_DELIVERY_DETAILS.value,
+            ])).order_by(WhatsAppOrderIntent.id.desc()).first())
+        if not intent:
+            return None
+        if is_cancellation(text_body):
+            intent.status = OrderIntentStatus.CANCELLED.value
+            db.commit()
+            return "Your current order request has been cancelled. We won't request payment details."
+        if intent.status == OrderIntentStatus.AWAITING_SERVICE_DECISION.value:
+            normalized = text_body.casefold()
+            if any(term in normalized for term in
+                   ("what is the service", "what is greasing", "what do you do")):
+                return ("It is PixiePinks' optional initial bicycle service/greasing "
+                        "preparation before delivery. Would you like this optional service?")
+            choice = service_decision(text_body)
+            if choice is None:
+                return ("Please confirm whether you would like the optional initial "
+                        "service/greasing: yes or no.")
+            charge = get_bicycle_initial_service_charge(intent.bicycle_size) if choice else Decimal("0")
+            intent.initial_service_requested = choice
+            intent.initial_service_charge = charge
+            intent.final_total = calculate_total(intent.product_price, charge, 0)
+            intent.status = OrderIntentStatus.COLLECTING_DELIVERY_DETAILS.value
+            db.commit()
+            service = f"Rs. {charge:,.0f}" if choice else "Not requested"
+            return (f"Bicycle: Rs. {intent.product_price:,.0f}\nInitial Service: {service}\n"
+                    f"Delivery: FREE\nTotal: Rs. {intent.final_total:,.0f}\n\n"
+                    "Please send your delivery details:\nContact Person Name:\nDelivery Address:\n"
+                    "Phone Number 1:\nPhone Number 2:")
+        phones = extract_sri_lankan_phones(text_body)
+        for phone in phones:
+            if not intent.primary_phone:
+                intent.primary_phone = phone
+            elif phone != intent.primary_phone and not intent.alternative_phone:
+                intent.alternative_phone = phone
+        name_match = re.search(r"(?:name|contact person)\s*:\s*([^\n]+)", text_body, re.I)
+        address_match = re.search(r"(?:address|delivery address)\s*:\s*([^\n]+)", text_body, re.I)
+        if name_match and not intent.contact_person_name:
+            intent.contact_person_name = name_match.group(1).strip()
+        if address_match and not intent.delivery_address:
+            intent.delivery_address = address_match.group(1).strip()
+        plain = text_body.strip()
+        if not phones and not name_match and not address_match:
+            if not intent.contact_person_name:
+                intent.contact_person_name = plain
+            elif not intent.delivery_address:
+                intent.delivery_address = plain
+        missing = []
+        if not intent.contact_person_name: missing.append("Contact Person Name")
+        if not intent.delivery_address: missing.append("Delivery Address")
+        if not intent.primary_phone: missing.append("Phone Number 1")
+        if not intent.alternative_phone: missing.append("a different Phone Number 2")
+        db.commit()
+        if missing:
+            return "Please send: " + ", ".join(missing) + "."
+        # Shopify is re-read immediately before handover; no stale price/stock is accepted.
+        fresh = get_product_by_handle(intent.shopify_product_handle)
+        variant = next((v for v in (fresh or {}).get("variants", [])
+                        if v.get("id") == intent.shopify_variant_reference), None)
+        if not variant or not variant.get("available"):
+            return "Sorry, this exact bicycle is no longer available. I won't proceed to payment handover; our team can help with alternatives."
+        intent.product_price = Decimal(str(variant["price"]))
+        intent.final_total = calculate_total(intent.product_price, intent.initial_service_charge, 0)
+        intent.status = OrderIntentStatus.READY_FOR_PAYMENT_HANDOVER.value
+        intent.details_completed_at = datetime.utcnow()
+        intent.payment_handover_at = datetime.utcnow()
+        db.add(Lead(
+            lead_no=_generate_lead_no(db), customer_name=intent.contact_person_name,
+            mobile=intent.primary_phone, source="WhatsApp", status="PAYMENT_PENDING",
+            product_interest=f"{intent.product_title} / {intent.variant_title or 'Selected variant'}",
+            notes=("PAYMENT DETAILS REQUIRED\n"
+                   f"WhatsApp: {intent.customer_whatsapp_phone}\n"
+                   f"Delivery address: {intent.delivery_address}\n"
+                   f"Alternative phone: {intent.alternative_phone}\n"
+                   f"Size: {intent.bicycle_size}\n"
+                   f"Initial service: {'YES' if intent.initial_service_requested else 'NO'}\n"
+                   f"Service charge: Rs. {intent.initial_service_charge:,.0f}\n"
+                   "Delivery charge: FREE\n"
+                   f"Final total: Rs. {intent.final_total:,.0f}\n"
+                   f"Shopify: {intent.product_url or ''}"),
+        ))
+        db.commit()
+        today, earliest, latest = delivery_window()
+        return (f"Thank you 😊 Your delivery details have been received.\n\n🚲 {intent.product_title}\n"
+                f"Variant: {intent.variant_title or 'Selected variant'}\nTotal: Rs. {intent.final_total:,.0f}\n"
+                "🚚 Islandwide Delivery: FREE\n\nOur PixiePinks team will send you the bank/payment details.\n\n"
+                f"If payment is arranged today, {today.strftime('%d %B %Y')}, delivery is normally "
+                f"expected within approximately 3–4 working days: {earliest.strftime('%d %B %Y')} "
+                f"to {latest.strftime('%d %B %Y')}. Weekends are skipped; public holidays are not "
+                "currently included. This is an estimate, not a guaranteed delivery date.")
+
+
 def _reply_to_text_message(
     sender: str, message_id: str, text_body: str, profile_name: str | None,
     context_message_id: str | None = None,
@@ -274,6 +425,11 @@ def _reply_to_text_message(
     else:
         response_kind = None
         try:
+            active_reply = _active_order_reply(sender, text_body)
+            if active_reply is not None:
+                reply = active_reply
+                response_kind = "order_intent"
+                raise StopIteration
             replied_mapping = None
             if context_message_id:
                 with SessionLocal() as db:
@@ -286,7 +442,11 @@ def _reply_to_text_message(
                 replied_handle = None
             if replied_handle:
                 replied_product = get_product_by_handle(replied_handle)
-                reply = (_format_replied_product(replied_product, text_body) if replied_product
+                buying = any(term in text_body.casefold() for term in
+                             ("want this", "take it", "this one", "meka ona", "මේක ඕන"))
+                order_reply = (_start_bicycle_intent(sender, replied_product)
+                               if replied_product and buying else None)
+                reply = (order_reply or _format_replied_product(replied_product, text_body) if replied_product
                          else "Sorry, I couldn't verify that product in our live catalogue right now.")
                 response_kind = "product_reply"
                 logger.info("Resolved WhatsApp product reply context_id=%s handle=%s",

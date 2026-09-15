@@ -9,11 +9,46 @@ looks up the exact configured title and supplies the actual collection ID and
 handle at runtime; handles and collection GIDs are never guessed or hardcoded.
 The service fails closed if exactly one matching collection cannot be verified.
 
-There is intentionally no gender-specific 24-inch mapping. Ages 8–10 still
-produce 24 inches as a sizing starting point, but the bot explains that no
-verified collection is configured and never substitutes 20 or 26 inches.
+There is intentionally no 24-inch mapping: the supported age starting points are
+2–3 → 12 inches, 4–5 → 16 inches, 6–10 → 20 inches, and 11+ → 26 inches.
+Age is only a starting recommendation and is never presented as a fit guarantee.
 Collection reads use the existing Shopify `read_products` scope; no write scope
 or catalogue mutation is required.
+
+## WhatsApp bicycle sales workflow
+
+A generic bicycle request starts a deterministic boy/girl then age conversation.
+Once both are known, the backend resolves the exact gender-and-size collection by
+verified Shopify title and live GraphQL ID, returns no more than five available
+products, and sends each valid Shopify featured-image URL through WhatsApp. Bicycle
+cards alone state **Free Islandwide Delivery**. An outbound Meta message ID is mapped
+to its Shopify handle, allowing a customer's reply to an image (for example, “I want
+this” or “meka ona”) to resolve and re-query that exact product. Multiple live
+variants cause the assistant to request the missing choice rather than guess it.
+
+After an exact bicycle variant is live-verified, the assistant offers—but never
+automatically adds—the initial service/greasing. Charges are fixed in code: 12 and
+16 inches cost Rs. 2,000; 20 and 26 inches cost Rs. 2,500. Bicycle delivery is zero,
+and totals use decimal arithmetic. The persisted `whatsapp_order_intents` state then
+collects contact name, the customer-provided address, and two distinct Sri Lankan
+phone numbers (`07XXXXXXXX`, `947XXXXXXXX`, or `+947XXXXXXXX`). These personal fields
+are handled deterministically rather than sent to OpenAI.
+
+Immediately before payment handover, Shopify is queried again for the exact variant,
+availability, and current price. The record moves to `READY_FOR_PAYMENT_HANDOVER` and
+the existing team workflow is instructed to send payment details; the AI neither
+creates a Shopify order nor supplies bank details. Delivery is estimated from the
+actual Asia/Colombo date as the third through fourth working day, skipping Saturdays
+and Sundays. Public holidays are not currently included, and the wording explicitly
+states that this is not a guarantee.
+
+The order-intent states are `PRODUCT_DISCOVERY`, `AWAITING_BICYCLE_GENDER`,
+`AWAITING_BICYCLE_AGE`, `SHOWING_PRODUCTS`, `AWAITING_VARIANT`,
+`AWAITING_SERVICE_DECISION`, `COLLECTING_DELIVERY_DETAILS`,
+`READY_FOR_PAYMENT_HANDOVER`, `HANDED_TO_TEAM`, and `CANCELLED`. A clear cancellation
+only cancels the newest active intent. Starting another product category follows the
+general live Shopify route and does not inherit bicycle gender, age, size, or service
+constraints.
 
 A tiny double-entry accounting app for your shop. Built with FastAPI + SQLite + Jinja2 + HTMX.
 
