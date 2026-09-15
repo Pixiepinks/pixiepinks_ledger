@@ -5,7 +5,7 @@ from decimal import Decimal, InvalidOperation
 
 
 # Inclusive lower bounds make the overlapping ranges unambiguous and easy to edit.
-BICYCLE_SIZE_BY_MINIMUM_AGE = ((11, 26), (8, 24), (6, 20), (4, 16), (2, 12))
+BICYCLE_SIZE_BY_MINIMUM_AGE = ((11, 26), (6, 20), (4, 16), (2, 12))
 
 BOY_TERMS = ("boy", "boys", "son", "පුතා")
 GIRL_TERMS = ("girl", "girls", "daughter", "දුව")
@@ -243,7 +243,8 @@ def format_bicycle_product(product: dict) -> str:
     label = f"{title} – {variant_title}" if variant_title and variant_title != "Default Title" else title
     availability = "✅ Available" if variant.get("available") else "❌ Currently unavailable"
     return "\n\n".join((f"🚲 {label}", f"💰 {format_lkr_price(variant.get('price'))}",
-                         availability, f"🔗 {product.get('url') or ''}"))
+                         availability, "🚚 Free Islandwide Delivery",
+                         f"🔗 {product.get('url') or ''}"))
 
 
 def format_bicycle_results(age: int, preference: str, size: int, products: list[dict]) -> str:

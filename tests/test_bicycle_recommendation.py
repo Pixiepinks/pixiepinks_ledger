@@ -37,8 +37,8 @@ def _reply(monkeypatch, text, searches=None, products=None):
 
 
 @pytest.mark.parametrize("age,size", [(2, 12), (3, 12), (4, 16), (5, 16),
-                                       (6, 20), (7, 20), (8, 24), (9, 24),
-                                       (10, 24), (11, 26), (12, 26)])
+                                       (6, 20), (7, 20), (8, 20), (9, 20),
+                                       (10, 20), (11, 26), (12, 26)])
 def test_age_to_size_boundaries(age, size):
     assert recommended_bicycle_size(age) == size
 
@@ -352,9 +352,8 @@ def test_unavailable_collection_does_not_send_an_image(monkeypatch):
     assert "currently shown as unavailable" in sent[0]
 
 
-def test_missing_24_collection_is_explicit_and_does_not_query(monkeypatch):
-    monkeypatch.setattr(main, "search_bicycles_by_collection",
-                        lambda *args: (_ for _ in ()).throw(AssertionError()))
-    reply = _reply(monkeypatch, "bicycle for my 9 year old boy")
-    assert "do not have a verified boy 24-inch collection" in reply
-    assert "won't substitute" in reply
+def test_age_nine_routes_to_supported_20_collection(monkeypatch):
+    searches = []
+    reply = _reply(monkeypatch, "bicycle for my 9 year old boy", searches)
+    assert "20-inch" in reply
+    assert searches == [("boy", 20, "")]
