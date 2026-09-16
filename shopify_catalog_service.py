@@ -130,6 +130,17 @@ query SearchProducts($first: Int!, $query: String!) {
 }
 """
 
+# The management picker intentionally requests no variants.  It needs identity and
+# presentation metadata only, and must remain cheap even for a large catalogue.
+PRODUCT_PICKER_QUERY = """
+query ProductPicker($first: Int!, $query: String!, $after: String) {
+  products(first: $first, query: $query, after: $after, sortKey: RELEVANCE) {
+    nodes { id title handle productType vendor status featuredImage { url } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
 # These titles were verified in Shopify Admin.  Handles are deliberately not
 # guessed: Shopify resolves each title at runtime and supplies its live handle.
 BICYCLE_COLLECTIONS = {
@@ -237,19 +248,54 @@ def discover_collections(query: str = "", limit: int = 100,
             for node in (data.get("collections") or {}).get("nodes", [])]
 
 
-def search_products_for_management(query: str, limit: int = 10) -> list[dict]:
-    """Bounded staff selector search with Shopify as the live authority."""
+def search_products_for_management(query: str, limit: int = 20, cursor: str | None = None,
+                                   catalog_client: ShopifyCatalogClient | None = None) -> dict:
+    """Return one cursor-paginated page for the read-only staff product picker."""
     query = str(query or "").strip()
-    if len(query) < 2:
-        return []
-    data = client.graphql(PRODUCT_QUERY, {"first": min(max(limit, 1), 20),
-                                         "query": f"title:{query.replace(':', ' ')}*"})
+    safe_query = " ".join(re.sub(r"[^\w\s\-']+", " ", query,
+                                 flags=re.UNICODE).split())
+    shopify_query = f"title:{safe_query}*" if safe_query else ""
+    client_instance = catalog_client or ShopifyCatalogClient()
+    data = client_instance.graphql(PRODUCT_PICKER_QUERY, {
+        "first": min(max(int(limit), 1), 25), "query": shopify_query,
+        "after": cursor or None,
+    })
+    connection = data.get("products") or {}
     products = []
-    for node in data.get("products", {}).get("nodes", []):
-        normalized = _normalize_product(node, parse_filters(""))
-        if normalized:
-            products.append(normalized)
-    return products[:limit]
+    for node in connection.get("nodes", []):
+        handle = node.get("handle")
+        if not handle:
+            continue
+        products.append({
+            "id": node.get("id"), "handle": handle, "title": node.get("title"),
+            "vendor": node.get("vendor"), "product_type": node.get("productType"),
+            "featured_image": (node.get("featuredImage") or {}).get("url"),
+            "status": node.get("status"),
+        })
+    page_info = connection.get("pageInfo") or {}
+    return {"products": products, "next_cursor": page_info.get("endCursor"),
+            "has_next_page": bool(page_info.get("hasNextPage"))}
+
+
+def resolve_products_for_management(handles: list[str],
+                                    catalog_client: ShopifyCatalogClient | None = None) -> dict[str, dict]:
+    """Resolve a bounded group of saved handles so edit screens show current Shopify titles."""
+    unique = list(dict.fromkeys(handle.strip() for handle in handles if handle.strip()))[:25]
+    if not unique:
+        return {}
+    query = " OR ".join(f"handle:{re.sub(r'[^a-zA-Z0-9_-]', '', handle)}" for handle in unique)
+    client_instance = catalog_client or ShopifyCatalogClient()
+    data = client_instance.graphql(PRODUCT_PICKER_QUERY, {
+        "first": len(unique), "query": query, "after": None})
+    products = {}
+    for node in (data.get("products") or {}).get("nodes", []):
+        handle = node.get("handle")
+        if handle in unique:
+            products[handle] = {"id": node.get("id"), "handle": handle,
+                "title": node.get("title"), "vendor": node.get("vendor"),
+                "product_type": node.get("productType"), "status": node.get("status"),
+                "featured_image": (node.get("featuredImage") or {}).get("url")}
+    return products
 
 
 def products_for_collection(collection_id: str, query: str = "", limit: int = 20) -> list[dict]:

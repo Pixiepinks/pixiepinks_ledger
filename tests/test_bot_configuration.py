@@ -17,6 +17,23 @@ from models import BotConfigurationVersion
 from order_intent_service import delivery_window
 
 
+def _staff_client(monkeypatch=None):
+    from fastapi.testclient import TestClient
+    import main
+    from database import SessionLocal, engine
+    from models import User
+    from utils_auth import hash_password
+    Base.metadata.create_all(engine)
+    with SessionLocal() as session:
+        user = session.query(User).filter_by(username="picker-test").first()
+        if not user:
+            session.add(User(username="picker-test", password_hash=hash_password("password")))
+            session.commit()
+    client = TestClient(main.app, base_url="https://testserver")
+    assert client.post("/login", data={"username": "picker-test", "password": "password"}).status_code == 200
+    return client
+
+
 def test_management_pages_require_authentication_and_render_for_staff():
     from fastapi.testclient import TestClient
     import main
@@ -36,6 +53,97 @@ def test_management_pages_require_authentication_and_render_for_staff():
     assert response.status_code == 200
     assert "Bicycle recommendation" in response.text
     assert "OPENAI_API_KEY" not in response.text
+
+
+def test_product_picker_is_reusable_and_collection_and_global_scopes_remain():
+    client = _staff_client()
+    for section in ("catalog", "policies", "faqs"):
+        response = client.get(f"/crm/bot-management/{section}")
+        assert response.status_code == 200
+        assert 'class="shopify-product-picker"' in response.text
+        assert "Search or select Shopify product" in response.text
+        assert "Loading products" in response.text
+        assert "Load more products" in response.text
+        assert "Search Shopify products…" not in response.text
+        assert "Select a search result…" not in response.text
+        assert "<option>GLOBAL</option>" in response.text
+        assert "<option>COLLECTION</option>" in response.text
+        assert "Search/select collection…" in response.text
+
+
+def test_management_product_search_is_bounded_paginated_and_sanitized():
+    from shopify_catalog_service import search_products_for_management
+
+    class Catalog:
+        variables = None
+
+        def graphql(self, query, variables):
+            self.variables = variables
+            assert "variants" not in query
+            return {"products": {"nodes": [{"id": "gid://shopify/Product/1",
+                "title": "Kenton Racer Bicycle", "handle": "kenton-racer",
+                "vendor": "Kenton", "productType": "Bicycle", "status": "ACTIVE",
+                "featuredImage": {"url": "https://cdn.example/thumb.jpg"}}],
+                "pageInfo": {"hasNextPage": True, "endCursor": "cursor-2"}}}
+
+    catalog = Catalog()
+    result = search_products_for_management("Kenton: bicycle", 999, "cursor-1", catalog)
+    assert catalog.variables == {"first": 25, "query": "title:Kenton bicycle*",
+                                 "after": "cursor-1"}
+    assert result["products"][0]["title"] == "Kenton Racer Bicycle"
+    assert result["products"][0]["handle"] == "kenton-racer"
+    assert result["has_next_page"] is True
+    assert result["next_cursor"] == "cursor-2"
+
+
+def test_product_search_api_requires_auth_and_hides_internal_fields(monkeypatch):
+    from fastapi.testclient import TestClient
+    import main
+    anonymous = TestClient(main.app, base_url="https://testserver")
+    assert anonymous.get("/crm/bot-management/api/products", follow_redirects=False).status_code == 303
+    monkeypatch.setattr(main, "search_products_for_management", lambda q, limit, cursor: {
+        "products": [{"id": "gid://shopify/Product/1", "title": "Chocolate Basket",
+                      "handle": "chocolate-basket", "vendor": "PixiePinks",
+                      "product_type": "Gift", "featured_image": "https://cdn.example/a.jpg",
+                      "status": "ACTIVE", "access_token": "secret"}],
+        "next_cursor": "next", "has_next_page": True})
+    response = _staff_client().get(
+        "/crm/bot-management/api/products?q=chocolate&limit=15&cursor=first")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["products"][0]["title"] == "Chocolate Basket"
+    assert payload["products"][0]["handle"] == "chocolate-basket"
+    assert payload["next_cursor"] == "next" and payload["has_next_page"] is True
+    assert "gid://" not in response.text and "secret" not in response.text
+
+
+def test_product_search_api_returns_safe_shopify_error(monkeypatch):
+    import main
+    from shopify_catalog_service import ShopifyCatalogError
+    def unavailable(*args):
+        raise ShopifyCatalogError("technical token detail")
+    monkeypatch.setattr(main, "search_products_for_management", unavailable)
+    response = _staff_client().get("/crm/bot-management/api/products")
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Shopify product search is temporarily unavailable"
+    assert "technical token detail" not in response.text
+
+
+@pytest.mark.parametrize("kind,section", [("KNOWLEDGE", "catalog"), ("POLICY", "policies"),
+                                           ("FAQ", "faqs")])
+def test_product_scoped_entries_store_handle_and_display_product_title(monkeypatch, kind, section):
+    import main
+    monkeypatch.setattr(main, "get_product_by_handle", lambda handle: {
+        "handle": handle, "title": "Kenton Racer Kids Bicycle"})
+    client = _staff_client()
+    response = client.post("/crm/bot-management/entry", data={
+        "kind": kind, "scope": "PRODUCT", "scope_reference": "kenton-racer",
+        "title": f"{kind} product test", "topic": "Bicycles", "content": "Approved content",
+        "tags": "bicycle"}, follow_redirects=False)
+    assert response.status_code == 303
+    page = client.get(f"/crm/bot-management/{section}")
+    assert "Shopify Product: Kenton Racer Kids Bicycle" in page.text
+    assert "Shopify Product: kenton-racer" not in page.text
 
 
 @pytest.fixture()

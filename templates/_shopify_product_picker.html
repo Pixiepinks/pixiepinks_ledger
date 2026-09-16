@@ -1,0 +1,19 @@
+{% macro product_picker(selected_reference='', selected_title='', selected_image='') -%}
+<div class="shopify-product-picker" data-selected-reference="{{ selected_reference|e }}">
+  <input type="hidden" name="scope_reference" value="{{ selected_reference|e }}" disabled>
+  <div class="product-selection" {% if not selected_reference %}hidden{% endif %}>
+    <img class="product-selection-image" src="{{ selected_image|e }}" alt="" {% if not selected_image %}hidden{% endif %}>
+    <span><strong class="product-selection-title">{{ selected_title|e }}</strong><small>Shopify Product</small></span>
+    <button type="button" class="product-change">Change</button>
+  </div>
+  <div class="product-combobox" {% if selected_reference %}hidden{% endif %}>
+    <input class="product-search" type="search" placeholder="Search or select Shopify product…"
+           autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false">
+    <div class="product-panel" role="listbox" hidden>
+      <div class="product-state">Loading products…</div>
+      <div class="product-options"></div>
+      <button type="button" class="product-more" hidden>Load more products</button>
+    </div>
+  </div>
+</div>
+{%- endmacro %}
