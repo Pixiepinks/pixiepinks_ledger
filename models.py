@@ -161,7 +161,43 @@ class WhatsAppConversationMessage(Base):
     message_text = Column(Text, nullable=False)
     whatsapp_message_id = Column(String(255), nullable=True, index=True)
     response_kind = Column(String(20), nullable=True)
+    send_status = Column(String(20), nullable=True)
+    sent_by = Column(String(100), nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class WhatsAppConversation(Base):
+    """Operational inbox state, keyed by a normalized WhatsApp phone number."""
+
+    __tablename__ = "whatsapp_conversations"
+
+    id = Column(Integer, primary_key=True)
+    phone_number = Column(String(50), unique=True, nullable=False, index=True)
+    customer_name = Column(String(255))
+    mode = Column(String(10), nullable=False, default="AI", index=True)
+    unread_count = Column(Integer, nullable=False, default=0)
+    last_message_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    last_customer_message_at = Column(DateTime)
+    taken_over_at = Column(DateTime)
+    taken_over_by = Column(String(100))
+    returned_to_ai_at = Column(DateTime)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WhatsAppManualSend(Base):
+    """Server-side idempotency records for manual inbox sends."""
+
+    __tablename__ = "whatsapp_manual_sends"
+
+    id = Column(Integer, primary_key=True)
+    idempotency_key = Column(String(100), unique=True, nullable=False, index=True)
+    conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), nullable=False)
+    message_text = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="PROCESSING")
+    whatsapp_message_id = Column(String(255))
+    sent_by = Column(String(100))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class WhatsAppOutboundProductMessage(Base):

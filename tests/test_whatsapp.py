@@ -9,8 +9,8 @@ import ai_service
 import whatsapp_service
 from database import Base, SessionLocal, engine
 from models import (
-    ProcessedWhatsAppMessage, WhatsAppConversationMessage,
-    WhatsAppOutboundProductMessage,
+    ProcessedWhatsAppMessage, WhatsAppConversation, WhatsAppConversationMessage,
+    WhatsAppManualSend, WhatsAppOutboundProductMessage,
 )
 
 
@@ -34,7 +34,10 @@ def _message_payload(message_id="wamid.123", message_type="text", body="Hello"):
 
 def setup_function():
     Base.metadata.create_all(bind=engine)
+    main.ensure_whatsapp_inbox_columns()
     with SessionLocal() as db:
+        db.query(WhatsAppManualSend).delete()
+        db.query(WhatsAppConversation).delete()
         db.query(ProcessedWhatsAppMessage).delete()
         db.query(WhatsAppConversationMessage).delete()
         db.query(WhatsAppOutboundProductMessage).delete()

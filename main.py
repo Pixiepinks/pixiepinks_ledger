@@ -18,7 +18,7 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -42,7 +42,9 @@ from models import (
     ProcessedWhatsAppMessage,
     Supplier,
     User,
+    WhatsAppConversation,
     WhatsAppConversationMessage,
+    WhatsAppManualSend,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
 )
@@ -92,6 +94,7 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["settings"] = settings
 
 # ---------------------- DB Session ----------------------
 def get_db():
@@ -180,9 +183,52 @@ def _store_conversation_message(
                 response_kind=response_kind,
                 created_at=created_at or datetime.utcnow(),
             ))
+            phone = _normalize_whatsapp_phone(phone_number)
+            conversation = db.query(WhatsAppConversation).filter_by(phone_number=phone).one_or_none()
+            when = created_at or datetime.utcnow()
+            if conversation is None:
+                conversation = WhatsAppConversation(phone_number=phone, mode="AI", unread_count=0)
+                db.add(conversation)
+            if customer_name:
+                conversation.customer_name = customer_name
+            conversation.last_message_at = when
+            conversation.updated_at = datetime.utcnow()
+            if direction == "inbound":
+                conversation.last_customer_message_at = when
+                conversation.unread_count = (conversation.unread_count or 0) + 1
             db.commit()
     except SQLAlchemyError:
         logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+
+
+def _normalize_whatsapp_phone(value: str) -> str:
+    """Use Meta's digit-only canonical form for stable conversation identity."""
+    digits = re.sub(r"\D", "", value or "")
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "94" + digits[1:]
+    return digits
+
+
+def _conversation_for_phone(db: Session, phone: str) -> WhatsAppConversation | None:
+    return db.query(WhatsAppConversation).filter_by(
+        phone_number=_normalize_whatsapp_phone(phone)
+    ).one_or_none()
+
+
+def _set_conversation_mode(phone: str, mode: str, staff: str | None = None) -> None:
+    with SessionLocal() as db:
+        conversation = _conversation_for_phone(db, phone)
+        if conversation is None:
+            conversation = WhatsAppConversation(phone_number=_normalize_whatsapp_phone(phone))
+            db.add(conversation)
+        conversation.mode = mode
+        conversation.updated_at = datetime.utcnow()
+        if mode == "HUMAN":
+            conversation.taken_over_at = datetime.utcnow()
+            conversation.taken_over_by = staff
+        else:
+            conversation.returned_to_ai_at = datetime.utcnow()
+        db.commit()
 
 
 def _store_product_message(message_id: str | None, phone: str, product: dict) -> None:
@@ -418,9 +464,15 @@ def _reply_to_text_message(
     """Generate and send after Meta has already received its HTTP 200 acknowledgement."""
     bicycle_delivery = None
     product_image_delivery = None
+    with SessionLocal() as db:
+        conversation = _conversation_for_phone(db, sender)
+        if conversation and conversation.mode == "HUMAN":
+            logger.info("WhatsApp automation paused for human-owned conversation sender=%s", sender)
+            return
     if requests_human_handover(text_body):
         reply = HUMAN_HANDOVER_REPLY
         response_kind = "handover"
+        _set_conversation_mode(sender, "HUMAN")
         logger.info("WhatsApp human handover requested message_id=%s sender=%s", message_id, sender)
     else:
         response_kind = None
@@ -704,6 +756,13 @@ def _reply_to_text_message(
     _store_conversation_message(
         sender, "outbound", reply, customer_name=profile_name, response_kind=response_kind
     )
+    with SessionLocal() as db:
+        payment_ready = db.query(WhatsAppOrderIntent.id).filter(
+            WhatsAppOrderIntent.customer_whatsapp_phone == sender,
+            WhatsAppOrderIntent.status == OrderIntentStatus.READY_FOR_PAYMENT_HANDOVER.value,
+        ).first()
+    if payment_ready:
+        _set_conversation_mode(sender, "HUMAN")
 
 
 def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
@@ -855,9 +914,11 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     "image", "audio", "video", "document", "sticker", "location",
                     "contacts", "reaction", "interactive",
                 }:
-                    background_tasks.add_task(
-                        _send_unsupported_reply, sender, profile_name
-                    )
+                    with SessionLocal() as db:
+                        conversation = _conversation_for_phone(db, sender)
+                        human_owned = bool(conversation and conversation.mode == "HUMAN")
+                    if not human_owned:
+                        background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
 
     return {"status": "ok"}
 
@@ -911,6 +972,7 @@ def startup():
         Base.metadata.create_all(bind=engine)
 
     ensure_item_sku_column()
+    ensure_whatsapp_inbox_columns()
     init_db()
 
     with SessionLocal() as db:
@@ -954,6 +1016,23 @@ def ensure_item_sku_column():
     if settings.DATABASE_URL.startswith("sqlite"):
         with engine.begin() as conn:
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_items_sku ON items (sku)"))
+
+
+def ensure_whatsapp_inbox_columns():
+    """Backward-compatible additions for installations managed by create_all."""
+    inspector = inspect(engine)
+    if not inspector.has_table("whatsapp_conversation_messages"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("whatsapp_conversation_messages")}
+    statements = []
+    if "send_status" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN send_status VARCHAR(20)")
+    if "sent_by" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN sent_by VARCHAR(100)")
+    if statements:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
 
 # ---------------------- Auth Routes ----------------------
 @app.get("/login", response_class=HTMLResponse)
@@ -1120,6 +1199,207 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user: User = Depend
 
 
 # ---------------------- CRM ----------------------
+PAYMENT_REQUIRED_STATUS = OrderIntentStatus.READY_FOR_PAYMENT_HANDOVER.value
+
+
+def _payment_required_phones(db: Session) -> set[str]:
+    return {
+        _normalize_whatsapp_phone(phone) for (phone,) in db.query(
+            WhatsAppOrderIntent.customer_whatsapp_phone
+        ).filter(WhatsAppOrderIntent.status == PAYMENT_REQUIRED_STATUS).distinct().all()
+    }
+
+
+def _conversation_payload(db: Session, conversation: WhatsAppConversation,
+                          payment_phones: set[str] | None = None,
+                          latest_messages: dict[str, WhatsAppConversationMessage] | None = None) -> dict:
+    latest = (latest_messages or {}).get(conversation.phone_number)
+    if latest_messages is None:
+        latest = db.query(WhatsAppConversationMessage).filter(
+            WhatsAppConversationMessage.phone_number == conversation.phone_number
+        ).order_by(WhatsAppConversationMessage.created_at.desc()).first()
+    payment_phones = payment_phones if payment_phones is not None else _payment_required_phones(db)
+    return {
+        "id": conversation.id,
+        "phone_number": conversation.phone_number,
+        "customer_name": conversation.customer_name or "WhatsApp customer",
+        "mode": conversation.mode,
+        "unread_count": conversation.unread_count or 0,
+        "last_message_at": conversation.last_message_at.isoformat() if conversation.last_message_at else None,
+        "latest_message": latest.message_text[:120] if latest else "",
+        "payment_required": conversation.phone_number in payment_phones,
+    }
+
+
+@app.get("/crm/whatsapp", response_class=HTMLResponse)
+def whatsapp_inbox(request: Request, conversation: int | None = None,
+                   db: Session = Depends(get_db), user: User = Depends(require_user)):
+    unread = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
+    return templates.TemplateResponse("whatsapp_inbox.html", {
+        "request": request, "initial_conversation_id": conversation, "unread_whatsapp": unread,
+        "page_title": "WhatsApp Inbox", "user": user,
+    })
+
+
+@app.get("/crm/whatsapp/api/conversations")
+def whatsapp_conversations(search: str = "", filter: str = "all", limit: int = 50,
+                           db: Session = Depends(get_db), user: User = Depends(require_user)):
+    query = db.query(WhatsAppConversation)
+    term = search.strip()
+    if term:
+        name_match = WhatsAppConversation.customer_name.ilike(f"%{term}%")
+        phone_term = _normalize_whatsapp_phone(term)
+        query = query.filter(or_(name_match, WhatsAppConversation.phone_number.ilike(f"%{phone_term}%"))
+                             if phone_term else name_match)
+    payment_phones = _payment_required_phones(db)
+    value = filter.casefold()
+    if value == "unread":
+        query = query.filter(WhatsAppConversation.unread_count > 0)
+    elif value in {"ai", "human"}:
+        query = query.filter(WhatsAppConversation.mode == value.upper())
+    elif value == "payment":
+        query = query.filter(WhatsAppConversation.phone_number.in_(payment_phones or {"__none__"}))
+    rows = query.order_by(WhatsAppConversation.last_message_at.desc(), WhatsAppConversation.id.desc()).limit(
+        min(max(limit, 1), 100)
+    ).all()
+    phones = [row.phone_number for row in rows]
+    recent_messages = db.query(WhatsAppConversationMessage).filter(
+        WhatsAppConversationMessage.phone_number.in_(phones or {"__none__"})
+    ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(1000).all()
+    latest_messages = {}
+    for message in recent_messages:
+        latest_messages.setdefault(message.phone_number, message)
+    unread_total = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
+    return {"conversations": [_conversation_payload(db, row, payment_phones, latest_messages) for row in rows],
+            "unread_total": unread_total}
+
+
+def _get_conversation(db: Session, conversation_id: int) -> WhatsAppConversation:
+    conversation = db.get(WhatsAppConversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+
+@app.get("/crm/whatsapp/api/conversations/{conversation_id}")
+def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
+                                 db: Session = Depends(get_db), user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    messages = db.query(WhatsAppConversationMessage).filter(
+        WhatsAppConversationMessage.phone_number == conversation.phone_number
+    ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(min(max(limit, 1), 200)).all()
+    order = db.query(WhatsAppOrderIntent).filter(
+        WhatsAppOrderIntent.customer_whatsapp_phone == conversation.phone_number
+    ).order_by(WhatsAppOrderIntent.updated_at.desc(), WhatsAppOrderIntent.id.desc()).first()
+    message_data = [{
+        "direction": item.direction, "text": item.message_text,
+        "source": item.response_kind or ("customer" if item.direction == "inbound" else "ai"),
+        "status": item.send_status or ("received" if item.direction == "inbound" else "sent"),
+        "timestamp": item.created_at.isoformat(),
+    } for item in reversed(messages)]
+    order_data = None if order is None else {
+        "product_title": order.product_title, "variant_title": order.variant_title,
+        "product_image_url": order.product_image_url, "product_url": order.product_url,
+        "product_price": float(order.product_price), "service_charge": float(order.initial_service_charge),
+        "delivery_charge": float(order.delivery_charge), "total": float(order.final_total),
+        "status": order.status, "payment_required": order.status == PAYMENT_REQUIRED_STATUS,
+        "bicycle_gender": order.bicycle_gender, "bicycle_age": order.bicycle_age,
+        "bicycle_size": order.bicycle_size, "contact_person_name": order.contact_person_name,
+        "delivery_address": order.delivery_address, "primary_phone": order.primary_phone,
+        "alternative_phone": order.alternative_phone,
+    }
+    return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
+            "order": order_data}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/read")
+def whatsapp_mark_read(conversation_id: int, db: Session = Depends(get_db),
+                       user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    conversation.unread_count = 0
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/takeover")
+def whatsapp_takeover(conversation_id: int, db: Session = Depends(get_db),
+                      user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    conversation.mode = "HUMAN"
+    conversation.taken_over_at = datetime.utcnow()
+    conversation.taken_over_by = user.username
+    db.commit()
+    return {"ok": True, "mode": "HUMAN"}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/return-to-ai")
+def whatsapp_return_to_ai(conversation_id: int, db: Session = Depends(get_db),
+                          user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    conversation.mode = "AI"
+    conversation.returned_to_ai_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "mode": "AI"}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/send")
+async def whatsapp_manual_send(conversation_id: int, request: Request,
+                               db: Session = Depends(get_db), user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid request")
+    body = payload.get("message") if isinstance(payload, dict) else None
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if not isinstance(body, str) or not body.strip() or len(body.strip()) > 2000:
+        raise HTTPException(status_code=422, detail="Message must contain 1–2000 characters")
+    if not key or len(key) > 100:
+        raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+    existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
+    if existing:
+        return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
+                            status_code=200 if existing.status == "SENT" else 409)
+    attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
+                                message_text=body.strip(), sent_by=user.username)
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
+    try:
+        result = send_whatsapp_text(conversation.phone_number, body.strip(), return_message_id=True)
+    except TypeError:
+        result = send_whatsapp_text(conversation.phone_number, body.strip())
+    if not result:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not send this message."}, status_code=502)
+    message_id = result if isinstance(result, str) else None
+    attempt.status = "SENT"
+    attempt.whatsapp_message_id = message_id
+    db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number, direction="outbound",
+        message_text=body.strip(), whatsapp_message_id=message_id, response_kind="staff",
+        send_status="sent", sent_by=user.username))
+    conversation.last_message_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "SENT"}
+
+
+@app.get("/crm/orders", response_class=HTMLResponse)
+def crm_orders(request: Request, status_filter: str = "active", db: Session = Depends(get_db),
+               user: User = Depends(require_user)):
+    query = db.query(WhatsAppOrderIntent)
+    if status_filter == "payment": query = query.filter(WhatsAppOrderIntent.status == PAYMENT_REQUIRED_STATUS)
+    elif status_filter == "cancelled": query = query.filter(WhatsAppOrderIntent.status == "CANCELLED")
+    elif status_filter == "handed": query = query.filter(WhatsAppOrderIntent.status == "HANDED_TO_TEAM")
+    elif status_filter == "active": query = query.filter(WhatsAppOrderIntent.status.notin_(["CANCELLED", "HANDED_TO_TEAM"]))
+    orders = query.order_by(WhatsAppOrderIntent.updated_at.desc()).limit(200).all()
+    return templates.TemplateResponse("crm_orders.html", {"request": request, "orders": orders,
+        "status_filter": status_filter, "page_title": "Orders / Sales Intents", "user": user})
+
+
 @app.get("/crm", response_class=HTMLResponse)
 def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
     today = date.today()
@@ -1137,6 +1417,14 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
     )
 
     recent_leads = db.query(Lead).order_by(Lead.created_at.desc(), Lead.id.desc()).limit(10).all()
+    unread_whatsapp = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
+    human_handovers = db.query(func.count(WhatsAppConversation.id)).filter(WhatsAppConversation.mode == "HUMAN").scalar() or 0
+    payment_required = db.query(func.count(WhatsAppOrderIntent.id)).filter(WhatsAppOrderIntent.status == PAYMENT_REQUIRED_STATUS).scalar() or 0
+    active_order_intents = db.query(func.count(WhatsAppOrderIntent.id)).filter(
+        WhatsAppOrderIntent.status.notin_(["CANCELLED", "HANDED_TO_TEAM"])).scalar() or 0
+    recent_conversations = db.query(WhatsAppConversation).order_by(
+        WhatsAppConversation.last_message_at.desc()).limit(6).all()
+    recent_orders = db.query(WhatsAppOrderIntent).order_by(WhatsAppOrderIntent.updated_at.desc()).limit(6).all()
 
     return templates.TemplateResponse("crm_dashboard.html", {
         "request": request,
@@ -1147,6 +1435,10 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
         "lost_leads": lost_leads,
         "recent_leads": recent_leads,
         "pending_followups": pending_followups,
+        "unread_whatsapp": unread_whatsapp, "human_handovers": human_handovers,
+        "payment_required": payment_required, "active_order_intents": active_order_intents,
+        "recent_conversations": recent_conversations, "recent_orders": recent_orders,
+        "page_title": "CRM Dashboard", "user": user,
     })
 
 
