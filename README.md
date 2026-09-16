@@ -167,7 +167,53 @@ Secret server-side. The backend obtains temporary access tokens automatically, c
 them in memory, and renews them before their approximately 24-hour expiry.
 
 The app requires only `read_products`, `read_inventory`, and `read_locations`; it does
-not write products or inventory. `SHOPIFY_API_VERSION` is optional and defaults to
+not write products or inventory and does not request Shopify write access.
+
+## AI Bot Management Center
+
+Authenticated staff manage the store-wide assistant at `/crm/bot-management`. The
+center uses a **Draft → Test → Publish → Live** lifecycle: ordinary saves only update
+the draft, the simulator can evaluate draft or live rules without sending WhatsApp
+messages or creating operational records, and an explicit `PUBLISH` confirmation
+creates an immutable version. Historical versions can only be restored **as a draft**,
+so rollback also requires testing and deliberate publication. Administrative saves,
+publishes, restores, and read-only Shopify discovery are audited with the signed-in
+staff username (the current application has one staff permission level).
+
+The database adds `bot_configurations` (live/draft pointers),
+`bot_configuration_versions` (immutable snapshots), `bot_knowledge_entries`
+(normalized extensibility for scoped content), and `bot_audit_events`. Startup retains
+the existing `Base.metadata.create_all()` convention. The initial published version
+preserves bicycle age-to-size rules (2–3/12, 4–5/16, 6–10/20, 11+/26), Decimal service
+fees (Rs. 2,000/2,000/2,500/2,500), free islandwide bicycle delivery, and the 3–4
+working-day estimate. New decisions use the currently published cached version;
+publishing invalidates the short-lived cache immediately. Existing selected products
+and order intents are not recomputed, so in-progress purchases remain stable.
+
+Configuration is structured into global response settings, policies, global /
+collection / product knowledge, FAQs, guided questions, generic recommendation rules,
+and specialized bicycle/service/delivery controls. Scoped retrieval is designed to
+apply global knowledge first, then collection, then product guidance; deterministic
+rules take precedence. No vector database or executable staff rule language is used.
+Collection refresh is read-only, and product-specific references are Shopify handles,
+not copied commercial data.
+
+**Authority and safety:** Shopify remains authoritative for titles, variants, SKU,
+price, inventory, images, URLs, options, and collection membership. OpenAI may
+understand and word responses but is never authoritative for those facts, fees,
+totals, order/payment state, or deterministic rules. Locked code guardrails preserve
+HUMAN-mode pausing, live Shopify checks, webhook idempotency, privacy, payment
+handover, and the ban on invented bank/payment data. Staff content is escaped by
+Jinja, inputs are bounded/validated, no staff code is executed, and secrets are never
+returned to the browser.
+
+Current limitations: roles are not finer-grained than the existing authenticated
+staff account; public holidays are stated but are not automatically calculated; the
+generic question/rule schema is versioned for expansion while the production guided
+executor currently specializes in bicycles. Railway deployment needs no new secret:
+deploy the commit normally, allow startup to create the four tables, sign in, review
+the seeded live version, test Draft and Live, then publish only intentional changes.
+`SHOPIFY_API_VERSION` is optional and defaults to
 `2026-07`. If Shopify configuration or the live service is unavailable, product requests
 degrade to a safe customer-facing response without disrupting webhook acknowledgement.
 

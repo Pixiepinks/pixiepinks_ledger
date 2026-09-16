@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum
+from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
@@ -254,3 +254,52 @@ class WhatsAppOrderIntent(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     details_completed_at = Column(DateTime)
     payment_handover_at = Column(DateTime)
+
+
+# ---------------------- AI Bot Management ----------------------
+class BotConfiguration(Base):
+    """The mutable draft and live pointer. Published history lives separately."""
+
+    __tablename__ = "bot_configurations"
+    id = Column(Integer, primary_key=True)
+    published_version = Column(Integer, nullable=False, default=1)
+    draft_revision = Column(Integer, nullable=False, default=0)
+    published_snapshot = Column(JSON, nullable=False)
+    draft_snapshot = Column(JSON, nullable=False)
+    published_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BotConfigurationVersion(Base):
+    __tablename__ = "bot_configuration_versions"
+    id = Column(Integer, primary_key=True)
+    version = Column(Integer, unique=True, nullable=False, index=True)
+    snapshot = Column(JSON, nullable=False)
+    change_summary = Column(Text, nullable=False)
+    published_by = Column(String(100))
+    published_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class BotKnowledgeEntry(Base):
+    __tablename__ = "bot_knowledge_entries"
+    id = Column(Integer, primary_key=True)
+    kind = Column(String(20), nullable=False, default="KNOWLEDGE")
+    scope = Column(String(20), nullable=False, default="GLOBAL")
+    scope_reference = Column(String(255))
+    title = Column(String(255), nullable=False)
+    topic = Column(String(100))
+    content = Column(Text, nullable=False)
+    tags = Column(String(500))
+    enabled = Column(Boolean, nullable=False, default=True)
+    archived = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BotAuditEvent(Base):
+    __tablename__ = "bot_audit_events"
+    id = Column(Integer, primary_key=True)
+    action = Column(String(80), nullable=False)
+    summary = Column(Text, nullable=False)
+    actor = Column(String(100))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)

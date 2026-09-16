@@ -47,6 +47,7 @@ from models import (
     WhatsAppManualSend,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
+    BotAuditEvent, BotConfiguration, BotConfigurationVersion,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -59,6 +60,7 @@ from whatsapp_service import (
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
+    diagnose_bicycle_collections, discover_collections,
 )
 from bicycle_recommendation import (
     asks_about_fit,
@@ -78,6 +80,11 @@ from bicycle_recommendation import (
 from order_intent_service import (
     OrderIntentStatus, calculate_total, delivery_window, extract_sri_lankan_phones,
     get_bicycle_initial_service_charge, is_cancellation, service_decision,
+)
+from bot_configuration_service import (
+    HARD_GUARDRAILS, ensure_configuration, get_snapshot, publish as publish_bot_config,
+    recommended_size as configured_bicycle_size, restore_as_draft, save_draft,
+    service_charge as configured_service_charge, validate_snapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -359,7 +366,8 @@ def _start_bicycle_intent(sender: str, product: dict) -> str | None:
         return None
     variant = available[0]
     size = _variant_size(variant)
-    charge = get_bicycle_initial_service_charge(size)
+    with SessionLocal() as config_db:
+        charge = configured_service_charge(config_db, size) if size else None
     if charge is None:
         return "Please select the bicycle size before I quote the optional service charge."
     price = Decimal(str(variant["price"]))
@@ -410,7 +418,7 @@ def _active_order_reply(sender: str, text_body: str) -> str | None:
             if choice is None:
                 return ("Please confirm whether you would like the optional initial "
                         "service/greasing: yes or no.")
-            charge = get_bicycle_initial_service_charge(intent.bicycle_size) if choice else Decimal("0")
+            charge = configured_service_charge(db, intent.bicycle_size) if choice else Decimal("0")
             intent.initial_service_requested = choice
             intent.initial_service_charge = charge
             intent.final_total = calculate_total(intent.product_price, charge, 0)
@@ -474,12 +482,16 @@ def _active_order_reply(sender: str, text_body: str) -> str | None:
                    f"Shopify: {intent.product_url or ''}"),
         ))
         db.commit()
-        today, earliest, latest = delivery_window()
+        delivery_config, _ = get_snapshot(db)
+        minimum_days = delivery_config["delivery"]["minimum_working_days"]
+        maximum_days = delivery_config["delivery"]["maximum_working_days"]
+        today, earliest, latest = delivery_window(
+            minimum_days=minimum_days, maximum_days=maximum_days)
         return (f"Thank you 😊 Your delivery details have been received.\n\n🚲 {intent.product_title}\n"
                 f"Variant: {intent.variant_title or 'Selected variant'}\nTotal: Rs. {intent.final_total:,.0f}\n"
                 "🚚 Islandwide Delivery: FREE\n\nOur PixiePinks team will send you the bank/payment details.\n\n"
                 f"If payment is arranged today, {today.strftime('%d %B %Y')}, delivery is normally "
-                f"expected within approximately 3–4 working days: {earliest.strftime('%d %B %Y')} "
+                f"expected within approximately {minimum_days}–{maximum_days} working days: {earliest.strftime('%d %B %Y')} "
                 f"to {latest.strftime('%d %B %Y')}. Weekends are skipped; public holidays are not "
                 "currently included. This is an estimate, not a guaranteed delivery date.")
 
@@ -543,7 +555,8 @@ def _reply_to_text_message(
                     logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_age_invalid gender=%s",
                                 persisted_state, persisted_gender)
                     raise StopIteration
-                size_answer = recommended_bicycle_size(age_answer)
+                with SessionLocal() as config_db:
+                    size_answer, _ = configured_bicycle_size(config_db, age_answer)
                 _set_bicycle_workflow(sender, SHOWING_PRODUCTS, gender=persisted_gender,
                                       age=age_answer, size=size_answer)
                 persisted_age, persisted_size = age_answer, size_answer
@@ -660,7 +673,11 @@ def _reply_to_text_message(
                 # Reconstruct the last result intent, then fetch Shopify again;
                 # assistant prose is never treated as current product data.
                 if bicycle_stage == "results" and preference and (age is not None or prior_result_size):
-                    size = prior_result_size or recommended_bicycle_size(age)
+                    if prior_result_size:
+                        size = prior_result_size
+                    else:
+                        with SessionLocal() as config_db:
+                            size, _ = configured_bicycle_size(config_db, age)
                     collection_config = bicycle_collection(preference, size)
                     try:
                         result = (search_bicycles_by_collection(preference, size, limit=10)
@@ -718,7 +735,11 @@ def _reply_to_text_message(
                 reply = f"Great. How old is {pronoun}?"
                 _set_bicycle_workflow(sender, AWAITING_BICYCLE_AGE, gender=preference)
             elif bicycle_related and preference and (age is not None or direct_size):
-                size = int(direct_size) if direct_size else recommended_bicycle_size(age)
+                if direct_size:
+                    size = int(direct_size)
+                else:
+                    with SessionLocal() as config_db:
+                        size, _ = configured_bicycle_size(config_db, age)
                 collection_config = bicycle_collection(preference, size)
                 if collection_config is None:
                     reply = (f"A {size}-inch bicycle is an age-based starting recommendation, "
@@ -1043,6 +1064,24 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
         status_code=303,
         headers={"Location": f"{LOGIN_PATH}?next={quote(request.url.path)}"}
     )
+
+
+def _bot_page_context(request: Request, db: Session, active: str, **extra) -> dict:
+    config = ensure_configuration(db)
+    draft, _ = get_snapshot(db, draft=True)
+    live, version = get_snapshot(db)
+    errors, warnings = validate_snapshot(draft)
+    versions = db.query(BotConfigurationVersion).order_by(
+        BotConfigurationVersion.version.desc()).limit(20).all()
+    audits = db.query(BotAuditEvent).order_by(BotAuditEvent.created_at.desc()).limit(10).all()
+    context = {
+        "request": request, "page_title": "AI Bot Management", "active": active,
+        "config": config, "draft": draft, "live": live, "version": version,
+        "errors": errors, "warnings": warnings, "versions": versions, "audits": audits,
+        "guardrails": HARD_GUARDRAILS,
+    }
+    context.update(extra)
+    return context
 
 # ---------------------- Startup ----------------------
 @app.on_event("startup")
@@ -1492,6 +1531,148 @@ def crm_orders(request: Request, status_filter: str = "active", db: Session = De
     orders = query.order_by(WhatsAppOrderIntent.updated_at.desc()).limit(200).all()
     return templates.TemplateResponse("crm_orders.html", {"request": request, "orders": orders,
         "status_filter": status_filter, "page_title": "Orders / Sales Intents", "user": user})
+
+
+@app.get("/crm/bot-management", response_class=HTMLResponse)
+@app.get("/crm/bot-management/{section}", response_class=HTMLResponse)
+def bot_management(request: Request, section: str = "overview", db: Session = Depends(get_db),
+                   user: User = Depends(require_user)):
+    allowed = {"overview", "instructions", "policies", "catalog", "rules", "faqs", "test", "versions"}
+    if section not in allowed:
+        raise HTTPException(status_code=404)
+    collections, catalog_error = [], None
+    if section == "catalog":
+        try:
+            collections = discover_collections(str(request.query_params.get("q", "")))
+        except ShopifyCatalogError:
+            catalog_error = "Shopify collection discovery is currently unavailable."
+    return templates.TemplateResponse("bot_management.html", _bot_page_context(
+        request, db, section, collections=collections, catalog_error=catalog_error))
+
+
+@app.post("/crm/bot-management/settings")
+def bot_save_settings(
+    request: Request, instructions: str = Form(...), maximum_products: int = Form(...),
+    reply_in_customer_language: bool = Form(False), ask_one_question: bool = Form(False),
+    moderate_emojis: bool = Form(False), concise: bool = Form(False),
+    send_product_images: bool = Form(False), db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    snapshot, _ = get_snapshot(db, draft=True)
+    snapshot["global"].update({
+        "instructions": instructions.strip(), "maximum_products": maximum_products,
+        "reply_in_customer_language": reply_in_customer_language,
+        "ask_one_question": ask_one_question, "moderate_emojis": moderate_emojis,
+        "concise": concise, "send_product_images": send_product_images,
+    })
+    save_draft(db, snapshot, user.username, "Updated response settings and global instructions")
+    return RedirectResponse("/crm/bot-management/instructions", status_code=303)
+
+
+@app.post("/crm/bot-management/bicycle")
+async def bot_save_bicycle(request: Request, db: Session = Depends(get_db),
+                            user: User = Depends(require_user)):
+    form = await request.form()
+    snapshot, _ = get_snapshot(db, draft=True)
+    rules = []
+    for index in range(4):
+        end_value = str(form.get(f"age_to_{index}", "")).strip()
+        rules.append({"from": int(form[f"age_from_{index}"]),
+                      "to": int(end_value) if end_value else None,
+                      "size": int(form[f"size_{index}"]),
+                      "enabled": form.get(f"enabled_{index}") == "on"})
+    charges = {str(size): str(Decimal(str(form[f"charge_{size}"])).quantize(Decimal("0.01")))
+               for size in (12, 16, 20, 26)}
+    snapshot["bicycle"]["age_rules"] = rules
+    snapshot["bicycle"]["service_charges"] = charges
+    snapshot["bicycle"]["free_islandwide_delivery"] = form.get("free_delivery") == "on"
+    snapshot["delivery"]["minimum_working_days"] = int(form["delivery_min"])
+    snapshot["delivery"]["maximum_working_days"] = int(form["delivery_max"])
+    save_draft(db, snapshot, user.username, "Updated bicycle, service and delivery rules")
+    return RedirectResponse("/crm/bot-management/rules", status_code=303)
+
+
+@app.post("/crm/bot-management/entry")
+def bot_add_entry(
+    kind: str = Form(...), scope: str = Form(...), scope_reference: str = Form(""),
+    title: str = Form(...), topic: str = Form(""), content: str = Form(...),
+    tags: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user),
+):
+    kind = kind.upper()
+    scope = scope.upper()
+    if kind not in {"KNOWLEDGE", "POLICY", "FAQ"} or scope not in {"GLOBAL", "COLLECTION", "PRODUCT"}:
+        raise HTTPException(400, "Invalid entry type or scope")
+    if not title.strip() or not content.strip() or len(content) > 10000:
+        raise HTTPException(400, "Title and approved content are required")
+    snapshot, _ = get_snapshot(db, draft=True)
+    bucket = {"KNOWLEDGE": "knowledge", "POLICY": "policies", "FAQ": "faqs"}[kind]
+    entries = snapshot.setdefault(bucket, [])
+    entries.append({"id": max([int(item.get("id", 0)) for item in entries] + [0]) + 1,
+                    "title": title.strip(), "topic": topic.strip(), "content": content.strip(),
+                    "scope": scope, "scope_reference": scope_reference.strip(),
+                    "tags": tags.strip(), "enabled": True})
+    save_draft(db, snapshot, user.username, f"Added draft {kind.lower()}: {title.strip()}")
+    return RedirectResponse(f"/crm/bot-management/{'faqs' if kind == 'FAQ' else 'policies' if kind == 'POLICY' else 'catalog'}", status_code=303)
+
+
+@app.post("/crm/bot-management/publish")
+def bot_publish(confirm: str = Form(""), change_summary: str = Form(...),
+                db: Session = Depends(get_db), user: User = Depends(require_user)):
+    if confirm != "PUBLISH":
+        raise HTTPException(400, "Explicit publish confirmation is required")
+    try:
+        publish_bot_config(db, user.username, change_summary.strip() or "Published configuration changes")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return RedirectResponse("/crm/bot-management/versions", status_code=303)
+
+
+@app.post("/crm/bot-management/versions/{version}/restore")
+def bot_restore(version: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    try:
+        restore_as_draft(db, version, user.username)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+    return RedirectResponse("/crm/bot-management/versions", status_code=303)
+
+
+@app.post("/crm/bot-management/test", response_class=HTMLResponse)
+def bot_test(request: Request, message: str = Form(...), mode: str = Form("live"),
+             db: Session = Depends(get_db), user: User = Depends(require_user)):
+    draft = mode == "draft"
+    snapshot, version = get_snapshot(db, draft=draft)
+    preference = detect_bicycle_preference(message)
+    age = extract_child_age(message)
+    trace = {"category": "Bicycles" if is_bicycle_request(message) else "General",
+             "mode": "DRAFT" if draft else "LIVE", "version": version,
+             "gender": preference, "age": age, "size": None, "matched_rule": None}
+    if trace["category"] == "Bicycles" and age is not None:
+        try:
+            size, _ = configured_bicycle_size(db, age, draft=draft)
+            trace["size"] = size
+            trace["matched_rule"] = next((rule for rule in snapshot["bicycle"]["age_rules"]
+                                           if rule.get("enabled") and age >= rule["from"] and
+                                           (rule.get("to") is None or age <= rule["to"])), None)
+            response = f"For a {age}-year-old, a {size}-inch bicycle is an age-based starting point."
+        except ValueError:
+            response = "No approved bicycle recommendation rule covers that age."
+    else:
+        response = "Simulation identified a general enquiry. No external message or business record was created."
+    return templates.TemplateResponse("bot_management.html", _bot_page_context(
+        request, db, "test", simulation={"message": message, "response": response, "trace": trace}))
+
+
+@app.post("/crm/bot-management/catalog/refresh")
+def bot_refresh_catalog(db: Session = Depends(get_db), user: User = Depends(require_user)):
+    # Read-only Shopify discovery. The catalogue remains in Shopify and is not duplicated.
+    try:
+        collections = discover_collections()
+        summary = f"Read-only Shopify collection discovery found {len(collections)} collections"
+    except ShopifyCatalogError:
+        summary = "Shopify collection discovery was unavailable; no catalogue data changed"
+    db.add(BotAuditEvent(action="SHOPIFY_REFRESH", summary=summary, actor=user.username))
+    db.commit()
+    return RedirectResponse("/crm/bot-management/catalog", status_code=303)
 
 
 @app.get("/crm", response_class=HTMLResponse)
