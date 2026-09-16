@@ -10,7 +10,8 @@ from sqlalchemy.pool import StaticPool
 from database import Base
 from bot_configuration_service import (
     ensure_configuration, get_snapshot, publish, recommended_size, restore_as_draft,
-    save_draft, service_charge, validate_snapshot,
+    save_draft, service_charge, validate_snapshot, normalize_answer, evaluate_rule,
+    relevant_entries,
 )
 from models import BotConfigurationVersion
 from order_intent_service import delivery_window
@@ -125,3 +126,32 @@ def test_knowledge_scopes_and_disabled_draft_do_not_leak_live(db):
     save_draft(db, draft, "staff", "knowledge")
     assert get_snapshot(db)[0]["knowledge"] == []
     assert len(get_snapshot(db, draft=True)[0]["knowledge"]) == 2
+
+
+def test_scope_validation_and_relevant_knowledge_isolation():
+    from bot_configuration_service import default_snapshot
+    snapshot = default_snapshot()
+    snapshot["knowledge"] = [
+        {"title": "Store", "scope": "GLOBAL", "content": "global", "enabled": True},
+        {"title": "Toy warranty", "scope": "COLLECTION", "scope_reference": "toys",
+         "content": "toy", "tags": "warranty", "enabled": True},
+        {"title": "Chocolate", "scope": "COLLECTION", "scope_reference": "chocolates",
+         "content": "chocolate", "tags": "ingredients", "enabled": True},
+        {"title": "Archived", "scope": "GLOBAL", "content": "old", "enabled": True,
+         "archived": True},
+    ]
+    assert [x["content"] for x in relevant_entries(
+        snapshot, "knowledge", "toy warranty", collection="toys")] == ["global", "toy"]
+    snapshot["knowledge"].append({"title": "Bad", "scope": "PRODUCT", "content": "x"})
+    assert any("requires a Shopify product" in error for error in validate_snapshot(snapshot)[0])
+
+
+def test_guided_answers_and_rules_are_closed_and_deterministic():
+    assert normalize_answer({"answer_type": "CHOICE", "choices": [
+        {"label": "Boy", "value": "BOY", "aliases": ["boy kenekta"]}]}, "boy kenekta") == "BOY"
+    assert normalize_answer({"answer_type": "YES_NO"}, "ඔව්") == "YES"
+    assert normalize_answer({"answer_type": "NUMBER"}, "7") == Decimal("7")
+    assert evaluate_rule({"conditions": [{"key": "age", "operator": "BETWEEN",
+        "value": 6, "value_to": 10}]}, {"age": 7})
+    assert not evaluate_rule({"conditions": [{"key": "age", "operator": "PYTHON",
+        "value": "eval('x')"}]}, {"age": 7})

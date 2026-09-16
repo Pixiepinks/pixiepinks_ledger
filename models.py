@@ -303,3 +303,34 @@ class BotAuditEvent(Base):
     summary = Column(Text, nullable=False)
     actor = Column(String(100))
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class ShopifyCollectionReference(Base):
+    """Lightweight, read-only directory metadata last observed in Shopify."""
+
+    __tablename__ = "shopify_collection_references"
+    id = Column(Integer, primary_key=True)
+    shopify_id = Column(String(255), unique=True, nullable=False, index=True)
+    handle = Column(String(255), unique=True, nullable=False, index=True)
+    title = Column(String(500), nullable=False, index=True)
+    product_count = Column(Integer)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    refreshed_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class BotGuidedFlowState(Base):
+    """Version-pinned structured state for a live generic guided flow."""
+
+    __tablename__ = "bot_guided_flow_states"
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"),
+                             unique=True, nullable=False, index=True)
+    configuration_version = Column(Integer, nullable=False, index=True)
+    collection_reference = Column(String(255), nullable=False, index=True)
+    current_question_key = Column(String(100))
+    normalized_answers = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="ACTIVE", index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow,
+                        onupdate=datetime.utcnow)

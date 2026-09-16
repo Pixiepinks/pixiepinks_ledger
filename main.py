@@ -47,7 +47,7 @@ from models import (
     WhatsAppManualSend,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
-    BotAuditEvent, BotConfiguration, BotConfigurationVersion,
+    BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -60,7 +60,8 @@ from whatsapp_service import (
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
-    diagnose_bicycle_collections, discover_collections,
+    diagnose_bicycle_collections, discover_collections, search_products_for_management,
+    products_for_collection,
 )
 from bicycle_recommendation import (
     asks_about_fit,
@@ -1070,15 +1071,21 @@ def _bot_page_context(request: Request, db: Session, active: str, **extra) -> di
     config = ensure_configuration(db)
     draft, _ = get_snapshot(db, draft=True)
     live, version = get_snapshot(db)
+    draft.setdefault("guided_flows", [])
+    live.setdefault("guided_flows", [])
     errors, warnings = validate_snapshot(draft)
     versions = db.query(BotConfigurationVersion).order_by(
         BotConfigurationVersion.version.desc()).limit(20).all()
     audits = db.query(BotAuditEvent).order_by(BotAuditEvent.created_at.desc()).limit(10).all()
+    cached_collections = db.query(ShopifyCollectionReference).filter_by(active=True).order_by(
+        ShopifyCollectionReference.title).all()
+    last_refresh = db.query(func.max(ShopifyCollectionReference.refreshed_at)).scalar()
     context = {
         "request": request, "page_title": "AI Bot Management", "active": active,
         "config": config, "draft": draft, "live": live, "version": version,
         "errors": errors, "warnings": warnings, "versions": versions, "audits": audits,
-        "guardrails": HARD_GUARDRAILS,
+        "guardrails": HARD_GUARDRAILS, "collection_options": cached_collections,
+        "last_shopify_refresh": last_refresh,
     }
     context.update(extra)
     return context
@@ -1542,10 +1549,13 @@ def bot_management(request: Request, section: str = "overview", db: Session = De
         raise HTTPException(status_code=404)
     collections, catalog_error = [], None
     if section == "catalog":
-        try:
-            collections = discover_collections(str(request.query_params.get("q", "")))
-        except ShopifyCatalogError:
-            catalog_error = "Shopify collection discovery is currently unavailable."
+        query = str(request.query_params.get("q", "")).strip()
+        collection_query = db.query(ShopifyCollectionReference).filter_by(active=True)
+        if query:
+            collection_query = collection_query.filter(or_(
+                ShopifyCollectionReference.title.ilike(f"%{query}%"),
+                ShopifyCollectionReference.handle.ilike(f"%{query}%")))
+        collections = collection_query.order_by(ShopifyCollectionReference.title).limit(100).all()
     return templates.TemplateResponse("bot_management.html", _bot_page_context(
         request, db, section, collections=collections, catalog_error=catalog_error))
 
@@ -1604,13 +1614,27 @@ def bot_add_entry(
         raise HTTPException(400, "Invalid entry type or scope")
     if not title.strip() or not content.strip() or len(content) > 10000:
         raise HTTPException(400, "Title and approved content are required")
+    reference = scope_reference.strip()
+    if scope == "GLOBAL" and reference:
+        raise HTTPException(400, "Global content must not select a Shopify item")
+    if scope == "COLLECTION":
+        valid = db.query(ShopifyCollectionReference).filter_by(handle=reference, active=True).first()
+        if not valid: raise HTTPException(400, "Select a valid Shopify collection")
+    if scope == "PRODUCT":
+        try:
+            valid_product = get_product_by_handle(reference) if reference else None
+        except ShopifyCatalogError:
+            raise HTTPException(503, "Shopify product validation is temporarily unavailable") from None
+        if not valid_product:
+            raise HTTPException(400, "Select a valid Shopify product")
     snapshot, _ = get_snapshot(db, draft=True)
     bucket = {"KNOWLEDGE": "knowledge", "POLICY": "policies", "FAQ": "faqs"}[kind]
     entries = snapshot.setdefault(bucket, [])
     entries.append({"id": max([int(item.get("id", 0)) for item in entries] + [0]) + 1,
                     "title": title.strip(), "topic": topic.strip(), "content": content.strip(),
-                    "scope": scope, "scope_reference": scope_reference.strip(),
-                    "tags": tags.strip(), "enabled": True})
+                    "scope": scope, "scope_reference": reference,
+                    "tags": tags.strip(), "enabled": True, "archived": False,
+                    "updated_at": datetime.utcnow().isoformat()})
     save_draft(db, snapshot, user.username, f"Added draft {kind.lower()}: {title.strip()}")
     return RedirectResponse(f"/crm/bot-management/{'faqs' if kind == 'FAQ' else 'policies' if kind == 'POLICY' else 'catalog'}", status_code=303)
 
@@ -1620,6 +1644,25 @@ def bot_publish(confirm: str = Form(""), change_summary: str = Form(...),
                 db: Session = Depends(get_db), user: User = Depends(require_user)):
     if confirm != "PUBLISH":
         raise HTTPException(400, "Explicit publish confirmation is required")
+    draft, _ = get_snapshot(db, draft=True)
+    active_collections = {row.handle for row in db.query(ShopifyCollectionReference).filter_by(
+        active=True).all()}
+    for bucket in ("knowledge", "policies", "faqs"):
+        for entry in draft.get(bucket, []):
+            if entry.get("scope") == "COLLECTION" and entry.get("scope_reference") not in active_collections:
+                raise HTTPException(400, f"{entry.get('title', 'Entry')} selects a Shopify collection that no longer exists")
+            if entry.get("scope") == "PRODUCT":
+                try: valid_product = get_product_by_handle(str(entry.get("scope_reference") or ""))
+                except ShopifyCatalogError: raise HTTPException(503, "Shopify validation is temporarily unavailable") from None
+                if not valid_product:
+                    raise HTTPException(400, f"{entry.get('title', 'Entry')} selects a Shopify product that no longer exists")
+    for flow in draft.get("guided_flows", []):
+        if flow.get("collection_reference") not in active_collections:
+            raise HTTPException(400, "A guided flow collection no longer exists in Shopify")
+        for rule in flow.get("rules", []):
+            action = rule.get("action", {})
+            if action.get("type") == "CHOOSE_COLLECTION" and action.get("collection_reference") not in active_collections:
+                raise HTTPException(400, f"Rule {rule.get('name', '')} has no valid Shopify target collection")
     try:
         publish_bot_config(db, user.username, change_summary.strip() or "Published configuration changes")
     except ValueError as exc:
@@ -1667,12 +1710,123 @@ def bot_refresh_catalog(db: Session = Depends(get_db), user: User = Depends(requ
     # Read-only Shopify discovery. The catalogue remains in Shopify and is not duplicated.
     try:
         collections = discover_collections()
+        now = datetime.utcnow()
+        seen = set()
+        for collection in collections:
+            if not collection.get("id") or not collection.get("handle"): continue
+            seen.add(collection["id"])
+            cached = db.query(ShopifyCollectionReference).filter_by(
+                shopify_id=collection["id"]).one_or_none()
+            if cached is None:
+                cached = ShopifyCollectionReference(shopify_id=collection["id"],
+                    handle=collection["handle"], title=collection["title"] or collection["handle"])
+                db.add(cached)
+            cached.handle = collection["handle"]
+            cached.title = collection.get("title") or collection["handle"]
+            cached.product_count, cached.active = collection.get("product_count"), True
+            cached.last_seen_at = cached.refreshed_at = now
+        if seen:
+            db.query(ShopifyCollectionReference).filter(
+                ShopifyCollectionReference.shopify_id.notin_(seen)).update(
+                    {ShopifyCollectionReference.active: False}, synchronize_session=False)
         summary = f"Read-only Shopify collection discovery found {len(collections)} collections"
     except ShopifyCatalogError:
         summary = "Shopify collection discovery was unavailable; no catalogue data changed"
     db.add(BotAuditEvent(action="SHOPIFY_REFRESH", summary=summary, actor=user.username))
     db.commit()
     return RedirectResponse("/crm/bot-management/catalog", status_code=303)
+
+
+@app.get("/crm/bot-management/api/products")
+def bot_product_search(q: str = Query("", min_length=2, max_length=100),
+                       user: User = Depends(require_user)):
+    try:
+        products = search_products_for_management(q, 10)
+    except ShopifyCatalogError:
+        raise HTTPException(503, "Shopify product search is temporarily unavailable") from None
+    return {"products": [{key: product.get(key) for key in
+            ("title", "handle", "vendor", "product_type", "featured_image", "url")}
+            | {"available": any(v.get("available") for v in product.get("variants", []))}
+            for product in products]}
+
+
+@app.get("/crm/bot-management/catalog/collection/{handle}", response_class=HTMLResponse)
+def bot_collection_workspace(request: Request, handle: str, tab: str = "overview", q: str = "",
+                             db: Session = Depends(get_db), user: User = Depends(require_user)):
+    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).one_or_none()
+    if not collection: raise HTTPException(404, "Shopify collection was not found")
+    if tab not in {"overview", "knowledge", "guided", "rules", "faqs", "products", "test"}:
+        raise HTTPException(404)
+    products, error = [], None
+    if tab == "products":
+        try: products = products_for_collection(collection.shopify_id, q, 20)
+        except ShopifyCatalogError: error = "Shopify products are temporarily unavailable."
+    return templates.TemplateResponse("bot_collection.html", _bot_page_context(
+        request, db, "catalog", collection=collection, workspace_tab=tab,
+        products=products, catalog_error=error, user=user))
+
+
+@app.post("/crm/bot-management/catalog/collection/{handle}/question")
+async def bot_add_guided_question(handle: str, request: Request, db: Session = Depends(get_db),
+                                  user: User = Depends(require_user)):
+    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).first()
+    if not collection: raise HTTPException(404, "Shopify collection was not found")
+    form = await request.form()
+    key = str(form.get("key", "")).strip().lower()
+    answer_type = str(form.get("answer_type", "")).upper()
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,49}", key):
+        raise HTTPException(400, "Question key must use lowercase letters, numbers or underscores")
+    if answer_type not in {"CHOICE", "NUMBER", "YES_NO", "TEXT"}:
+        raise HTTPException(400, "Invalid answer type")
+    choices = [x.strip() for x in str(form.get("choices", "")).split(",") if x.strip()]
+    if answer_type == "CHOICE" and len(choices) < 2:
+        raise HTTPException(400, "Choice questions require at least two choices")
+    snapshot, _ = get_snapshot(db, draft=True)
+    flows = snapshot.setdefault("guided_flows", [])
+    flow = next((x for x in flows if x.get("collection_reference") == handle), None)
+    if flow is None:
+        flow = {"collection_reference": handle, "enabled": True, "questions": [], "rules": []}
+        flows.append(flow)
+    if any(q.get("key") == key for q in flow["questions"]):
+        raise HTTPException(400, "Question key already exists")
+    flow["questions"].append({"label": str(form.get("label", "")).strip()[:100], "key": key,
+        "text": str(form.get("text", "")).strip()[:1000],
+        "text_si": str(form.get("text_si", "")).strip()[:1000], "answer_type": answer_type,
+        "choices": choices, "required": form.get("required") == "on",
+        "display_order": int(form.get("display_order", len(flow["questions"]) + 1)), "enabled": True})
+    flow["questions"].sort(key=lambda q: q["display_order"])
+    save_draft(db, snapshot, user.username, f"Added guided question to {collection.title}")
+    return RedirectResponse(f"/crm/bot-management/catalog/collection/{handle}?tab=guided", 303)
+
+
+@app.post("/crm/bot-management/catalog/collection/{handle}/rule")
+async def bot_add_guided_rule(handle: str, request: Request, db: Session = Depends(get_db),
+                              user: User = Depends(require_user)):
+    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).first()
+    if not collection: raise HTTPException(404, "Shopify collection was not found")
+    form = await request.form()
+    operator, action_type = str(form.get("operator", "")).upper(), str(form.get("action_type", "")).upper()
+    if operator not in {"EQUALS", "BETWEEN", "CONTAINS"} or action_type not in {
+            "SET_ATTRIBUTE", "CHOOSE_COLLECTION", "PRODUCT_FILTER", "SET_VALUE", "ASK_NEXT", "NO_MATCH"}:
+        raise HTTPException(400, "Unsupported rule condition or action")
+    target = str(form.get("target_collection", "")).strip()
+    if action_type == "CHOOSE_COLLECTION" and not db.query(ShopifyCollectionReference).filter_by(
+            handle=target, active=True).first():
+        raise HTTPException(400, "Select a valid Shopify target collection")
+    snapshot, _ = get_snapshot(db, draft=True)
+    flow = next((x for x in snapshot.setdefault("guided_flows", [])
+                 if x.get("collection_reference") == handle), None)
+    if not flow: raise HTTPException(400, "Create a guided question before adding rules")
+    if str(form.get("key", "")) not in {q["key"] for q in flow["questions"]}:
+        raise HTTPException(400, "Select an existing guided question")
+    flow["rules"].append({"name": str(form.get("name", "Recommendation rule")).strip()[:150],
+        "conditions": [{"key": form["key"], "operator": operator, "value": str(form.get("value", ""))[:200],
+                        "value_to": str(form.get("value_to", ""))[:200]}],
+        "action": {"type": action_type, "key": str(form.get("action_key", ""))[:100],
+                   "value": str(form.get("action_value", ""))[:200], "collection_reference": target},
+        "enabled": True})
+    save_draft(db, snapshot, user.username, f"Added recommendation rule to {collection.title}")
+    return RedirectResponse(f"/crm/bot-management/catalog/collection/{handle}?tab=rules", 303)
 
 
 @app.get("/crm", response_class=HTMLResponse)
