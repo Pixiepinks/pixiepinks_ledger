@@ -184,6 +184,14 @@ query BicycleCollectionDiagnostic($first: Int!) {
 }
 """
 
+COLLECTION_BROWSER_QUERY = """
+query CollectionBrowser($first: Int!, $query: String!) {
+  collections(first: $first, query: $query, sortKey: TITLE) {
+    nodes { id title handle productsCount { count } }
+  }
+}
+"""
+
 
 def parse_filters(query: str) -> dict:
     text = query.casefold()
@@ -215,6 +223,18 @@ def parse_filters(query: str) -> dict:
         "size": next((group for group in size.groups() if group), None) if size else None,
         "colour": colour,
     }
+
+
+def discover_collections(query: str = "", limit: int = 100,
+                         catalog_client: ShopifyCatalogClient | None = None) -> list[dict]:
+    """Read current collection metadata for the management browser; never mutates Shopify."""
+    client = catalog_client or ShopifyCatalogClient()
+    data = client.graphql(COLLECTION_BROWSER_QUERY,
+                          {"first": max(1, min(int(limit), 100)), "query": query.strip()})
+    return [{"id": node.get("id"), "title": node.get("title"),
+             "handle": node.get("handle"),
+             "product_count": (node.get("productsCount") or {}).get("count")}
+            for node in (data.get("collections") or {}).get("nodes", [])]
 
 
 def parse_search_intent(text: str) -> dict:

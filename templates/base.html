@@ -21,6 +21,7 @@
       <p class="nav-label">Customer service</p>
       <a href="/crm/whatsapp" class="{{ 'active' if request.url.path.startswith('/crm/whatsapp') else '' }}"><span>◉</span> WhatsApp Inbox{% if unread_whatsapp %}<b class="nav-count">{{ unread_whatsapp }}</b>{% endif %}</a>
       <a href="/crm/leads" class="{{ 'active' if request.url.path.startswith('/crm/leads') else '' }}"><span>◎</span> CRM / Leads</a>
+      <a href="/crm/bot-management" class="{{ 'active' if request.url.path.startswith('/crm/bot-management') else '' }}"><span>✦</span> AI Bot Management</a>
       <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>
       <p class="nav-label">Sales</p>
       <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>
