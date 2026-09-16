@@ -421,6 +421,80 @@ def test_non_product_greeting_does_not_query_shopify(monkeypatch):
     assert response.status_code == 200
 
 
+def test_persisted_bicycle_workflow_routes_age_before_openai_across_webhooks(monkeypatch):
+    """Reproduce the production conversation using three independent requests."""
+    texts, images, searches, ai_calls = [], [], [], []
+    monkeypatch.setattr(main, "send_whatsapp_text",
+                        lambda _to, body, **_kwargs: texts.append(body) or True)
+    monkeypatch.setattr(main, "send_whatsapp_image",
+                        lambda _to, url, caption, **_kwargs: images.append((url, caption))
+                        or "wamid.shopify-image")
+    monkeypatch.setattr(main, "generate_customer_reply",
+                        lambda *args: ai_calls.append(args) or "generic AI response")
+    product = {
+        "handle": "live-boys-20", "title": "Live Boys 20 Bicycle",
+        "product_type": "Bicycle", "tags": ["boys"],
+        "url": "https://www.pixiepinks.shop/products/live-boys-20",
+        "featured_image": "https://cdn.shopify.com/live-boys-20.jpg",
+        "featured_image_verified": True,
+        "variants": [{"title": "20 inch", "price": "42500.00", "available": True}],
+    }
+
+    def search(gender, size, query="", limit=5):
+        searches.append((gender, size, query, limit))
+        return {"collection": {"title": 'Size 20" Boys Bicycles'},
+                "products": [product], "reason": "ok"}
+
+    monkeypatch.setattr(main, "search_bicycles_by_collection", search)
+    client = TestClient(main.app)
+    for message_id, body in (("wamid.bike-1", "Bicycle ekak one"),
+                             ("wamid.bike-2", "Boy"), ("wamid.bike-3", "6")):
+        assert client.post("/webhook", json=_message_payload(message_id=message_id,
+                                                               body=body)).status_code == 200
+        # A fresh SQLAlchemy session emulates the next independently handled request.
+        with SessionLocal() as db:
+            conversation = db.query(WhatsAppConversation).one()
+            if body == "Bicycle ekak one":
+                assert conversation.workflow_state == main.AWAITING_BICYCLE_GENDER
+            elif body == "Boy":
+                assert conversation.bicycle_gender == "boy"
+                assert conversation.workflow_state == main.AWAITING_BICYCLE_AGE
+
+    with SessionLocal() as db:
+        conversation = db.query(WhatsAppConversation).one()
+        assert (conversation.active_product_category, conversation.bicycle_gender,
+                conversation.bicycle_age, conversation.bicycle_size,
+                conversation.workflow_state) == (
+                    "bicycle", "boy", 6, 20, main.SHOWING_PRODUCTS)
+        mapping = db.query(WhatsAppOutboundProductMessage).one()
+        assert mapping.shopify_product_handle == "live-boys-20"
+    assert searches == [("boy", 20, "", 10)]
+    assert images and images[0][0] == product["featured_image"]
+    assert "Live Boys 20 Bicycle" in images[0][1] and "Rs. 42,500" in images[0][1]
+    assert ai_calls == []
+    combined = "\n".join(texts + [caption for _, caption in images])
+    assert "team member will confirm current stock" not in combined
+    assert "bicycles-kids-bikes" not in combined
+
+
+def test_invalid_pending_answers_remain_deterministic(monkeypatch):
+    sent, ai_calls = [], []
+    monkeypatch.setattr(main, "send_whatsapp_text",
+                        lambda _to, body, **_kwargs: sent.append(body) or True)
+    monkeypatch.setattr(main, "generate_customer_reply",
+                        lambda *args: ai_calls.append(args) or "wrong")
+    main._set_bicycle_workflow("94770000000", main.AWAITING_BICYCLE_GENDER)
+    main._reply_to_text_message("94770000000", "invalid-gender", "Bo", "Customer")
+    with SessionLocal() as db:
+        assert db.query(WhatsAppConversation).one().workflow_state == main.AWAITING_BICYCLE_GENDER
+    main._set_bicycle_workflow("94770000000", main.AWAITING_BICYCLE_AGE, gender="boy")
+    main._reply_to_text_message("94770000000", "invalid-age", "not sure", "Customer")
+    with SessionLocal() as db:
+        assert db.query(WhatsAppConversation).one().workflow_state == main.AWAITING_BICYCLE_AGE
+    assert sent == ["Is it for a boy or a girl?", "Please tell me the child's age."]
+    assert ai_calls == []
+
+
 def test_shopify_failure_uses_catalog_fallback_and_webhook_stays_ok(monkeypatch):
     sent = []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: sent.append(args))

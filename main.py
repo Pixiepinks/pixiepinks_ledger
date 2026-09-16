@@ -140,6 +140,10 @@ PRODUCT_TERMS = (
 )
 FOLLOW_UP_TERMS = ("this", "that", "one", "second", "pink ones", "it", "මේ", "ඒක")
 
+AWAITING_BICYCLE_GENDER = "AWAITING_BICYCLE_GENDER"
+AWAITING_BICYCLE_AGE = "AWAITING_BICYCLE_AGE"
+SHOWING_PRODUCTS = "SHOWING_PRODUCTS"
+
 
 def needs_product_catalog(message: str, recent_context: list | None = None) -> bool:
     normalized = " ".join(message.casefold().split())
@@ -229,6 +233,29 @@ def _set_conversation_mode(phone: str, mode: str, staff: str | None = None) -> N
         else:
             conversation.returned_to_ai_at = datetime.utcnow()
         db.commit()
+
+
+def _set_bicycle_workflow(phone: str, state: str | None, *, gender: str | None = None,
+                          age: int | None = None, size: int | None = None) -> None:
+    """Persist deterministic discovery state independently of webhook workers."""
+    with SessionLocal() as db:
+        conversation = _conversation_for_phone(db, phone)
+        if conversation is None:
+            conversation = WhatsAppConversation(phone_number=_normalize_whatsapp_phone(phone))
+            db.add(conversation)
+        conversation.active_product_category = "bicycle" if state else None
+        conversation.workflow_state = state
+        conversation.bicycle_gender = gender
+        conversation.bicycle_age = age
+        conversation.bicycle_size = size
+        conversation.updated_at = datetime.utcnow()
+        db.commit()
+
+
+def _is_explicit_category_switch(message: str) -> bool:
+    """Allow an unambiguous new category request to supersede discovery."""
+    normalized = message.casefold()
+    return any(term in normalized for term in ("chocolate", "chocolates", "toy", "toys"))
 
 
 def _store_product_message(message_id: str | None, phone: str, product: dict) -> None:
@@ -467,8 +494,18 @@ def _reply_to_text_message(
     with SessionLocal() as db:
         conversation = _conversation_for_phone(db, sender)
         if conversation and conversation.mode == "HUMAN":
-            logger.info("WhatsApp automation paused for human-owned conversation sender=%s", sender)
+            logger.info("WhatsApp route mode=HUMAN workflow_state=%s detected_route=store_only",
+                        conversation.workflow_state)
             return
+        persisted_state = conversation.workflow_state if conversation else None
+        persisted_gender = conversation.bicycle_gender if conversation else None
+        persisted_age = conversation.bicycle_age if conversation else None
+        persisted_size = conversation.bicycle_size if conversation else None
+        logger.info(
+            "WhatsApp route mode=AI workflow_state=%s category=%s gender=%s age=%s size=%s",
+            persisted_state, conversation.active_product_category if conversation else None,
+            persisted_gender, persisted_age, persisted_size,
+        )
     if requests_human_handover(text_body):
         reply = HUMAN_HANDOVER_REPLY
         response_kind = "handover"
@@ -477,6 +514,43 @@ def _reply_to_text_message(
     else:
         response_kind = None
         try:
+            if persisted_state and _is_explicit_category_switch(text_body):
+                logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=category_switch",
+                            persisted_state)
+                _set_bicycle_workflow(sender, None)
+                persisted_state = None
+            elif persisted_state == AWAITING_BICYCLE_GENDER:
+                gender_answer = detect_bicycle_preference(text_body)
+                if gender_answer is None:
+                    reply = "Is it for a boy or a girl?"
+                    response_kind = "bicycle_state"
+                    logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_gender_invalid",
+                                persisted_state)
+                    raise StopIteration
+                _set_bicycle_workflow(sender, AWAITING_BICYCLE_AGE, gender=gender_answer)
+                persisted_gender = gender_answer
+                persisted_state = AWAITING_BICYCLE_AGE
+                logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_gender gender=%s",
+                            persisted_state, gender_answer)
+                reply = f"Great. How old is {'he' if gender_answer == 'boy' else 'she'}?"
+                response_kind = "bicycle_state"
+                raise StopIteration
+            elif persisted_state == AWAITING_BICYCLE_AGE:
+                age_answer = extract_child_age(text_body, standalone=True)
+                if age_answer is None:
+                    reply = "Please tell me the child's age."
+                    response_kind = "bicycle_state"
+                    logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_age_invalid gender=%s",
+                                persisted_state, persisted_gender)
+                    raise StopIteration
+                size_answer = recommended_bicycle_size(age_answer)
+                _set_bicycle_workflow(sender, SHOWING_PRODUCTS, gender=persisted_gender,
+                                      age=age_answer, size=size_answer)
+                persisted_age, persisted_size = age_answer, size_answer
+                logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_age gender=%s age=%s size=%s",
+                            persisted_state, persisted_gender, age_answer, size_answer)
+                # Continue into the catalogue branch below; these authoritative
+                # values override all transcript inference.
             active_reply = _active_order_reply(sender, text_body)
             if active_reply is not None:
                 reply = active_reply
@@ -533,6 +607,10 @@ def _reply_to_text_message(
                 # derive the pending question from the turn immediately before it.
                 state_context = context[:-1]
             preference, age, bicycle_stage = infer_guided_state(state_context)
+            if persisted_state == AWAITING_BICYCLE_AGE:
+                preference, age, bicycle_stage = persisted_gender, persisted_age, "age"
+            elif persisted_state == SHOWING_PRODUCTS and persisted_age is not None:
+                preference, age, bicycle_stage = persisted_gender, persisted_age, "age"
             prior_result_size = infer_bicycle_result_size(state_context)
             explicit_preference = detect_bicycle_preference(text_body)
             explicit_age = extract_child_age(text_body, standalone=bicycle_stage == "age")
@@ -634,9 +712,11 @@ def _reply_to_text_message(
                          "the best size.")
             elif bicycle_related and not direct_size and preference is None:
                 reply = "Yes, we do 🚲 Is the bicycle for a boy or a girl?"
+                _set_bicycle_workflow(sender, AWAITING_BICYCLE_GENDER)
             elif bicycle_related and not direct_size and age is None:
                 pronoun = "he" if preference == "boy" else "she"
                 reply = f"Great. How old is {pronoun}?"
+                _set_bicycle_workflow(sender, AWAITING_BICYCLE_AGE, gender=preference)
             elif bicycle_related and preference and (age is not None or direct_size):
                 size = int(direct_size) if direct_size else recommended_bicycle_size(age)
                 collection_config = bicycle_collection(preference, size)
@@ -684,6 +764,8 @@ def _reply_to_text_message(
                         intro += "\nHere are some available options from our live Shopify collection:"
                         bicycle_delivery = (intro, matches[:3])
                         reply = intro
+                        _set_bicycle_workflow(sender, SHOWING_PRODUCTS, gender=preference,
+                                              age=age, size=size)
                     elif result and result.get("collection") and products:
                         reply = (intro + f"\n\nWe have {size}-inch {preference}s bicycles listed, "
                                  "but the matching options are currently shown as unavailable "
@@ -1029,6 +1111,18 @@ def ensure_whatsapp_inbox_columns():
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN send_status VARCHAR(20)")
     if "sent_by" not in columns:
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN sent_by VARCHAR(100)")
+    conversation_columns = {
+        column["name"] for column in inspector.get_columns("whatsapp_conversations")
+    } if inspector.has_table("whatsapp_conversations") else set()
+    for name, sql_type in (
+        ("active_product_category", "VARCHAR(50)"),
+        ("workflow_state", "VARCHAR(50)"),
+        ("bicycle_gender", "VARCHAR(10)"),
+        ("bicycle_age", "INTEGER"),
+        ("bicycle_size", "INTEGER"),
+    ):
+        if name not in conversation_columns:
+            statements.append(f"ALTER TABLE whatsapp_conversations ADD COLUMN {name} {sql_type}")
     if statements:
         with engine.begin() as connection:
             for statement in statements:
