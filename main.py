@@ -61,6 +61,7 @@ from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
     diagnose_bicycle_collections, discover_collections, search_products_for_management,
+    resolve_products_for_management,
     products_for_collection,
 )
 from bicycle_recommendation import (
@@ -1073,6 +1074,20 @@ def _bot_page_context(request: Request, db: Session, active: str, **extra) -> di
     live, version = get_snapshot(db)
     draft.setdefault("guided_flows", [])
     live.setdefault("guided_flows", [])
+    if active in {"catalog", "policies", "faqs"}:
+        product_entries = [entry for bucket in ("knowledge", "policies", "faqs")
+                           for entry in draft.get(bucket, [])
+                           if entry.get("scope") == "PRODUCT" and entry.get("scope_reference")]
+        try:
+            current_products = resolve_products_for_management(
+                [str(entry["scope_reference"]) for entry in product_entries])
+        except ShopifyCatalogError:
+            logger.warning("Could not refresh saved product titles for Bot Management")
+            current_products = {}
+        for entry in product_entries:
+            current = current_products.get(str(entry["scope_reference"]))
+            if current and current.get("title"):
+                entry["scope_reference_title"] = current["title"]
     errors, warnings = validate_snapshot(draft)
     versions = db.query(BotConfigurationVersion).order_by(
         BotConfigurationVersion.version.desc()).limit(20).all()
@@ -1633,6 +1648,8 @@ def bot_add_entry(
     entries.append({"id": max([int(item.get("id", 0)) for item in entries] + [0]) + 1,
                     "title": title.strip(), "topic": topic.strip(), "content": content.strip(),
                     "scope": scope, "scope_reference": reference,
+                    "scope_reference_title": (valid_product.get("title")
+                                              if scope == "PRODUCT" else None),
                     "tags": tags.strip(), "enabled": True, "archived": False,
                     "updated_at": datetime.utcnow().isoformat()})
     save_draft(db, snapshot, user.username, f"Added draft {kind.lower()}: {title.strip()}")
@@ -1738,16 +1755,22 @@ def bot_refresh_catalog(db: Session = Depends(get_db), user: User = Depends(requ
 
 
 @app.get("/crm/bot-management/api/products")
-def bot_product_search(q: str = Query("", min_length=2, max_length=100),
+def bot_product_search(q: str = Query("", max_length=100),
+                       limit: int = Query(20, ge=1, le=25),
+                       cursor: str | None = Query(None, max_length=500,
+                                                  pattern=r"^[A-Za-z0-9_+=/.-]+$"),
                        user: User = Depends(require_user)):
+    """Authenticated, bounded proxy for the reusable Shopify product picker."""
     try:
-        products = search_products_for_management(q, 10)
+        result = search_products_for_management(q, limit, cursor)
     except ShopifyCatalogError:
+        logger.warning("Shopify management product search unavailable")
         raise HTTPException(503, "Shopify product search is temporarily unavailable") from None
-    return {"products": [{key: product.get(key) for key in
-            ("title", "handle", "vendor", "product_type", "featured_image", "url")}
-            | {"available": any(v.get("available") for v in product.get("variants", []))}
-            for product in products]}
+    allowed = ("title", "handle", "vendor", "product_type", "featured_image", "status")
+    return {"products": [{key: product.get(key) for key in allowed}
+                         for product in result["products"]],
+            "next_cursor": result.get("next_cursor"),
+            "has_next_page": result.get("has_next_page", False)}
 
 
 @app.get("/crm/bot-management/catalog/collection/{handle}", response_class=HTMLResponse)
