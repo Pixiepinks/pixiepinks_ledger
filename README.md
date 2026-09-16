@@ -217,6 +217,76 @@ the seeded live version, test Draft and Live, then publish only intentional chan
 `2026-07`. If Shopify configuration or the live service is unavailable, product requests
 degrade to a safe customer-facing response without disrupting webhook acknowledgement.
 
+### Phase 2 store-wide management
+
+Phase 2 extends—not replaces—the original configuration center. **Catalog Knowledge**
+now contains a searchable Shopify Collection Directory backed by a lightweight local
+reference cache. **Refresh Shopify Collections** performs one bounded, read-only
+GraphQL discovery, updates the observed title/handle/count and last-refresh time, and
+marks references no longer returned inactive. It never writes Shopify data. Each
+collection opens a workspace with Overview, Knowledge, Guided Selling, Recommendation
+Rules, FAQs, Products, and Test sections. The product browser fetches at most 20 live
+members only when opened; product selector search requires two characters and returns
+at most 10 results.
+
+Knowledge, policy, and FAQ forms hide irrelevant controls: global content has no
+Shopify binding, collection content uses cached titled collections, and product
+content uses live Shopify product search. The server independently verifies every
+binding. Content stays in the versioned draft until explicit publication, is escaped
+when rendered, and carries no authoritative price or stock. Runtime selection helpers
+apply enabled, non-archived global information before matching collection and product
+information and do not include unrelated scoped content.
+
+The generic guided-selling schema is collection-based. Staff can add ordered English
+questions, optional approved Sinhala wording, and `CHOICE`, `NUMBER`, `YES_NO`, or
+`TEXT` answers. Rules support only allow-listed conditions (`EQUALS`, `BETWEEN`, and
+`CONTAINS`) and actions (`SET_ATTRIBUTE`, `CHOOSE_COLLECTION`, `PRODUCT_FILTER`,
+`SET_VALUE`, `ASK_NEXT`, and `NO_MATCH`). There is no expression interpreter,
+`eval`, executable action, Shopify mutation, accounting action, payment action, or
+arbitrary external call. Target collections are selected from and validated against
+the refreshed directory. `bot_guided_flow_states` provides a persisted place to pin a
+live conversation to its starting configuration version; an active purchase and its
+selected Shopify product/variant remain governed by the existing order-intent record.
+The existing bicycle runtime remains the only live generic-flow specialization in this
+release, retaining gender isolation, approved age sizes, services, free delivery, and
+payment handover. Newly configured non-bicycle flows can be built, reviewed, and
+versioned, but require a later controlled runtime rollout before handling WhatsApp.
+
+The safe Test Bot continues to compare Live and Draft without Meta sends or production
+records. The current simulator reports mode, configuration version, detected category,
+normalized bicycle inputs, and matched age rule. Multi-turn generic test sessions,
+business-level arbitrary-version comparison, editing/archiving existing snapshot
+entries, and full generic live execution remain planned improvements rather than
+pretend controls. Authentication remains the existing staff login because this app has
+no trustworthy fine-grained permission model. Audit records cover refresh, draft save,
+publish, restore, and question/rule draft changes without credentials or customer data.
+
+#### Production verification checklist
+
+1. Sign in and open **AI Bot Management**.
+2. Open **Catalog Knowledge**, select **Refresh Shopify Collections**, and confirm the
+   last-refresh time and real collection titles appear.
+3. Search for a collection and open **Manage**.
+4. Inspect its Overview and read-only Products tab.
+5. Add collection knowledge to Draft; verify Live Test does not use it and Draft Test
+   does after the applicable simulator/runtime support is present.
+6. Edit the bicycle 6–10 age rule in Draft; test Live (still 20 inches), then Draft
+   (the edited size), and restore 20 inches if the change was only a test.
+7. Review validation, enter the exact `PUBLISH` confirmation, publish, and confirm a
+   new immutable version appears.
+8. Run a real WhatsApp bicycle enquiry for gender, age, products/images, service,
+   delivery details, and payment handover.
+9. Open CRM Inbox, confirm history/unread state, use **Take Over**, send a staff reply,
+   then **Return to AI** and verify automation only resumes on the next inbound message.
+10. Confirm leads, sales intents, accounting pages, Meta signature verification, and
+    Shopify live price/availability continue operating normally.
+
+Deployment requires no new secrets and no Shopify write scopes. Deploy the committed
+application normally; startup `Base.metadata.create_all()` creates
+`shopify_collection_references` and `bot_guided_flow_states`. Then sign in, refresh the
+directory, review Draft and Live, run the checklist above, and publish only approved
+changes. Existing Railway, Meta, OpenAI, database, and Shopify variables are unchanged.
+
 To safely check authentication, GraphQL access, and a five-product sample in the
 configured environment, run:
 

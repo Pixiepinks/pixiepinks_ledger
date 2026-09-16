@@ -49,7 +49,7 @@ def default_snapshot() -> dict:
         },
         "delivery": {"minimum_working_days": 3, "maximum_working_days": 4,
                      "skip_weekends": True, "public_holidays_calculated": False},
-        "knowledge": [], "policies": [], "faqs": [], "guided_questions": [],
+        "knowledge": [], "policies": [], "faqs": [], "guided_questions": [], "guided_flows": [],
         "recommendation_rules": [],
     }
 
@@ -129,7 +129,90 @@ def validate_snapshot(snapshot: dict) -> tuple[list[str], list[str]]:
         errors.append("Global instructions cannot be empty.")
     if re.search(r"invent\s+(?:a\s+)?(?:price|stock|bank|payment)", str(instruction), re.I):
         errors.append("Global instructions conflict with locked system guardrails.")
+    for bucket in ("knowledge", "policies", "faqs"):
+        for entry in snapshot.get(bucket, []):
+            scope = entry.get("scope", "GLOBAL")
+            reference = str(entry.get("scope_reference") or "").strip()
+            if scope not in {"GLOBAL", "COLLECTION", "PRODUCT"}:
+                errors.append(f"{entry.get('title', 'Entry')} has an invalid scope.")
+            elif scope == "GLOBAL" and reference:
+                errors.append(f"{entry.get('title', 'Entry')} must not bind global content to Shopify.")
+            elif scope != "GLOBAL" and not reference:
+                errors.append(f"{entry.get('title', 'Entry')} requires a Shopify {scope.lower()} selection.")
+    for flow in snapshot.get("guided_flows", []):
+        keys = set()
+        for question in flow.get("questions", []):
+            key = str(question.get("key", ""))
+            if not re.fullmatch(r"[a-z][a-z0-9_]{0,49}", key) or key in keys:
+                errors.append(f"Guided question key '{key}' is invalid or duplicated.")
+            keys.add(key)
+            if question.get("answer_type") not in {"CHOICE", "NUMBER", "YES_NO", "TEXT"}:
+                errors.append(f"Guided question '{key}' has an invalid answer type.")
+        for rule in flow.get("rules", []):
+            if rule.get("action", {}).get("type") not in {
+                    "SET_ATTRIBUTE", "CHOOSE_COLLECTION", "PRODUCT_FILTER",
+                    "SET_VALUE", "ASK_NEXT", "NO_MATCH"}:
+                errors.append(f"Recommendation rule '{rule.get('name', '')}' has an unsafe action.")
     return errors, warnings
+
+
+def normalize_answer(question: dict, value: str):
+    """Normalize one answer using a closed set of deterministic types."""
+    raw = str(value or "").strip()
+    answer_type = question.get("answer_type")
+    if not raw and question.get("required", True):
+        raise ValueError("This question requires an answer.")
+    if answer_type == "NUMBER":
+        try:
+            return Decimal(raw.replace(",", ""))
+        except InvalidOperation:
+            raise ValueError("Please enter a number.") from None
+    if answer_type == "YES_NO":
+        normalized = raw.casefold()
+        if normalized in {"yes", "y", "true", "1", "ඔව්"}: return "YES"
+        if normalized in {"no", "n", "false", "0", "නැහැ"}: return "NO"
+        raise ValueError("Please answer yes or no.")
+    if answer_type == "CHOICE":
+        folded = raw.casefold()
+        for choice in question.get("choices", []):
+            label = str(choice.get("label", choice) if isinstance(choice, dict) else choice)
+            aliases = choice.get("aliases", []) if isinstance(choice, dict) else []
+            if folded == label.casefold() or folded in {str(item).casefold() for item in aliases}:
+                return str(choice.get("value", label) if isinstance(choice, dict) else label).upper()
+        raise ValueError("Please choose one of the approved answers.")
+    return raw[:1000]
+
+
+def evaluate_rule(rule: dict, answers: dict) -> bool:
+    """Evaluate allow-listed conditions only; configurable content is never executed."""
+    for condition in rule.get("conditions", []):
+        actual, operator = answers.get(condition.get("key")), condition.get("operator")
+        expected = condition.get("value")
+        if operator == "EQUALS" and str(actual).casefold() != str(expected).casefold(): return False
+        if operator == "BETWEEN":
+            try:
+                if not Decimal(str(expected)) <= Decimal(str(actual)) <= Decimal(str(condition["value_to"])): return False
+            except (InvalidOperation, KeyError, TypeError): return False
+        if operator == "CONTAINS" and str(expected).casefold() not in str(actual).casefold(): return False
+        if operator not in {"EQUALS", "BETWEEN", "CONTAINS"}: return False
+    return bool(rule.get("conditions"))
+
+
+def relevant_entries(snapshot: dict, bucket: str, query: str = "", collection: str | None = None,
+                     product: str | None = None) -> list[dict]:
+    """Return only enabled, non-archived content in global-to-specific order."""
+    words = set(re.findall(r"[\w-]+", query.casefold()))
+    ranked = []
+    for item in snapshot.get(bucket, []):
+        if not item.get("enabled", True) or item.get("archived", False): continue
+        scope, ref = item.get("scope", "GLOBAL"), item.get("scope_reference")
+        if scope == "COLLECTION" and ref != collection: continue
+        if scope == "PRODUCT" and ref != product: continue
+        haystack = f"{item.get('title','')} {item.get('topic','')} {item.get('tags','')}".casefold()
+        score = len(words & set(re.findall(r"[\w-]+", haystack)))
+        if scope != "GLOBAL" and words and score == 0: continue
+        ranked.append(({"GLOBAL": 0, "COLLECTION": 1, "PRODUCT": 2}[scope], -score, item))
+    return [item for _, __, item in sorted(ranked, key=lambda row: (row[0], row[1]))][:20]
 
 
 def save_draft(db: Session, snapshot: dict, actor: str, summary: str) -> BotConfiguration:
@@ -179,4 +262,3 @@ def service_charge(db: Session, size: int) -> Decimal | None:
     snapshot, _ = get_snapshot(db)
     value = snapshot["bicycle"]["service_charges"].get(str(size))
     return Decimal(value) if value is not None else None
-

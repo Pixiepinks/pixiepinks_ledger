@@ -237,6 +237,36 @@ def discover_collections(query: str = "", limit: int = 100,
             for node in (data.get("collections") or {}).get("nodes", [])]
 
 
+def search_products_for_management(query: str, limit: int = 10) -> list[dict]:
+    """Bounded staff selector search with Shopify as the live authority."""
+    query = str(query or "").strip()
+    if len(query) < 2:
+        return []
+    data = client.graphql(PRODUCT_QUERY, {"first": min(max(limit, 1), 20),
+                                         "query": f"title:{query.replace(':', ' ')}*"})
+    products = []
+    for node in data.get("products", {}).get("nodes", []):
+        normalized = _normalize_product(node, parse_filters(""))
+        if normalized:
+            products.append(normalized)
+    return products[:limit]
+
+
+def products_for_collection(collection_id: str, query: str = "", limit: int = 20) -> list[dict]:
+    """Read a bounded set of products for a verified cached collection ID."""
+    collection = {"id": collection_id, "title": None, "handle": None}
+    data = client.graphql(COLLECTION_PRODUCTS_QUERY,
+                          {"id": collection_id, "first": min(max(limit, 1), 20)})
+    resolved = data.get("collection") or {}
+    terms = parse_search_intent(query).get("terms", []) if query else []
+    result = []
+    for node in resolved.get("products", {}).get("nodes", []):
+        if terms and not _matches_product_terms(node, terms): continue
+        product = _normalize_product(node, parse_filters(""))
+        if product: result.append(product)
+    return result[:limit]
+
+
 def parse_search_intent(text: str) -> dict:
     """Separate product concepts from variant/price filters in customer language."""
     filters = parse_filters(text)
