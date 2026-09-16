@@ -181,6 +181,13 @@ class WhatsAppConversation(Base):
     taken_over_at = Column(DateTime)
     taken_over_by = Column(String(100))
     returned_to_ai_at = Column(DateTime)
+    # Authoritative, restart-safe discovery state.  Message history remains useful
+    # for AI context, but must never be used as the bicycle state machine.
+    active_product_category = Column(String(50))
+    workflow_state = Column(String(50), index=True)
+    bicycle_gender = Column(String(10))
+    bicycle_age = Column(Integer)
+    bicycle_size = Column(Integer)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
