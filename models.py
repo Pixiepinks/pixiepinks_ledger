@@ -166,6 +166,16 @@ class WhatsAppConversationMessage(Base):
     media_id = Column(String(255), nullable=True)
     media_mime_type = Column(String(100), nullable=True)
     media_duration_seconds = Column(Float, nullable=True)
+    shopify_product_reference = Column(String(255), nullable=True)
+    shopify_variant_reference = Column(String(255), nullable=True)
+    product_handle = Column(String(255), nullable=True)
+    product_title = Column(String(500), nullable=True)
+    variant_title = Column(String(500), nullable=True)
+    product_sku = Column(String(255), nullable=True)
+    product_price = Column(Numeric(14, 2), nullable=True)
+    product_currency = Column(String(8), nullable=True)
+    product_image_url = Column(Text, nullable=True)
+    product_url = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 

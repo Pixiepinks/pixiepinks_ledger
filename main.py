@@ -67,6 +67,7 @@ from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
     diagnose_bicycle_collections, discover_collections, search_products_for_management,
+    search_products_for_inbox, resolve_inbox_product,
     resolve_products_for_management,
     products_for_collection,
 )
@@ -1213,6 +1214,16 @@ def ensure_whatsapp_inbox_columns():
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_mime_type VARCHAR(100)")
     if "media_duration_seconds" not in columns:
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_duration_seconds FLOAT")
+    for name, sql_type in (
+        ("shopify_product_reference", "VARCHAR(255)"),
+        ("shopify_variant_reference", "VARCHAR(255)"),
+        ("product_handle", "VARCHAR(255)"), ("product_title", "VARCHAR(500)"),
+        ("variant_title", "VARCHAR(500)"), ("product_sku", "VARCHAR(255)"),
+        ("product_price", "NUMERIC(14, 2)"), ("product_currency", "VARCHAR(8)"),
+        ("product_image_url", "TEXT"), ("product_url", "TEXT"),
+    ):
+        if name not in columns:
+            statements.append(f"ALTER TABLE whatsapp_conversation_messages ADD COLUMN {name} {sql_type}")
     conversation_columns = {
         column["name"] for column in inspector.get_columns("whatsapp_conversations")
     } if inspector.has_table("whatsapp_conversations") else set()
@@ -1497,6 +1508,11 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
         "duration_seconds": item.media_duration_seconds,
         "media_url": (f"/crm/whatsapp/api/conversations/{conversation.id}/messages/{item.id}/media"
                       if item.media_id else None),
+        "product": ({"title": item.product_title, "variant": item.variant_title,
+                     "sku": item.product_sku, "price": float(item.product_price),
+                     "currency": item.product_currency or "LKR", "image": item.product_image_url,
+                     "url": item.product_url} if item.product_title and item.product_price is not None
+                    else None),
     } for item in reversed(messages)]
     order_data = None if order is None else {
         "product_title": order.product_title, "variant_title": order.variant_title,
@@ -1622,6 +1638,92 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number, direction="outbound",
         message_text=body.strip(), whatsapp_message_id=message_id, response_kind="staff",
         send_status="sent", sent_by=user.username))
+    conversation.last_message_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "SENT"}
+
+
+@app.get("/crm/whatsapp/api/products")
+def whatsapp_product_search(q: str = Query("", max_length=100),
+                            limit: int = Query(20, ge=1, le=25),
+                            cursor: str | None = Query(None, max_length=500,
+                                                       pattern=r"^[A-Za-z0-9_+=/.-]+$"),
+                            user: User = Depends(require_user)):
+    """Authenticated, paginated live Shopify catalogue search for support staff."""
+    try:
+        return search_products_for_inbox(q, limit, cursor)
+    except ShopifyCatalogError:
+        logger.warning("Shopify inbox product search unavailable")
+        raise HTTPException(503, "Shopify product search is temporarily unavailable") from None
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/send-product")
+async def whatsapp_manual_product_send(conversation_id: int, request: Request,
+                                       db: Session = Depends(get_db),
+                                       user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid request")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid request")
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if not key or len(key) > 100:
+        raise HTTPException(400, "A valid Idempotency-Key is required")
+    existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
+    if existing:
+        return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
+                            status_code=200 if existing.status == "SENT" else 409)
+    if (not conversation.last_customer_message_at
+            or datetime.utcnow() - conversation.last_customer_message_at > timedelta(hours=24)):
+        raise HTTPException(409, "The 24-hour customer service window is closed. Ask the customer to message again before sending this product.")
+    try:
+        product = resolve_inbox_product(payload.get("product_id"), payload.get("variant_id"))
+    except ShopifyCatalogError:
+        raise HTTPException(503, "Shopify product verification is temporarily unavailable") from None
+    if product is None:
+        raise HTTPException(422, "This product or variant is unavailable. Refresh the catalogue and choose again.")
+    variant_line = (f"\n{product['variant_title']}" if product.get("variant_title")
+                    and product["variant_title"] != "Default Title" else "")
+    caption = (f"{product['title']}{variant_line}\n"
+               f"Price: Rs. {product['price']:,.2f}\nView Product: {product['url']}")
+    attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
+                                message_text=caption, sent_by=user.username)
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
+    try:
+        result = send_whatsapp_image(conversation.phone_number, product["image"], caption,
+                                     return_message_id=True)
+    except Exception as exc:
+        logger.warning("Staff product send failed error_type=%s", type(exc).__name__)
+        result = None
+    if not result:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not send this product image. Verify the image and customer service window."}, status_code=502)
+    message_id = result if isinstance(result, str) else None
+    attempt.status, attempt.whatsapp_message_id = "SENT", message_id
+    db.add(WhatsAppConversationMessage(
+        phone_number=conversation.phone_number, direction="outbound", message_text=caption,
+        whatsapp_message_id=message_id, response_kind="staff_product", send_status="sent",
+        sent_by=user.username, shopify_product_reference=product["id"],
+        shopify_variant_reference=product["variant_id"], product_handle=product["handle"],
+        product_title=product["title"], variant_title=product.get("variant_title"),
+        product_sku=product.get("sku"), product_price=product["price"],
+        product_currency=product["currency"], product_image_url=product["image"],
+        product_url=product["url"],
+    ))
+    if message_id and not db.query(WhatsAppOutboundProductMessage).filter_by(
+            whatsapp_message_id=message_id).first():
+        db.add(WhatsAppOutboundProductMessage(
+            whatsapp_message_id=message_id, customer_phone=conversation.phone_number,
+            shopify_product_handle=product["handle"], product_title=product["title"],
+        ))
     conversation.last_message_at = datetime.utcnow()
     db.commit()
     return {"ok": True, "status": "SENT"}

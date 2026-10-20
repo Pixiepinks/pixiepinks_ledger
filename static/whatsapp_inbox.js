@@ -52,11 +52,17 @@
   }
   function renderMessage(message) {
     const wrapper = document.createElement("div"), bubble = document.createElement("div"), metadata = document.createElement("small"); wrapper.className = `message ${message.direction}`; bubble.className = "bubble";
-    if (message.message_type === "audio" && message.media_url) { bubble.classList.add("audio-bubble"); const label = document.createElement("span"), audio = document.createElement("audio"); text(label, `Voice message${message.duration_seconds ? ` · ${clock(message.duration_seconds)}` : ""}`); audio.controls = true; audio.preload = "metadata"; audio.src = message.media_url; bubble.append(label, audio); } else text(bubble, message.text);
+    if (message.product) {
+      bubble.classList.add("product-bubble");
+      if (message.product.image?.startsWith("https://")) { const image = new Image(); image.src = message.product.image; image.alt = message.product.title; bubble.append(image); }
+      const copy = document.createElement("div"), title = document.createElement("strong"), variant = document.createElement("span"), price = document.createElement("span"), link = document.createElement("a"); copy.className = "product-copy"; text(title, message.product.title); text(variant, message.product.variant && message.product.variant !== "Default Title" ? message.product.variant : ""); text(price, money(message.product.price));
+      if (message.product.url?.startsWith("https://")) { link.href = message.product.url; link.target = "_blank"; link.rel = "noopener noreferrer"; text(link, "View product ↗"); }
+      copy.append(title); if (variant.textContent) copy.append(variant); copy.append(price); if (link.href) copy.append(link); bubble.append(copy);
+    } else if (message.message_type === "audio" && message.media_url) { bubble.classList.add("audio-bubble"); const label = document.createElement("span"), audio = document.createElement("audio"); text(label, `Voice message${message.duration_seconds ? ` · ${clock(message.duration_seconds)}` : ""}`); audio.controls = true; audio.preload = "metadata"; audio.src = message.media_url; bubble.append(label, audio); } else text(bubble, message.text);
     wrapper.dataset.messageId = String(message.id); wrapper.dataset.contentKey = messageContentKey(message); metadata.className = "message-meta"; wrapper.dataset.status = message.status;
     text(metadata, messageMetadata(message)); wrapper.append(bubble, metadata); return wrapper;
   }
-  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url]);
+  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product]);
   const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${new Date(message.timestamp).toLocaleString()} · ${message.status}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
@@ -138,6 +144,26 @@
     catch (error) { showComposerMessage(`${error.message} Your recording is still available to retry.`, true); if (error.status === 502 || error.status === 422) voiceKey = crypto.randomUUID(); }
     finally { button.disabled = false; text(button, "Send Voice"); }
   }
+  const catalogModal = document.getElementById("product-modal"), catalogResults = document.getElementById("catalog-results"), catalogStatus = document.getElementById("catalog-status"), catalogQuery = document.getElementById("catalog-query"), loadProductsButton = document.getElementById("load-products");
+  let catalogCursor = null, catalogLoading = false, catalogSearchGeneration = 0;
+  function closeCatalog() { catalogModal.hidden = true; }
+  function catalogCard(product) {
+    const card = document.createElement("article"), image = new Image(), body = document.createElement("div"), heading = document.createElement("h3"), details = document.createElement("p"), select = document.createElement("select"), button = document.createElement("button"); card.className = "catalog-card"; image.alt = product.title; if (product.image?.startsWith("https://")) image.src = product.image; text(heading, product.title); text(details, [product.vendor, product.product_type].filter(Boolean).join(" · "));
+    product.variants.forEach((variant, index) => { const option = document.createElement("option"); option.value = String(index); text(option, `${variant.title === "Default Title" ? "Standard" : variant.title} · ${money(Number(variant.price))}${variant.sku ? ` · ${variant.sku}` : ""}${variant.available ? "" : " · Unavailable"}`); option.disabled = !variant.available; select.append(option); });
+    const productAvailable = product.status === "ACTIVE" && product.published; const firstAvailable = productAvailable ? product.variants.findIndex(item => item.available) : -1; if (firstAvailable >= 0) select.value = String(firstAvailable); select.disabled = firstAvailable < 0; button.type = "button"; button.className = "btn btn-primary"; text(button, firstAvailable < 0 ? "Unavailable" : "Send Product"); button.disabled = firstAvailable < 0;
+    select.onchange = () => { const variant = product.variants[Number(select.value)]; if (variant?.image?.startsWith("https://")) image.src = variant.image; };
+    button.onclick = async () => { if (!selected) { text(catalogStatus, "Select a conversation first."); return; } const variant = product.variants[Number(select.value)]; if (!variant?.available) return; button.disabled = true; text(button, "Sending…"); text(catalogStatus, "Sending product to customer…"); try { await api(`/crm/whatsapp/api/conversations/${selected}/send-product`, {method: "POST", headers: {"Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID()}, body: JSON.stringify({product_id: product.id, variant_id: variant.id})}); closeCatalog(); showComposerMessage("Product sent."); await openConversation(selected); } catch (error) { text(catalogStatus, error.message); } finally { button.disabled = false; text(button, "Send Product"); } };
+    body.append(heading, details, select, button); card.append(image, body); return card;
+  }
+  async function loadCatalog(append = false) {
+    if (catalogLoading) return; catalogLoading = true; const generation = ++catalogSearchGeneration; text(catalogStatus, "Loading Shopify products…"); if (!append) { catalogCursor = null; catalogResults.replaceChildren(); }
+    try { const data = await api(`/crm/whatsapp/api/products?q=${encodeURIComponent(catalogQuery.value.trim())}&limit=20${catalogCursor ? `&cursor=${encodeURIComponent(catalogCursor)}` : ""}`); if (generation !== catalogSearchGeneration) return; catalogResults.append(...data.products.map(catalogCard)); catalogCursor = data.next_cursor || null; loadProductsButton.hidden = !data.has_next_page; text(catalogStatus, data.products.length ? "Select an available variant to send." : "No matching products found."); } catch (error) { text(catalogStatus, error.message); } finally { catalogLoading = false; }
+  }
+  document.getElementById("catalog-button").onclick = () => { if (!selected) { showComposerMessage("Select a conversation first.", true); return; } catalogModal.hidden = false; catalogQuery.focus(); loadCatalog(); };
+  document.getElementById("close-catalog").onclick = closeCatalog; document.getElementById("catalog-close-footer").onclick = closeCatalog; loadProductsButton.onclick = () => loadCatalog(true); catalogModal.onclick = event => { if (event.target === catalogModal) closeCatalog(); };
+  catalogQuery.addEventListener("input", () => { clearTimeout(catalogQuery._timer); catalogQuery._timer = setTimeout(() => loadCatalog(), 300); });
+  document.addEventListener("keydown", event => { if (event.key === "Escape" && !catalogModal.hidden) closeCatalog(); });
+
   document.getElementById("search").addEventListener("input", () => { clearTimeout(window._searchTimer); window._searchTimer = setTimeout(loadList, 250); });
   document.querySelectorAll("#filters button").forEach(button => { if (button.dataset.filter === filter) { document.querySelectorAll("#filters button").forEach(item => item.classList.remove("selected")); button.classList.add("selected"); } button.onclick = () => { filter = button.dataset.filter; document.querySelectorAll("#filters button").forEach(item => item.classList.toggle("selected", item === button)); loadList(); }; });
   document.getElementById("mode-action").onclick = async event => { if (!selected) return; event.currentTarget.disabled = true; try { await api(`/crm/whatsapp/api/conversations/${selected}/${event.currentTarget.dataset.mode === "AI" ? "takeover" : "return-to-ai"}`, {method: "POST"}); await openConversation(selected); } finally { event.currentTarget.disabled = false; } };

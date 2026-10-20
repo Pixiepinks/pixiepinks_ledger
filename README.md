@@ -324,3 +324,17 @@ python -m shopify_catalog_service --bicycle-collections
 This read-only diagnostic lists only collection titles matching a boys/girls wheel-size
 category, their actual Shopify handles, and product counts. Compare that output with
 `BICYCLE_COLLECTIONS`; the menu label is not treated as proof of a collection handle.
+
+### Sending Shopify products from the WhatsApp Inbox
+
+Authenticated staff can open the **Product** picker beside the WhatsApp composer, search the live
+Shopify Admin catalogue by partial title, SKU, product type, vendor, or tag, select an available
+variant, and send its current image, price, and published PixiePinks storefront URL. Search and
+final variant verification happen server-side; Shopify credentials never reach the browser.
+
+Product sends use the same Meta Cloud API configuration, manual-send idempotency, provider message
+status tracking, and outbound product reply-context mapping as the existing Inbox. Free-form product
+messages are rejected when the customer's 24-hour service window has expired. The CRM stores only a
+historical product snapshot (references, title, variant, SKU, price/currency, image URL, and storefront
+URL), not a duplicate catalogue or image binary. Existing databases receive nullable snapshot columns
+through the application's additive startup compatibility check; no destructive migration is required.

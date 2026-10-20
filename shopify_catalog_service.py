@@ -141,6 +141,18 @@ query ProductPicker($first: Int!, $query: String!, $after: String) {
 }
 """
 
+INBOX_PRODUCT_PICKER_QUERY = """
+query InboxProductPicker($first: Int!, $query: String!, $after: String) {
+  products(first: $first, query: $query, after: $after, sortKey: RELEVANCE) {
+    nodes { id title handle productType vendor tags status publishedAt featuredImage { url }
+      variants(first: 50) { nodes { id title sku price availableForSale
+        image { url } inventoryQuantity inventoryItem { tracked } } }
+    }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
 # These titles were verified in Shopify Admin.  Handles are deliberately not
 # guessed: Shopify resolves each title at runtime and supplies its live handle.
 BICYCLE_COLLECTIONS = {
@@ -275,6 +287,93 @@ def search_products_for_management(query: str, limit: int = 20, cursor: str | No
     page_info = connection.get("pageInfo") or {}
     return {"products": products, "next_cursor": page_info.get("endCursor"),
             "has_next_page": bool(page_info.get("hasNextPage"))}
+
+
+def search_products_for_inbox(query: str, limit: int = 20, cursor: str | None = None,
+                              catalog_client: ShopifyCatalogClient | None = None) -> dict:
+    """Return current sellable product/variant data for the authenticated inbox picker."""
+    safe = " ".join(re.sub(r"[^\w\s\-']+", " ", str(query or ""), flags=re.UNICODE).split())
+    if safe:
+        terms = safe.split()[:5]
+        shopify_query = " AND ".join(
+            "(" + " OR ".join(f"{field}:{term}*" for field in (*SEARCH_FIELDS, "sku")) + ")"
+            for term in terms
+        )
+    else:
+        shopify_query = "status:active"
+    client_instance = catalog_client or ShopifyCatalogClient()
+    data = client_instance.graphql(INBOX_PRODUCT_PICKER_QUERY, {
+        "first": min(max(int(limit), 1), 25), "query": shopify_query,
+        "after": cursor or None,
+    })
+    connection = data.get("products") or {}
+    products = []
+    for node in connection.get("nodes", []):
+        handle = node.get("handle")
+        if not handle:
+            continue
+        variants = []
+        for variant in (node.get("variants") or {}).get("nodes", []):
+            try:
+                price = str(Decimal(str(variant.get("price"))).quantize(Decimal("0.01")))
+            except (InvalidOperation, TypeError):
+                continue
+            tracked = bool((variant.get("inventoryItem") or {}).get("tracked"))
+            variants.append({
+                "id": variant.get("id"), "title": variant.get("title"),
+                "sku": variant.get("sku") or "", "price": price,
+                "available": bool(variant.get("availableForSale")),
+                "inventory_quantity": variant.get("inventoryQuantity") if tracked else None,
+                "image": (variant.get("image") or {}).get("url")
+                         or (node.get("featuredImage") or {}).get("url"),
+            })
+        products.append({
+            "id": node.get("id"), "handle": handle, "title": node.get("title"),
+            "vendor": node.get("vendor"), "product_type": node.get("productType"),
+            "status": node.get("status"), "published": bool(node.get("publishedAt")),
+            "image": (node.get("featuredImage") or {}).get("url"),
+            "url": f"{STOREFRONT_ROOT}/products/{handle}", "currency": "LKR",
+            "variants": variants,
+        })
+    page_info = connection.get("pageInfo") or {}
+    return {"products": products, "next_cursor": page_info.get("endCursor"),
+            "has_next_page": bool(page_info.get("hasNextPage"))}
+
+
+def resolve_inbox_product(product_id: str, variant_id: str,
+                          catalog_client: ShopifyCatalogClient | None = None) -> dict | None:
+    """Resolve an exact browser selection again from Shopify before it is sent."""
+    if not re.fullmatch(r"gid://shopify/Product/\d+", str(product_id or "")):
+        return None
+    if not re.fullmatch(r"gid://shopify/ProductVariant/\d+", str(variant_id or "")):
+        return None
+    client_instance = catalog_client or ShopifyCatalogClient()
+    data = client_instance.graphql(INBOX_PRODUCT_PICKER_QUERY, {
+        "first": 1, "query": f"id:{product_id.rsplit('/', 1)[-1]}", "after": None,
+    })
+    page = data.get("products") or {}
+    # Normalize the returned node through the same public shape without a second request.
+    nodes = page.get("nodes") or []
+    if not nodes or nodes[0].get("id") != product_id:
+        return None
+    node = nodes[0]
+    variant = next((item for item in (node.get("variants") or {}).get("nodes", [])
+                    if item.get("id") == variant_id), None)
+    if (node.get("status") != "ACTIVE" or not node.get("publishedAt")
+            or not variant or not variant.get("availableForSale")):
+        return None
+    try:
+        price = Decimal(str(variant.get("price"))).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError):
+        return None
+    handle = node.get("handle")
+    image = (variant.get("image") or {}).get("url") or (node.get("featuredImage") or {}).get("url")
+    if not handle or not isinstance(image, str) or not image.startswith("https://"):
+        return None
+    return {"id": product_id, "variant_id": variant_id, "handle": handle,
+            "title": node.get("title"), "variant_title": variant.get("title"),
+            "sku": variant.get("sku") or "", "price": price, "currency": "LKR",
+            "image": image, "url": f"{STOREFRONT_ROOT}/products/{handle}"}
 
 
 def resolve_products_for_management(handles: list[str],
