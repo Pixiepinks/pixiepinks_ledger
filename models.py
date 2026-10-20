@@ -163,6 +163,9 @@ class WhatsAppConversationMessage(Base):
     response_kind = Column(String(20), nullable=True)
     send_status = Column(String(20), nullable=True)
     sent_by = Column(String(100), nullable=True)
+    media_id = Column(String(255), nullable=True)
+    media_mime_type = Column(String(100), nullable=True)
+    media_duration_seconds = Column(Float, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 

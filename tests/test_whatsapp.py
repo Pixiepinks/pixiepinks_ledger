@@ -141,6 +141,28 @@ def test_missing_openai_key_returns_fallback():
     assert ai_service.generate_customer_reply("Hello") == ai_service.FALLBACK_REPLY
 
 
+def test_meta_audio_upload_and_voice_send(monkeypatch):
+    monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_ACCESS_TOKEN", "secret-token")
+    monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_PHONE_NUMBER_ID", "123456")
+    requests = []
+
+    class Response:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"id": "media-1"} if requests[-1][0].endswith("/media") else {"messages": [{"id": "wamid.voice"}]}
+
+    def post(url, **kwargs):
+        requests.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(whatsapp_service.httpx, "post", post)
+    assert whatsapp_service.upload_whatsapp_audio(b"OggS") == "media-1"
+    assert whatsapp_service.send_whatsapp_audio("94770000000", "media-1") == "wamid.voice"
+    assert requests[0][1]["files"]["file"][2] == "audio/ogg"
+    assert requests[1][1]["json"]["audio"] == {"id": "media-1", "voice": True}
+
+
 def test_ai_service_uses_responses_api_and_cleans_reply(monkeypatch):
     captured = {}
 

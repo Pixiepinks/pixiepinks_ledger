@@ -10,12 +10,14 @@ from urllib.parse import quote, urlparse
 from fastapi import (
     BackgroundTasks,
     Depends,
+    File,
     FastAPI,
     Form,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
     status,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -54,9 +56,13 @@ from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
     UNSUPPORTED_MESSAGE_REPLY,
+    download_whatsapp_media,
+    send_whatsapp_audio,
     send_whatsapp_image,
     send_whatsapp_text,
+    upload_whatsapp_audio,
 )
+from audio_service import MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
@@ -183,6 +189,9 @@ def _store_conversation_message(
     customer_name: str | None = None,
     whatsapp_message_id: str | None = None,
     response_kind: str | None = None,
+    media_id: str | None = None,
+    media_mime_type: str | None = None,
+    media_duration_seconds: float | None = None,
     created_at: datetime | None = None,
 ) -> None:
     try:
@@ -194,6 +203,9 @@ def _store_conversation_message(
                 message_text=message_text,
                 whatsapp_message_id=whatsapp_message_id,
                 response_kind=response_kind,
+                media_id=media_id,
+                media_mime_type=media_mime_type,
+                media_duration_seconds=media_duration_seconds,
                 created_at=created_at or datetime.utcnow(),
             ))
             phone = _normalize_whatsapp_phone(phone_number)
@@ -940,6 +952,19 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                 for contact in (contacts if isinstance(contacts, list) else [])
                 if isinstance(contact, dict) and isinstance(contact.get("profile"), dict)
             }
+            deliveries = value.get("statuses", [])
+            for delivery in deliveries if isinstance(deliveries, list) else []:
+                if not isinstance(delivery, dict):
+                    continue
+                outbound_id, delivery_status = delivery.get("id"), delivery.get("status")
+                if (not isinstance(outbound_id, str)
+                        or delivery_status not in {"sent", "delivered", "read", "failed"}):
+                    continue
+                with SessionLocal() as db:
+                    db.query(WhatsAppConversationMessage).filter_by(
+                        whatsapp_message_id=outbound_id
+                    ).update({"send_status": delivery_status})
+                    db.commit()
             messages = value.get("messages", [])
             if not isinstance(messages, list):
                 continue
@@ -1019,6 +1044,16 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     "image", "audio", "video", "document", "sticker", "location",
                     "contacts", "reaction", "interactive",
                 }:
+                    if message_type == "audio" and isinstance(message.get("audio"), dict):
+                        audio = message["audio"]
+                        media_id = audio.get("id")
+                        if isinstance(media_id, str) and media_id:
+                            _store_conversation_message(
+                                sender, "inbound", "Voice message", customer_name=profile_name,
+                                whatsapp_message_id=message_id, response_kind="customer_audio",
+                                media_id=media_id, media_mime_type=audio.get("mime_type"),
+                                created_at=received_at,
+                            )
                     with SessionLocal() as db:
                         conversation = _conversation_for_phone(db, sender)
                         human_owned = bool(conversation and conversation.mode == "HUMAN")
@@ -1172,6 +1207,12 @@ def ensure_whatsapp_inbox_columns():
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN send_status VARCHAR(20)")
     if "sent_by" not in columns:
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN sent_by VARCHAR(100)")
+    if "media_id" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_id VARCHAR(255)")
+    if "media_mime_type" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_mime_type VARCHAR(100)")
+    if "media_duration_seconds" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_duration_seconds FLOAT")
     conversation_columns = {
         column["name"] for column in inspector.get_columns("whatsapp_conversations")
     } if inspector.has_table("whatsapp_conversations") else set()
@@ -1447,10 +1488,15 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
         WhatsAppOrderIntent.customer_whatsapp_phone == conversation.phone_number
     ).order_by(WhatsAppOrderIntent.updated_at.desc(), WhatsAppOrderIntent.id.desc()).first()
     message_data = [{
+        "id": item.id,
         "direction": item.direction, "text": item.message_text,
         "source": item.response_kind or ("customer" if item.direction == "inbound" else "ai"),
         "status": item.send_status or ("received" if item.direction == "inbound" else "sent"),
         "timestamp": item.created_at.isoformat(),
+        "message_type": "audio" if item.media_id else "text",
+        "duration_seconds": item.media_duration_seconds,
+        "media_url": (f"/crm/whatsapp/api/conversations/{conversation.id}/messages/{item.id}/media"
+                      if item.media_id else None),
     } for item in reversed(messages)]
     order_data = None if order is None else {
         "product_title": order.product_title, "variant_title": order.variant_title,
@@ -1465,6 +1511,24 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     }
     return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
             "order": order_data}
+
+
+@app.get("/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media")
+def whatsapp_message_media(conversation_id: int, message_id: int,
+                           db: Session = Depends(get_db), user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    message = db.query(WhatsAppConversationMessage).filter_by(
+        id=message_id, phone_number=conversation.phone_number
+    ).one_or_none()
+    if message is None or not message.media_id:
+        raise HTTPException(status_code=404, detail="Audio message not found")
+    downloaded = download_whatsapp_media(message.media_id)
+    if downloaded is None:
+        raise HTTPException(status_code=502, detail="Audio is temporarily unavailable")
+    content, mime_type = downloaded
+    safe_mime = mime_type if mime_type.startswith("audio/") else "audio/ogg"
+    return Response(content=content, media_type=safe_mime,
+                    headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"})
 
 
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/read")
@@ -1540,6 +1604,67 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     conversation.last_message_at = datetime.utcnow()
     db.commit()
     return {"ok": True, "status": "SENT"}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/send-audio")
+async def whatsapp_manual_audio_send(
+    conversation_id: int,
+    request: Request,
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    conversation = _get_conversation(db, conversation_id)
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if not key or len(key) > 100:
+        raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+    existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
+    if existing:
+        return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
+                            status_code=200 if existing.status == "SENT" else 409)
+
+    content_type = audio.content_type or ""
+    raw = await audio.read(MAX_AUDIO_BYTES + 1)
+    await audio.close()
+    try:
+        voice_note, duration = normalize_voice_audio(raw, content_type)
+    except VoiceAudioError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    attempt = WhatsAppManualSend(
+        idempotency_key=key, conversation_id=conversation.id,
+        message_text="Voice message", sent_by=user.username,
+    )
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
+
+    media_id = upload_whatsapp_audio(voice_note)
+    if not media_id:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not upload this voice message."}, status_code=502)
+    outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=True)
+    if not outbound_id:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not send this voice message."}, status_code=502)
+
+    attempt.status = "SENT"
+    attempt.whatsapp_message_id = outbound_id
+    db.add(WhatsAppConversationMessage(
+        phone_number=conversation.phone_number, direction="outbound",
+        message_text="Voice message", whatsapp_message_id=outbound_id,
+        response_kind="staff_audio", send_status="sent", sent_by=user.username,
+        media_id=media_id, media_mime_type="audio/ogg",
+        media_duration_seconds=duration,
+    ))
+    conversation.last_message_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "SENT", "duration_seconds": duration}
 
 
 @app.get("/crm/orders", response_class=HTMLResponse)

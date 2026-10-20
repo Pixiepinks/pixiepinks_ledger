@@ -35,10 +35,26 @@ send status, and authenticated username. Meta failures are shown to staff and ar
 represented as successfully sent messages. API responses never include Meta IDs,
 Shopify IDs, access tokens, or other credentials.
 
+Staff can also record real voice notes from the WhatsApp composer. The browser uses
+`MediaRecorder`, always presents a local playback preview, and sends only after explicit
+confirmation. The authenticated backend validates the recording, converts browser WebM,
+OGG, MP4, MP3, or WAV input in memory to mono 48 kHz OGG/Opus with PyAV, uploads it to
+the existing Meta Media API, and sends it as a WhatsApp voice message. No speech-to-text,
+AI voice, or audio binary is stored in PostgreSQL. Conversation history stores only the
+Meta media identifier, MIME type, duration, staff identity, outbound message identifier,
+and delivery status. Playback is provided through an authenticated server-side media
+proxy, so the Meta access token is never exposed to JavaScript. Recordings are limited
+to 16 MB and ten minutes; local previews remain available after a failed upload so staff
+can retry.
+
 Database startup continues to use `Base.metadata.create_all`. It adds
 `whatsapp_conversations` for mode/unread/timestamps and `whatsapp_manual_sends` for
 manual-send idempotency. The existing `whatsapp_conversation_messages` table gains
 nullable `send_status` and `sent_by` columns via the backward-compatible startup check.
+Voice support also adds nullable `media_id`, `media_mime_type`, and
+`media_duration_seconds` columns to that same table. Deployments must install the updated
+Python requirements so the binary PyAV wheel and bundled media libraries are available;
+no system `ffmpeg` command, new environment variable, or Railway service is required.
 Production customer names, phone numbers, addresses, messages, and order data remain
 behind the existing signed-session authentication. Shopify remains read-only and the
 source of truth; the inbox performs no per-row Shopify requests and does not create

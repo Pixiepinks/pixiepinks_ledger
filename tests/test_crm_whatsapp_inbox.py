@@ -84,3 +84,57 @@ def test_manual_send_failure_is_not_persisted_as_success(monkeypatch):
     assert response.status_code == 502
     with SessionLocal() as db:
         assert db.query(WhatsAppConversationMessage).filter_by(response_kind="staff").count() == 0
+
+
+def test_voice_send_requires_authentication():
+    response = TestClient(main.app).post(
+        "/crm/whatsapp/api/conversations/1/send-audio",
+        files={"audio": ("voice.webm", b"audio", "audio/webm")},
+        headers={"Idempotency-Key": "voice-anonymous"}, follow_redirects=False,
+    )
+    assert response.status_code == 303
+
+
+def test_voice_send_converts_uploads_sends_and_persists(monkeypatch):
+    with SessionLocal() as db:
+        conversation = WhatsAppConversation(phone_number="94770000005", mode="HUMAN")
+        db.add(conversation); db.commit(); conversation_id = conversation.id
+    calls = []
+    monkeypatch.setattr(main, "normalize_voice_audio", lambda raw, mime: (b"OggS-opus", 4.25))
+    monkeypatch.setattr(main, "upload_whatsapp_audio", lambda audio: calls.append(("upload", audio)) or "media-1")
+    monkeypatch.setattr(main, "send_whatsapp_audio", lambda phone, media, voice: calls.append((phone, media, voice)) or "wamid.voice")
+    client = authenticated_client()
+    headers = {"Idempotency-Key": "voice-action"}
+    first = client.post(f"/crm/whatsapp/api/conversations/{conversation_id}/send-audio",
+        files={"audio": ("voice.webm", b"browser-audio", "audio/webm")}, headers=headers)
+    second = client.post(f"/crm/whatsapp/api/conversations/{conversation_id}/send-audio",
+        files={"audio": ("voice.webm", b"browser-audio", "audio/webm")}, headers=headers)
+    assert first.status_code == second.status_code == 200
+    assert calls == [("upload", b"OggS-opus"), ("94770000005", "media-1", True)]
+    with SessionLocal() as db:
+        message = db.query(WhatsAppConversationMessage).filter_by(response_kind="staff_audio").one()
+        assert (message.media_id, message.media_mime_type, message.media_duration_seconds) == (
+            "media-1", "audio/ogg", 4.25,
+        )
+        detail = client.get(f"/crm/whatsapp/api/conversations/{conversation_id}").json()
+        assert detail["messages"][0]["message_type"] == "audio"
+        message_id = message.id
+    monkeypatch.setattr(main, "download_whatsapp_media", lambda media_id: (b"voice-bytes", "audio/ogg"))
+    media = client.get(f"/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media")
+    assert (media.status_code, media.content, media.headers["content-type"]) == (200, b"voice-bytes", "audio/ogg")
+
+
+def test_voice_upload_failure_is_not_persisted_as_sent(monkeypatch):
+    with SessionLocal() as db:
+        conversation = WhatsAppConversation(phone_number="94770000006", mode="HUMAN")
+        db.add(conversation); db.commit(); conversation_id = conversation.id
+    monkeypatch.setattr(main, "normalize_voice_audio", lambda raw, mime: (b"OggS-opus", 2.0))
+    monkeypatch.setattr(main, "upload_whatsapp_audio", lambda audio: None)
+    response = authenticated_client().post(
+        f"/crm/whatsapp/api/conversations/{conversation_id}/send-audio",
+        files={"audio": ("voice.webm", b"browser-audio", "audio/webm")},
+        headers={"Idempotency-Key": "failed-voice"},
+    )
+    assert response.status_code == 502
+    with SessionLocal() as db:
+        assert db.query(WhatsAppConversationMessage).filter_by(response_kind="staff_audio").count() == 0
