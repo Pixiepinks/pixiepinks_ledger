@@ -30,7 +30,14 @@ def authenticated_client():
 def test_inbox_requires_authentication_and_renders_for_staff():
     anonymous = TestClient(main.app)
     assert anonymous.get("/crm/whatsapp", follow_redirects=False).status_code == 303
-    assert authenticated_client().get("/crm/whatsapp").status_code == 200
+    response = authenticated_client().get("/crm/whatsapp")
+    assert response.status_code == 200
+    assert 'id="send-button">Send</button>' in response.text
+    assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
+    assert all(control in response.text for control in (
+        'id="record-button"', 'id="stop-recording"', 'id="cancel-recording"',
+        'id="voice-preview-audio"', 'id="delete-recording"', 'id="send-voice"',
+    ))
 
 
 def test_conversation_order_search_unread_and_selected_read():
@@ -86,6 +93,25 @@ def test_manual_send_failure_is_not_persisted_as_success(monkeypatch):
         assert db.query(WhatsAppConversationMessage).filter_by(response_kind="staff").count() == 0
 
 
+def test_manual_send_preserves_multiline_text(monkeypatch):
+    with SessionLocal() as db:
+        conversation = WhatsAppConversation(phone_number="94770000014")
+        db.add(conversation); db.commit(); conversation_id = conversation.id
+    delivered = []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda phone, text, **kwargs: delivered.append(text) or "wamid.multiline")
+    message = "First line\nSecond line"
+    response = authenticated_client().post(
+        f"/crm/whatsapp/api/conversations/{conversation_id}/send",
+        json={"message": message}, headers={"Idempotency-Key": "multiline-action"},
+    )
+    assert response.status_code == 200
+    assert delivered == [message]
+    with SessionLocal() as db:
+        assert db.query(WhatsAppConversationMessage).filter_by(
+            whatsapp_message_id="wamid.multiline"
+        ).one().message_text == message
+
+
 def test_voice_send_requires_authentication():
     response = TestClient(main.app).post(
         "/crm/whatsapp/api/conversations/1/send-audio",
@@ -136,5 +162,22 @@ def test_voice_upload_failure_is_not_persisted_as_sent(monkeypatch):
         headers={"Idempotency-Key": "failed-voice"},
     )
     assert response.status_code == 502
+    with SessionLocal() as db:
+        assert db.query(WhatsAppConversationMessage).filter_by(response_kind="staff_audio").count() == 0
+
+
+def test_voice_provider_exception_is_reported_without_sent_history(monkeypatch):
+    with SessionLocal() as db:
+        conversation = WhatsAppConversation(phone_number="94770000015", mode="HUMAN")
+        db.add(conversation); db.commit(); conversation_id = conversation.id
+    monkeypatch.setattr(main, "normalize_voice_audio", lambda raw, mime: (b"OggS-opus", 2.0))
+    monkeypatch.setattr(main, "upload_whatsapp_audio", lambda audio: (_ for _ in ()).throw(RuntimeError("provider error")))
+    response = authenticated_client().post(
+        f"/crm/whatsapp/api/conversations/{conversation_id}/send-audio",
+        files={"audio": ("voice.webm", b"browser-audio", "audio/webm")},
+        headers={"Idempotency-Key": "exception-voice"},
+    )
+    assert response.status_code == 502
+    assert response.json()["error"] == "Meta could not upload this voice message."
     with SessionLocal() as db:
         assert db.query(WhatsAppConversationMessage).filter_by(response_kind="staff_audio").count() == 0

@@ -1642,12 +1642,18 @@ async def whatsapp_manual_audio_send(
         db.rollback()
         return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
 
-    media_id = upload_whatsapp_audio(voice_note)
+    try:
+        media_id = upload_whatsapp_audio(voice_note)
+    except Exception:
+        media_id = None
     if not media_id:
         attempt.status = "FAILED"
         db.commit()
         return JSONResponse({"ok": False, "error": "Meta could not upload this voice message."}, status_code=502)
-    outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=True)
+    try:
+        outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=True)
+    except Exception:
+        outbound_id = None
     if not outbound_id:
         attempt.status = "FAILED"
         db.commit()
