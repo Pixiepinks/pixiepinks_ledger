@@ -69,7 +69,7 @@
   function resetRecording() {
     clearInterval(timer); stopTracks(); recorder = null; chunks = []; duration = 0; voiceKey = null; if (blobUrl) URL.revokeObjectURL(blobUrl); blobUrl = null; blob = null;
     const preview = document.getElementById("voice-preview-audio"); preview.pause(); preview.removeAttribute("src"); preview.load();
-    document.getElementById("recording-controls").hidden = true; document.getElementById("voice-preview").hidden = true; document.getElementById("voice-composer").hidden = false; document.getElementById("record-button").disabled = false; text(document.getElementById("recording-timer"), "00:00");
+    document.getElementById("recording-controls").hidden = true; document.getElementById("voice-preview").hidden = true; document.getElementById("text-composer").hidden = false; document.getElementById("voice-composer").hidden = false; document.getElementById("record-button").disabled = false; text(document.getElementById("recording-timer"), "00:00");
   }
   function prepareRecordingPreview() {
     duration = Math.max(0, (performance.now() - started) / 1000);
@@ -88,15 +88,18 @@
     if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { showComposerMessage("Voice recording is not supported by this browser.", true); return; }
     try {
       stream = await navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}, video: false});
-      const mime = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(type => MediaRecorder.isTypeSupported(type)) || "";
-      recorder = new MediaRecorder(stream, mime ? {mimeType: mime} : undefined); chunks = []; discard = false; started = performance.now();
+      const mime = ["audio/ogg;codecs=opus", "audio/webm;codecs=opus", "audio/webm", "audio/mp4"].find(type => !MediaRecorder.isTypeSupported || MediaRecorder.isTypeSupported(type)) || "";
+      recorder = new MediaRecorder(stream, mime ? {mimeType: mime} : undefined); chunks = []; discard = false;
       recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
       recorder.onstop = () => {
         stopTracks(); clearInterval(timer); if (discard) { resetRecording(); return; } prepareRecordingPreview();
       };
       recorder.onerror = () => { discard = true; stopTracks(); resetRecording(); showComposerMessage("Recording failed. Check your microphone and try again.", true); };
-      recorder.start(1000); document.getElementById("voice-composer").hidden = true; document.getElementById("record-button").disabled = true; document.getElementById("recording-controls").hidden = false;
-      const update = () => { const elapsed = (performance.now() - started) / 1000; text(document.getElementById("recording-timer"), clock(elapsed)); if (elapsed >= 600 && recorder?.state === "recording") recorder.stop(); }; update(); timer = setInterval(update, 1000);
+      recorder.onstart = () => {
+        started = performance.now(); document.getElementById("text-composer").hidden = true; document.getElementById("voice-composer").hidden = true; document.getElementById("record-button").disabled = true; document.getElementById("recording-controls").hidden = false;
+        const update = () => { const elapsed = (performance.now() - started) / 1000; text(document.getElementById("recording-timer"), clock(elapsed)); if (elapsed >= 600 && recorder?.state === "recording") recorder.stop(); }; update(); timer = setInterval(update, 1000);
+      };
+      recorder.start(1000);
     } catch (error) { stopTracks(); resetRecording(); const denied = error?.name === "NotAllowedError" || error?.name === "SecurityError"; const missing = error?.name === "NotFoundError" || error?.name === "DevicesNotFoundError"; showComposerMessage(denied ? "Microphone permission was denied. Allow microphone access and try again." : missing ? "No microphone was found. Connect a microphone and try again." : "The microphone could not be started.", true); }
   }
   async function sendVoice() {

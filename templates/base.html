@@ -8,7 +8,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/crm.css">
 </head>
-<body class="app-body">
+<body class="app-body{{ ' whatsapp-page' if request.url.path.startswith('/crm/whatsapp') else '' }}">
 {% if request.url.path != '/login' %}
   <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation" aria-expanded="false">☰</button>
   <div class="sidebar-scrim" id="sidebar-scrim"></div>

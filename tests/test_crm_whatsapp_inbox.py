@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -32,12 +33,26 @@ def test_inbox_requires_authentication_and_renders_for_staff():
     assert anonymous.get("/crm/whatsapp", follow_redirects=False).status_code == 303
     response = authenticated_client().get("/crm/whatsapp")
     assert response.status_code == 200
+    assert 'class="app-body whatsapp-page"' in response.text
     assert 'id="send-button">Send</button>' in response.text
     assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
     assert all(control in response.text for control in (
         'id="record-button"', 'id="stop-recording"', 'id="cancel-recording"',
         'id="voice-preview-audio"', 'id="delete-recording"', 'id="send-voice"',
     ))
+
+
+def test_inbox_layout_uses_dynamic_viewport_and_flexible_message_history():
+    repository = Path(__file__).resolve().parents[1]
+    css = (repository / "static" / "crm.css").read_text()
+    javascript = (repository / "static" / "whatsapp_inbox.js").read_text()
+    assert ".whatsapp-page{height:100vh;height:100dvh;overflow:hidden}" in css
+    assert ".whatsapp-page [hidden]{display:none!important}" in css
+    assert "#messages{flex:1 1 auto;min-height:0;overflow-y:auto" in css
+    assert "#composer{flex:0 0 auto;max-height:min(48%,420px);overflow-y:auto" in css
+    assert "@media(max-width:380px)" in css
+    assert "recorder.onstart = () =>" in javascript
+    assert javascript.index("recorder.onstart = () =>") < javascript.index("recorder.start(1000)")
 
 
 def test_conversation_order_search_unread_and_selected_read():
