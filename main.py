@@ -10,15 +10,17 @@ from urllib.parse import quote, urlparse
 from fastapi import (
     BackgroundTasks,
     Depends,
+    File,
     FastAPI,
     Form,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
     status,
 )
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -42,21 +44,31 @@ from models import (
     ProcessedWhatsAppMessage,
     Supplier,
     User,
+    WhatsAppConversation,
     WhatsAppConversationMessage,
+    WhatsAppManualSend,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
+    BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
     UNSUPPORTED_MESSAGE_REPLY,
+    download_whatsapp_media,
+    send_whatsapp_audio,
     send_whatsapp_image,
     send_whatsapp_text,
+    upload_whatsapp_audio,
 )
+from audio_service import MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
+    diagnose_bicycle_collections, discover_collections, search_products_for_management,
+    resolve_products_for_management,
+    products_for_collection,
 )
 from bicycle_recommendation import (
     asks_about_fit,
@@ -77,6 +89,11 @@ from order_intent_service import (
     OrderIntentStatus, calculate_total, delivery_window, extract_sri_lankan_phones,
     get_bicycle_initial_service_charge, is_cancellation, service_decision,
 )
+from bot_configuration_service import (
+    HARD_GUARDRAILS, ensure_configuration, get_snapshot, publish as publish_bot_config,
+    recommended_size as configured_bicycle_size, restore_as_draft, save_draft,
+    service_charge as configured_service_charge, validate_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +109,7 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+templates.env.globals["settings"] = settings
 
 # ---------------------- DB Session ----------------------
 def get_db():
@@ -137,6 +155,10 @@ PRODUCT_TERMS = (
 )
 FOLLOW_UP_TERMS = ("this", "that", "one", "second", "pink ones", "it", "මේ", "ඒක")
 
+AWAITING_BICYCLE_GENDER = "AWAITING_BICYCLE_GENDER"
+AWAITING_BICYCLE_AGE = "AWAITING_BICYCLE_AGE"
+SHOWING_PRODUCTS = "SHOWING_PRODUCTS"
+
 
 def needs_product_catalog(message: str, recent_context: list | None = None) -> bool:
     normalized = " ".join(message.casefold().split())
@@ -167,6 +189,9 @@ def _store_conversation_message(
     customer_name: str | None = None,
     whatsapp_message_id: str | None = None,
     response_kind: str | None = None,
+    media_id: str | None = None,
+    media_mime_type: str | None = None,
+    media_duration_seconds: float | None = None,
     created_at: datetime | None = None,
 ) -> None:
     try:
@@ -178,11 +203,80 @@ def _store_conversation_message(
                 message_text=message_text,
                 whatsapp_message_id=whatsapp_message_id,
                 response_kind=response_kind,
+                media_id=media_id,
+                media_mime_type=media_mime_type,
+                media_duration_seconds=media_duration_seconds,
                 created_at=created_at or datetime.utcnow(),
             ))
+            phone = _normalize_whatsapp_phone(phone_number)
+            conversation = db.query(WhatsAppConversation).filter_by(phone_number=phone).one_or_none()
+            when = created_at or datetime.utcnow()
+            if conversation is None:
+                conversation = WhatsAppConversation(phone_number=phone, mode="AI", unread_count=0)
+                db.add(conversation)
+            if customer_name:
+                conversation.customer_name = customer_name
+            conversation.last_message_at = when
+            conversation.updated_at = datetime.utcnow()
+            if direction == "inbound":
+                conversation.last_customer_message_at = when
+                conversation.unread_count = (conversation.unread_count or 0) + 1
             db.commit()
     except SQLAlchemyError:
         logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+
+
+def _normalize_whatsapp_phone(value: str) -> str:
+    """Use Meta's digit-only canonical form for stable conversation identity."""
+    digits = re.sub(r"\D", "", value or "")
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "94" + digits[1:]
+    return digits
+
+
+def _conversation_for_phone(db: Session, phone: str) -> WhatsAppConversation | None:
+    return db.query(WhatsAppConversation).filter_by(
+        phone_number=_normalize_whatsapp_phone(phone)
+    ).one_or_none()
+
+
+def _set_conversation_mode(phone: str, mode: str, staff: str | None = None) -> None:
+    with SessionLocal() as db:
+        conversation = _conversation_for_phone(db, phone)
+        if conversation is None:
+            conversation = WhatsAppConversation(phone_number=_normalize_whatsapp_phone(phone))
+            db.add(conversation)
+        conversation.mode = mode
+        conversation.updated_at = datetime.utcnow()
+        if mode == "HUMAN":
+            conversation.taken_over_at = datetime.utcnow()
+            conversation.taken_over_by = staff
+        else:
+            conversation.returned_to_ai_at = datetime.utcnow()
+        db.commit()
+
+
+def _set_bicycle_workflow(phone: str, state: str | None, *, gender: str | None = None,
+                          age: int | None = None, size: int | None = None) -> None:
+    """Persist deterministic discovery state independently of webhook workers."""
+    with SessionLocal() as db:
+        conversation = _conversation_for_phone(db, phone)
+        if conversation is None:
+            conversation = WhatsAppConversation(phone_number=_normalize_whatsapp_phone(phone))
+            db.add(conversation)
+        conversation.active_product_category = "bicycle" if state else None
+        conversation.workflow_state = state
+        conversation.bicycle_gender = gender
+        conversation.bicycle_age = age
+        conversation.bicycle_size = size
+        conversation.updated_at = datetime.utcnow()
+        db.commit()
+
+
+def _is_explicit_category_switch(message: str) -> bool:
+    """Allow an unambiguous new category request to supersede discovery."""
+    normalized = message.casefold()
+    return any(term in normalized for term in ("chocolate", "chocolates", "toy", "toys"))
 
 
 def _store_product_message(message_id: str | None, phone: str, product: dict) -> None:
@@ -286,7 +380,8 @@ def _start_bicycle_intent(sender: str, product: dict) -> str | None:
         return None
     variant = available[0]
     size = _variant_size(variant)
-    charge = get_bicycle_initial_service_charge(size)
+    with SessionLocal() as config_db:
+        charge = configured_service_charge(config_db, size) if size else None
     if charge is None:
         return "Please select the bicycle size before I quote the optional service charge."
     price = Decimal(str(variant["price"]))
@@ -337,7 +432,7 @@ def _active_order_reply(sender: str, text_body: str) -> str | None:
             if choice is None:
                 return ("Please confirm whether you would like the optional initial "
                         "service/greasing: yes or no.")
-            charge = get_bicycle_initial_service_charge(intent.bicycle_size) if choice else Decimal("0")
+            charge = configured_service_charge(db, intent.bicycle_size) if choice else Decimal("0")
             intent.initial_service_requested = choice
             intent.initial_service_charge = charge
             intent.final_total = calculate_total(intent.product_price, charge, 0)
@@ -401,12 +496,16 @@ def _active_order_reply(sender: str, text_body: str) -> str | None:
                    f"Shopify: {intent.product_url or ''}"),
         ))
         db.commit()
-        today, earliest, latest = delivery_window()
+        delivery_config, _ = get_snapshot(db)
+        minimum_days = delivery_config["delivery"]["minimum_working_days"]
+        maximum_days = delivery_config["delivery"]["maximum_working_days"]
+        today, earliest, latest = delivery_window(
+            minimum_days=minimum_days, maximum_days=maximum_days)
         return (f"Thank you 😊 Your delivery details have been received.\n\n🚲 {intent.product_title}\n"
                 f"Variant: {intent.variant_title or 'Selected variant'}\nTotal: Rs. {intent.final_total:,.0f}\n"
                 "🚚 Islandwide Delivery: FREE\n\nOur PixiePinks team will send you the bank/payment details.\n\n"
                 f"If payment is arranged today, {today.strftime('%d %B %Y')}, delivery is normally "
-                f"expected within approximately 3–4 working days: {earliest.strftime('%d %B %Y')} "
+                f"expected within approximately {minimum_days}–{maximum_days} working days: {earliest.strftime('%d %B %Y')} "
                 f"to {latest.strftime('%d %B %Y')}. Weekends are skipped; public holidays are not "
                 "currently included. This is an estimate, not a guaranteed delivery date.")
 
@@ -418,13 +517,67 @@ def _reply_to_text_message(
     """Generate and send after Meta has already received its HTTP 200 acknowledgement."""
     bicycle_delivery = None
     product_image_delivery = None
+    with SessionLocal() as db:
+        conversation = _conversation_for_phone(db, sender)
+        if conversation and conversation.mode == "HUMAN":
+            logger.info("WhatsApp route mode=HUMAN workflow_state=%s detected_route=store_only",
+                        conversation.workflow_state)
+            return
+        persisted_state = conversation.workflow_state if conversation else None
+        persisted_gender = conversation.bicycle_gender if conversation else None
+        persisted_age = conversation.bicycle_age if conversation else None
+        persisted_size = conversation.bicycle_size if conversation else None
+        logger.info(
+            "WhatsApp route mode=AI workflow_state=%s category=%s gender=%s age=%s size=%s",
+            persisted_state, conversation.active_product_category if conversation else None,
+            persisted_gender, persisted_age, persisted_size,
+        )
     if requests_human_handover(text_body):
         reply = HUMAN_HANDOVER_REPLY
         response_kind = "handover"
+        _set_conversation_mode(sender, "HUMAN")
         logger.info("WhatsApp human handover requested message_id=%s sender=%s", message_id, sender)
     else:
         response_kind = None
         try:
+            if persisted_state and _is_explicit_category_switch(text_body):
+                logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=category_switch",
+                            persisted_state)
+                _set_bicycle_workflow(sender, None)
+                persisted_state = None
+            elif persisted_state == AWAITING_BICYCLE_GENDER:
+                gender_answer = detect_bicycle_preference(text_body)
+                if gender_answer is None:
+                    reply = "Is it for a boy or a girl?"
+                    response_kind = "bicycle_state"
+                    logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_gender_invalid",
+                                persisted_state)
+                    raise StopIteration
+                _set_bicycle_workflow(sender, AWAITING_BICYCLE_AGE, gender=gender_answer)
+                persisted_gender = gender_answer
+                persisted_state = AWAITING_BICYCLE_AGE
+                logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_gender gender=%s",
+                            persisted_state, gender_answer)
+                reply = f"Great. How old is {'he' if gender_answer == 'boy' else 'she'}?"
+                response_kind = "bicycle_state"
+                raise StopIteration
+            elif persisted_state == AWAITING_BICYCLE_AGE:
+                age_answer = extract_child_age(text_body, standalone=True)
+                if age_answer is None:
+                    reply = "Please tell me the child's age."
+                    response_kind = "bicycle_state"
+                    logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_age_invalid gender=%s",
+                                persisted_state, persisted_gender)
+                    raise StopIteration
+                with SessionLocal() as config_db:
+                    size_answer, _ = configured_bicycle_size(config_db, age_answer)
+                _set_bicycle_workflow(sender, SHOWING_PRODUCTS, gender=persisted_gender,
+                                      age=age_answer, size=size_answer)
+                persisted_age, persisted_size = age_answer, size_answer
+                logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_age gender=%s age=%s size=%s",
+                            persisted_state, persisted_gender, age_answer, size_answer)
+                # Continue into the catalogue branch below; these authoritative
+                # values override all transcript inference.
             active_reply = _active_order_reply(sender, text_body)
             if active_reply is not None:
                 reply = active_reply
@@ -481,6 +634,10 @@ def _reply_to_text_message(
                 # derive the pending question from the turn immediately before it.
                 state_context = context[:-1]
             preference, age, bicycle_stage = infer_guided_state(state_context)
+            if persisted_state == AWAITING_BICYCLE_AGE:
+                preference, age, bicycle_stage = persisted_gender, persisted_age, "age"
+            elif persisted_state == SHOWING_PRODUCTS and persisted_age is not None:
+                preference, age, bicycle_stage = persisted_gender, persisted_age, "age"
             prior_result_size = infer_bicycle_result_size(state_context)
             explicit_preference = detect_bicycle_preference(text_body)
             explicit_age = extract_child_age(text_body, standalone=bicycle_stage == "age")
@@ -530,7 +687,11 @@ def _reply_to_text_message(
                 # Reconstruct the last result intent, then fetch Shopify again;
                 # assistant prose is never treated as current product data.
                 if bicycle_stage == "results" and preference and (age is not None or prior_result_size):
-                    size = prior_result_size or recommended_bicycle_size(age)
+                    if prior_result_size:
+                        size = prior_result_size
+                    else:
+                        with SessionLocal() as config_db:
+                            size, _ = configured_bicycle_size(config_db, age)
                     collection_config = bicycle_collection(preference, size)
                     try:
                         result = (search_bicycles_by_collection(preference, size, limit=10)
@@ -582,11 +743,17 @@ def _reply_to_text_message(
                          "the best size.")
             elif bicycle_related and not direct_size and preference is None:
                 reply = "Yes, we do 🚲 Is the bicycle for a boy or a girl?"
+                _set_bicycle_workflow(sender, AWAITING_BICYCLE_GENDER)
             elif bicycle_related and not direct_size and age is None:
                 pronoun = "he" if preference == "boy" else "she"
                 reply = f"Great. How old is {pronoun}?"
+                _set_bicycle_workflow(sender, AWAITING_BICYCLE_AGE, gender=preference)
             elif bicycle_related and preference and (age is not None or direct_size):
-                size = int(direct_size) if direct_size else recommended_bicycle_size(age)
+                if direct_size:
+                    size = int(direct_size)
+                else:
+                    with SessionLocal() as config_db:
+                        size, _ = configured_bicycle_size(config_db, age)
                 collection_config = bicycle_collection(preference, size)
                 if collection_config is None:
                     reply = (f"A {size}-inch bicycle is an age-based starting recommendation, "
@@ -632,6 +799,8 @@ def _reply_to_text_message(
                         intro += "\nHere are some available options from our live Shopify collection:"
                         bicycle_delivery = (intro, matches[:3])
                         reply = intro
+                        _set_bicycle_workflow(sender, SHOWING_PRODUCTS, gender=preference,
+                                              age=age, size=size)
                     elif result and result.get("collection") and products:
                         reply = (intro + f"\n\nWe have {size}-inch {preference}s bicycles listed, "
                                  "but the matching options are currently shown as unavailable "
@@ -704,6 +873,13 @@ def _reply_to_text_message(
     _store_conversation_message(
         sender, "outbound", reply, customer_name=profile_name, response_kind=response_kind
     )
+    with SessionLocal() as db:
+        payment_ready = db.query(WhatsAppOrderIntent.id).filter(
+            WhatsAppOrderIntent.customer_whatsapp_phone == sender,
+            WhatsAppOrderIntent.status == OrderIntentStatus.READY_FOR_PAYMENT_HANDOVER.value,
+        ).first()
+    if payment_ready:
+        _set_conversation_mode(sender, "HUMAN")
 
 
 def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
@@ -776,6 +952,19 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                 for contact in (contacts if isinstance(contacts, list) else [])
                 if isinstance(contact, dict) and isinstance(contact.get("profile"), dict)
             }
+            deliveries = value.get("statuses", [])
+            for delivery in deliveries if isinstance(deliveries, list) else []:
+                if not isinstance(delivery, dict):
+                    continue
+                outbound_id, delivery_status = delivery.get("id"), delivery.get("status")
+                if (not isinstance(outbound_id, str)
+                        or delivery_status not in {"sent", "delivered", "read", "failed"}):
+                    continue
+                with SessionLocal() as db:
+                    db.query(WhatsAppConversationMessage).filter_by(
+                        whatsapp_message_id=outbound_id
+                    ).update({"send_status": delivery_status})
+                    db.commit()
             messages = value.get("messages", [])
             if not isinstance(messages, list):
                 continue
@@ -855,9 +1044,21 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     "image", "audio", "video", "document", "sticker", "location",
                     "contacts", "reaction", "interactive",
                 }:
-                    background_tasks.add_task(
-                        _send_unsupported_reply, sender, profile_name
-                    )
+                    if message_type == "audio" and isinstance(message.get("audio"), dict):
+                        audio = message["audio"]
+                        media_id = audio.get("id")
+                        if isinstance(media_id, str) and media_id:
+                            _store_conversation_message(
+                                sender, "inbound", "Voice message", customer_name=profile_name,
+                                whatsapp_message_id=message_id, response_kind="customer_audio",
+                                media_id=media_id, media_mime_type=audio.get("mime_type"),
+                                created_at=received_at,
+                            )
+                    with SessionLocal() as db:
+                        conversation = _conversation_for_phone(db, sender)
+                        human_owned = bool(conversation and conversation.mode == "HUMAN")
+                    if not human_owned:
+                        background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
 
     return {"status": "ok"}
 
@@ -901,6 +1102,44 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
         headers={"Location": f"{LOGIN_PATH}?next={quote(request.url.path)}"}
     )
 
+
+def _bot_page_context(request: Request, db: Session, active: str, **extra) -> dict:
+    config = ensure_configuration(db)
+    draft, _ = get_snapshot(db, draft=True)
+    live, version = get_snapshot(db)
+    draft.setdefault("guided_flows", [])
+    live.setdefault("guided_flows", [])
+    if active in {"catalog", "policies", "faqs"}:
+        product_entries = [entry for bucket in ("knowledge", "policies", "faqs")
+                           for entry in draft.get(bucket, [])
+                           if entry.get("scope") == "PRODUCT" and entry.get("scope_reference")]
+        try:
+            current_products = resolve_products_for_management(
+                [str(entry["scope_reference"]) for entry in product_entries])
+        except ShopifyCatalogError:
+            logger.warning("Could not refresh saved product titles for Bot Management")
+            current_products = {}
+        for entry in product_entries:
+            current = current_products.get(str(entry["scope_reference"]))
+            if current and current.get("title"):
+                entry["scope_reference_title"] = current["title"]
+    errors, warnings = validate_snapshot(draft)
+    versions = db.query(BotConfigurationVersion).order_by(
+        BotConfigurationVersion.version.desc()).limit(20).all()
+    audits = db.query(BotAuditEvent).order_by(BotAuditEvent.created_at.desc()).limit(10).all()
+    cached_collections = db.query(ShopifyCollectionReference).filter_by(active=True).order_by(
+        ShopifyCollectionReference.title).all()
+    last_refresh = db.query(func.max(ShopifyCollectionReference.refreshed_at)).scalar()
+    context = {
+        "request": request, "page_title": "AI Bot Management", "active": active,
+        "config": config, "draft": draft, "live": live, "version": version,
+        "errors": errors, "warnings": warnings, "versions": versions, "audits": audits,
+        "guardrails": HARD_GUARDRAILS, "collection_options": cached_collections,
+        "last_shopify_refresh": last_refresh,
+    }
+    context.update(extra)
+    return context
+
 # ---------------------- Startup ----------------------
 @app.on_event("startup")
 def startup():
@@ -911,6 +1150,7 @@ def startup():
         Base.metadata.create_all(bind=engine)
 
     ensure_item_sku_column()
+    ensure_whatsapp_inbox_columns()
     init_db()
 
     with SessionLocal() as db:
@@ -954,6 +1194,41 @@ def ensure_item_sku_column():
     if settings.DATABASE_URL.startswith("sqlite"):
         with engine.begin() as conn:
             conn.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS ix_items_sku ON items (sku)"))
+
+
+def ensure_whatsapp_inbox_columns():
+    """Backward-compatible additions for installations managed by create_all."""
+    inspector = inspect(engine)
+    if not inspector.has_table("whatsapp_conversation_messages"):
+        return
+    columns = {column["name"] for column in inspector.get_columns("whatsapp_conversation_messages")}
+    statements = []
+    if "send_status" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN send_status VARCHAR(20)")
+    if "sent_by" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN sent_by VARCHAR(100)")
+    if "media_id" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_id VARCHAR(255)")
+    if "media_mime_type" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_mime_type VARCHAR(100)")
+    if "media_duration_seconds" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_duration_seconds FLOAT")
+    conversation_columns = {
+        column["name"] for column in inspector.get_columns("whatsapp_conversations")
+    } if inspector.has_table("whatsapp_conversations") else set()
+    for name, sql_type in (
+        ("active_product_category", "VARCHAR(50)"),
+        ("workflow_state", "VARCHAR(50)"),
+        ("bicycle_gender", "VARCHAR(10)"),
+        ("bicycle_age", "INTEGER"),
+        ("bicycle_size", "INTEGER"),
+    ):
+        if name not in conversation_columns:
+            statements.append(f"ALTER TABLE whatsapp_conversations ADD COLUMN {name} {sql_type}")
+    if statements:
+        with engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
 
 # ---------------------- Auth Routes ----------------------
 @app.get("/login", response_class=HTMLResponse)
@@ -1120,6 +1395,615 @@ def delete_item(item_id: int, db: Session = Depends(get_db), user: User = Depend
 
 
 # ---------------------- CRM ----------------------
+PAYMENT_REQUIRED_STATUS = OrderIntentStatus.READY_FOR_PAYMENT_HANDOVER.value
+
+
+def _payment_required_phones(db: Session) -> set[str]:
+    return {
+        _normalize_whatsapp_phone(phone) for (phone,) in db.query(
+            WhatsAppOrderIntent.customer_whatsapp_phone
+        ).filter(WhatsAppOrderIntent.status == PAYMENT_REQUIRED_STATUS).distinct().all()
+    }
+
+
+def _conversation_payload(db: Session, conversation: WhatsAppConversation,
+                          payment_phones: set[str] | None = None,
+                          latest_messages: dict[str, WhatsAppConversationMessage] | None = None) -> dict:
+    latest = (latest_messages or {}).get(conversation.phone_number)
+    if latest_messages is None:
+        latest = db.query(WhatsAppConversationMessage).filter(
+            WhatsAppConversationMessage.phone_number == conversation.phone_number
+        ).order_by(WhatsAppConversationMessage.created_at.desc()).first()
+    payment_phones = payment_phones if payment_phones is not None else _payment_required_phones(db)
+    return {
+        "id": conversation.id,
+        "phone_number": conversation.phone_number,
+        "customer_name": conversation.customer_name or "WhatsApp customer",
+        "mode": conversation.mode,
+        "unread_count": conversation.unread_count or 0,
+        "last_message_at": conversation.last_message_at.isoformat() if conversation.last_message_at else None,
+        "latest_message": latest.message_text[:120] if latest else "",
+        "payment_required": conversation.phone_number in payment_phones,
+    }
+
+
+@app.get("/crm/whatsapp", response_class=HTMLResponse)
+def whatsapp_inbox(request: Request, conversation: int | None = None,
+                   db: Session = Depends(get_db), user: User = Depends(require_user)):
+    unread = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
+    return templates.TemplateResponse("whatsapp_inbox.html", {
+        "request": request, "initial_conversation_id": conversation, "unread_whatsapp": unread,
+        "page_title": "WhatsApp Inbox", "user": user,
+    })
+
+
+@app.get("/crm/whatsapp/api/conversations")
+def whatsapp_conversations(search: str = "", filter: str = "all", limit: int = 50,
+                           db: Session = Depends(get_db), user: User = Depends(require_user)):
+    query = db.query(WhatsAppConversation)
+    term = search.strip()
+    if term:
+        name_match = WhatsAppConversation.customer_name.ilike(f"%{term}%")
+        phone_term = _normalize_whatsapp_phone(term)
+        query = query.filter(or_(name_match, WhatsAppConversation.phone_number.ilike(f"%{phone_term}%"))
+                             if phone_term else name_match)
+    payment_phones = _payment_required_phones(db)
+    value = filter.casefold()
+    if value == "unread":
+        query = query.filter(WhatsAppConversation.unread_count > 0)
+    elif value in {"ai", "human"}:
+        query = query.filter(WhatsAppConversation.mode == value.upper())
+    elif value == "payment":
+        query = query.filter(WhatsAppConversation.phone_number.in_(payment_phones or {"__none__"}))
+    rows = query.order_by(WhatsAppConversation.last_message_at.desc(), WhatsAppConversation.id.desc()).limit(
+        min(max(limit, 1), 100)
+    ).all()
+    phones = [row.phone_number for row in rows]
+    recent_messages = db.query(WhatsAppConversationMessage).filter(
+        WhatsAppConversationMessage.phone_number.in_(phones or {"__none__"})
+    ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(1000).all()
+    latest_messages = {}
+    for message in recent_messages:
+        latest_messages.setdefault(message.phone_number, message)
+    unread_total = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
+    return {"conversations": [_conversation_payload(db, row, payment_phones, latest_messages) for row in rows],
+            "unread_total": unread_total}
+
+
+def _get_conversation(db: Session, conversation_id: int) -> WhatsAppConversation:
+    conversation = db.get(WhatsAppConversation, conversation_id)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+
+@app.get("/crm/whatsapp/api/conversations/{conversation_id}")
+def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
+                                 db: Session = Depends(get_db), user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    messages = db.query(WhatsAppConversationMessage).filter(
+        WhatsAppConversationMessage.phone_number == conversation.phone_number
+    ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(min(max(limit, 1), 200)).all()
+    order = db.query(WhatsAppOrderIntent).filter(
+        WhatsAppOrderIntent.customer_whatsapp_phone == conversation.phone_number
+    ).order_by(WhatsAppOrderIntent.updated_at.desc(), WhatsAppOrderIntent.id.desc()).first()
+    message_data = [{
+        "id": item.id,
+        "direction": item.direction, "text": item.message_text,
+        "source": item.response_kind or ("customer" if item.direction == "inbound" else "ai"),
+        "status": item.send_status or ("received" if item.direction == "inbound" else "sent"),
+        "timestamp": item.created_at.isoformat(),
+        "message_type": "audio" if item.media_id else "text",
+        "duration_seconds": item.media_duration_seconds,
+        "media_url": (f"/crm/whatsapp/api/conversations/{conversation.id}/messages/{item.id}/media"
+                      if item.media_id else None),
+    } for item in reversed(messages)]
+    order_data = None if order is None else {
+        "product_title": order.product_title, "variant_title": order.variant_title,
+        "product_image_url": order.product_image_url, "product_url": order.product_url,
+        "product_price": float(order.product_price), "service_charge": float(order.initial_service_charge),
+        "delivery_charge": float(order.delivery_charge), "total": float(order.final_total),
+        "status": order.status, "payment_required": order.status == PAYMENT_REQUIRED_STATUS,
+        "bicycle_gender": order.bicycle_gender, "bicycle_age": order.bicycle_age,
+        "bicycle_size": order.bicycle_size, "contact_person_name": order.contact_person_name,
+        "delivery_address": order.delivery_address, "primary_phone": order.primary_phone,
+        "alternative_phone": order.alternative_phone,
+    }
+    return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
+            "order": order_data}
+
+
+@app.get("/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media")
+def whatsapp_message_media(conversation_id: int, message_id: int, request: Request,
+                           db: Session = Depends(get_db), user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    message = db.query(WhatsAppConversationMessage).filter_by(
+        id=message_id, phone_number=conversation.phone_number
+    ).one_or_none()
+    if message is None or not message.media_id:
+        raise HTTPException(status_code=404, detail="Audio message not found")
+    downloaded = download_whatsapp_media(message.media_id)
+    if downloaded is None:
+        raise HTTPException(status_code=502, detail="Audio is temporarily unavailable")
+    content, mime_type = downloaded
+    safe_mime = mime_type if mime_type.startswith("audio/") else "audio/ogg"
+    size = len(content)
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=300",
+               "X-Content-Type-Options": "nosniff"}
+    requested_range = request.headers.get("range", "")
+    if requested_range.startswith("bytes=") and "," not in requested_range:
+        try:
+            start_text, end_text = requested_range[6:].split("-", 1)
+            if start_text:
+                start = int(start_text)
+                end = min(int(end_text), size - 1) if end_text else size - 1
+            else:
+                suffix = int(end_text)
+                start, end = max(size - suffix, 0), size - 1
+            if start < 0 or start >= size or end < start:
+                raise ValueError
+        except (ValueError, TypeError):
+            return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+        partial = content[start:end + 1]
+        headers.update({"Content-Range": f"bytes {start}-{end}/{size}",
+                        "Content-Length": str(len(partial))})
+        return Response(content=partial, status_code=206, media_type=safe_mime, headers=headers)
+    headers["Content-Length"] = str(size)
+    return Response(content=content, media_type=safe_mime, headers=headers)
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/read")
+def whatsapp_mark_read(conversation_id: int, db: Session = Depends(get_db),
+                       user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    conversation.unread_count = 0
+    db.commit()
+    return {"ok": True}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/takeover")
+def whatsapp_takeover(conversation_id: int, db: Session = Depends(get_db),
+                      user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    conversation.mode = "HUMAN"
+    conversation.taken_over_at = datetime.utcnow()
+    conversation.taken_over_by = user.username
+    db.commit()
+    return {"ok": True, "mode": "HUMAN"}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/return-to-ai")
+def whatsapp_return_to_ai(conversation_id: int, db: Session = Depends(get_db),
+                          user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    conversation.mode = "AI"
+    conversation.returned_to_ai_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "mode": "AI"}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/send")
+async def whatsapp_manual_send(conversation_id: int, request: Request,
+                               db: Session = Depends(get_db), user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid request")
+    body = payload.get("message") if isinstance(payload, dict) else None
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if not isinstance(body, str) or not body.strip() or len(body.strip()) > 2000:
+        raise HTTPException(status_code=422, detail="Message must contain 1–2000 characters")
+    if not key or len(key) > 100:
+        raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+    existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
+    if existing:
+        return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
+                            status_code=200 if existing.status == "SENT" else 409)
+    attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
+                                message_text=body.strip(), sent_by=user.username)
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
+    try:
+        result = send_whatsapp_text(conversation.phone_number, body.strip(), return_message_id=True)
+    except TypeError:
+        result = send_whatsapp_text(conversation.phone_number, body.strip())
+    if not result:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not send this message."}, status_code=502)
+    message_id = result if isinstance(result, str) else None
+    attempt.status = "SENT"
+    attempt.whatsapp_message_id = message_id
+    db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number, direction="outbound",
+        message_text=body.strip(), whatsapp_message_id=message_id, response_kind="staff",
+        send_status="sent", sent_by=user.username))
+    conversation.last_message_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "SENT"}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/send-audio")
+async def whatsapp_manual_audio_send(
+    conversation_id: int,
+    request: Request,
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    conversation = _get_conversation(db, conversation_id)
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if not key or len(key) > 100:
+        raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+    existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
+    if existing:
+        return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
+                            status_code=200 if existing.status == "SENT" else 409)
+
+    content_type = audio.content_type or ""
+    raw = await audio.read(MAX_AUDIO_BYTES + 1)
+    await audio.close()
+    try:
+        voice_note, duration = normalize_voice_audio(raw, content_type)
+    except VoiceAudioError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    attempt = WhatsAppManualSend(
+        idempotency_key=key, conversation_id=conversation.id,
+        message_text="Voice message", sent_by=user.username,
+    )
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
+
+    try:
+        media_id = upload_whatsapp_audio(voice_note)
+    except Exception:
+        media_id = None
+    if not media_id:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not upload this voice message."}, status_code=502)
+    try:
+        outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=True)
+    except Exception:
+        outbound_id = None
+    if not outbound_id:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not send this voice message."}, status_code=502)
+
+    attempt.status = "SENT"
+    attempt.whatsapp_message_id = outbound_id
+    db.add(WhatsAppConversationMessage(
+        phone_number=conversation.phone_number, direction="outbound",
+        message_text="Voice message", whatsapp_message_id=outbound_id,
+        response_kind="staff_audio", send_status="sent", sent_by=user.username,
+        media_id=media_id, media_mime_type="audio/ogg",
+        media_duration_seconds=duration,
+    ))
+    conversation.last_message_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "SENT", "duration_seconds": duration}
+
+
+@app.get("/crm/orders", response_class=HTMLResponse)
+def crm_orders(request: Request, status_filter: str = "active", db: Session = Depends(get_db),
+               user: User = Depends(require_user)):
+    query = db.query(WhatsAppOrderIntent)
+    if status_filter == "payment": query = query.filter(WhatsAppOrderIntent.status == PAYMENT_REQUIRED_STATUS)
+    elif status_filter == "cancelled": query = query.filter(WhatsAppOrderIntent.status == "CANCELLED")
+    elif status_filter == "handed": query = query.filter(WhatsAppOrderIntent.status == "HANDED_TO_TEAM")
+    elif status_filter == "active": query = query.filter(WhatsAppOrderIntent.status.notin_(["CANCELLED", "HANDED_TO_TEAM"]))
+    orders = query.order_by(WhatsAppOrderIntent.updated_at.desc()).limit(200).all()
+    return templates.TemplateResponse("crm_orders.html", {"request": request, "orders": orders,
+        "status_filter": status_filter, "page_title": "Orders / Sales Intents", "user": user})
+
+
+@app.get("/crm/bot-management", response_class=HTMLResponse)
+@app.get("/crm/bot-management/{section}", response_class=HTMLResponse)
+def bot_management(request: Request, section: str = "overview", db: Session = Depends(get_db),
+                   user: User = Depends(require_user)):
+    allowed = {"overview", "instructions", "policies", "catalog", "rules", "faqs", "test", "versions"}
+    if section not in allowed:
+        raise HTTPException(status_code=404)
+    collections, catalog_error = [], None
+    if section == "catalog":
+        query = str(request.query_params.get("q", "")).strip()
+        collection_query = db.query(ShopifyCollectionReference).filter_by(active=True)
+        if query:
+            collection_query = collection_query.filter(or_(
+                ShopifyCollectionReference.title.ilike(f"%{query}%"),
+                ShopifyCollectionReference.handle.ilike(f"%{query}%")))
+        collections = collection_query.order_by(ShopifyCollectionReference.title).limit(100).all()
+    return templates.TemplateResponse("bot_management.html", _bot_page_context(
+        request, db, section, collections=collections, catalog_error=catalog_error))
+
+
+@app.post("/crm/bot-management/settings")
+def bot_save_settings(
+    request: Request, instructions: str = Form(...), maximum_products: int = Form(...),
+    reply_in_customer_language: bool = Form(False), ask_one_question: bool = Form(False),
+    moderate_emojis: bool = Form(False), concise: bool = Form(False),
+    send_product_images: bool = Form(False), db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    snapshot, _ = get_snapshot(db, draft=True)
+    snapshot["global"].update({
+        "instructions": instructions.strip(), "maximum_products": maximum_products,
+        "reply_in_customer_language": reply_in_customer_language,
+        "ask_one_question": ask_one_question, "moderate_emojis": moderate_emojis,
+        "concise": concise, "send_product_images": send_product_images,
+    })
+    save_draft(db, snapshot, user.username, "Updated response settings and global instructions")
+    return RedirectResponse("/crm/bot-management/instructions", status_code=303)
+
+
+@app.post("/crm/bot-management/bicycle")
+async def bot_save_bicycle(request: Request, db: Session = Depends(get_db),
+                            user: User = Depends(require_user)):
+    form = await request.form()
+    snapshot, _ = get_snapshot(db, draft=True)
+    rules = []
+    for index in range(4):
+        end_value = str(form.get(f"age_to_{index}", "")).strip()
+        rules.append({"from": int(form[f"age_from_{index}"]),
+                      "to": int(end_value) if end_value else None,
+                      "size": int(form[f"size_{index}"]),
+                      "enabled": form.get(f"enabled_{index}") == "on"})
+    charges = {str(size): str(Decimal(str(form[f"charge_{size}"])).quantize(Decimal("0.01")))
+               for size in (12, 16, 20, 26)}
+    snapshot["bicycle"]["age_rules"] = rules
+    snapshot["bicycle"]["service_charges"] = charges
+    snapshot["bicycle"]["free_islandwide_delivery"] = form.get("free_delivery") == "on"
+    snapshot["delivery"]["minimum_working_days"] = int(form["delivery_min"])
+    snapshot["delivery"]["maximum_working_days"] = int(form["delivery_max"])
+    save_draft(db, snapshot, user.username, "Updated bicycle, service and delivery rules")
+    return RedirectResponse("/crm/bot-management/rules", status_code=303)
+
+
+@app.post("/crm/bot-management/entry")
+def bot_add_entry(
+    kind: str = Form(...), scope: str = Form(...), scope_reference: str = Form(""),
+    title: str = Form(...), topic: str = Form(""), content: str = Form(...),
+    tags: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user),
+):
+    kind = kind.upper()
+    scope = scope.upper()
+    if kind not in {"KNOWLEDGE", "POLICY", "FAQ"} or scope not in {"GLOBAL", "COLLECTION", "PRODUCT"}:
+        raise HTTPException(400, "Invalid entry type or scope")
+    if not title.strip() or not content.strip() or len(content) > 10000:
+        raise HTTPException(400, "Title and approved content are required")
+    reference = scope_reference.strip()
+    if scope == "GLOBAL" and reference:
+        raise HTTPException(400, "Global content must not select a Shopify item")
+    if scope == "COLLECTION":
+        valid = db.query(ShopifyCollectionReference).filter_by(handle=reference, active=True).first()
+        if not valid: raise HTTPException(400, "Select a valid Shopify collection")
+    if scope == "PRODUCT":
+        try:
+            valid_product = get_product_by_handle(reference) if reference else None
+        except ShopifyCatalogError:
+            raise HTTPException(503, "Shopify product validation is temporarily unavailable") from None
+        if not valid_product:
+            raise HTTPException(400, "Select a valid Shopify product")
+    snapshot, _ = get_snapshot(db, draft=True)
+    bucket = {"KNOWLEDGE": "knowledge", "POLICY": "policies", "FAQ": "faqs"}[kind]
+    entries = snapshot.setdefault(bucket, [])
+    entries.append({"id": max([int(item.get("id", 0)) for item in entries] + [0]) + 1,
+                    "title": title.strip(), "topic": topic.strip(), "content": content.strip(),
+                    "scope": scope, "scope_reference": reference,
+                    "scope_reference_title": (valid_product.get("title")
+                                              if scope == "PRODUCT" else None),
+                    "tags": tags.strip(), "enabled": True, "archived": False,
+                    "updated_at": datetime.utcnow().isoformat()})
+    save_draft(db, snapshot, user.username, f"Added draft {kind.lower()}: {title.strip()}")
+    return RedirectResponse(f"/crm/bot-management/{'faqs' if kind == 'FAQ' else 'policies' if kind == 'POLICY' else 'catalog'}", status_code=303)
+
+
+@app.post("/crm/bot-management/publish")
+def bot_publish(confirm: str = Form(""), change_summary: str = Form(...),
+                db: Session = Depends(get_db), user: User = Depends(require_user)):
+    if confirm != "PUBLISH":
+        raise HTTPException(400, "Explicit publish confirmation is required")
+    draft, _ = get_snapshot(db, draft=True)
+    active_collections = {row.handle for row in db.query(ShopifyCollectionReference).filter_by(
+        active=True).all()}
+    for bucket in ("knowledge", "policies", "faqs"):
+        for entry in draft.get(bucket, []):
+            if entry.get("scope") == "COLLECTION" and entry.get("scope_reference") not in active_collections:
+                raise HTTPException(400, f"{entry.get('title', 'Entry')} selects a Shopify collection that no longer exists")
+            if entry.get("scope") == "PRODUCT":
+                try: valid_product = get_product_by_handle(str(entry.get("scope_reference") or ""))
+                except ShopifyCatalogError: raise HTTPException(503, "Shopify validation is temporarily unavailable") from None
+                if not valid_product:
+                    raise HTTPException(400, f"{entry.get('title', 'Entry')} selects a Shopify product that no longer exists")
+    for flow in draft.get("guided_flows", []):
+        if flow.get("collection_reference") not in active_collections:
+            raise HTTPException(400, "A guided flow collection no longer exists in Shopify")
+        for rule in flow.get("rules", []):
+            action = rule.get("action", {})
+            if action.get("type") == "CHOOSE_COLLECTION" and action.get("collection_reference") not in active_collections:
+                raise HTTPException(400, f"Rule {rule.get('name', '')} has no valid Shopify target collection")
+    try:
+        publish_bot_config(db, user.username, change_summary.strip() or "Published configuration changes")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return RedirectResponse("/crm/bot-management/versions", status_code=303)
+
+
+@app.post("/crm/bot-management/versions/{version}/restore")
+def bot_restore(version: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    try:
+        restore_as_draft(db, version, user.username)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+    return RedirectResponse("/crm/bot-management/versions", status_code=303)
+
+
+@app.post("/crm/bot-management/test", response_class=HTMLResponse)
+def bot_test(request: Request, message: str = Form(...), mode: str = Form("live"),
+             db: Session = Depends(get_db), user: User = Depends(require_user)):
+    draft = mode == "draft"
+    snapshot, version = get_snapshot(db, draft=draft)
+    preference = detect_bicycle_preference(message)
+    age = extract_child_age(message)
+    trace = {"category": "Bicycles" if is_bicycle_request(message) else "General",
+             "mode": "DRAFT" if draft else "LIVE", "version": version,
+             "gender": preference, "age": age, "size": None, "matched_rule": None}
+    if trace["category"] == "Bicycles" and age is not None:
+        try:
+            size, _ = configured_bicycle_size(db, age, draft=draft)
+            trace["size"] = size
+            trace["matched_rule"] = next((rule for rule in snapshot["bicycle"]["age_rules"]
+                                           if rule.get("enabled") and age >= rule["from"] and
+                                           (rule.get("to") is None or age <= rule["to"])), None)
+            response = f"For a {age}-year-old, a {size}-inch bicycle is an age-based starting point."
+        except ValueError:
+            response = "No approved bicycle recommendation rule covers that age."
+    else:
+        response = "Simulation identified a general enquiry. No external message or business record was created."
+    return templates.TemplateResponse("bot_management.html", _bot_page_context(
+        request, db, "test", simulation={"message": message, "response": response, "trace": trace}))
+
+
+@app.post("/crm/bot-management/catalog/refresh")
+def bot_refresh_catalog(db: Session = Depends(get_db), user: User = Depends(require_user)):
+    # Read-only Shopify discovery. The catalogue remains in Shopify and is not duplicated.
+    try:
+        collections = discover_collections()
+        now = datetime.utcnow()
+        seen = set()
+        for collection in collections:
+            if not collection.get("id") or not collection.get("handle"): continue
+            seen.add(collection["id"])
+            cached = db.query(ShopifyCollectionReference).filter_by(
+                shopify_id=collection["id"]).one_or_none()
+            if cached is None:
+                cached = ShopifyCollectionReference(shopify_id=collection["id"],
+                    handle=collection["handle"], title=collection["title"] or collection["handle"])
+                db.add(cached)
+            cached.handle = collection["handle"]
+            cached.title = collection.get("title") or collection["handle"]
+            cached.product_count, cached.active = collection.get("product_count"), True
+            cached.last_seen_at = cached.refreshed_at = now
+        if seen:
+            db.query(ShopifyCollectionReference).filter(
+                ShopifyCollectionReference.shopify_id.notin_(seen)).update(
+                    {ShopifyCollectionReference.active: False}, synchronize_session=False)
+        summary = f"Read-only Shopify collection discovery found {len(collections)} collections"
+    except ShopifyCatalogError:
+        summary = "Shopify collection discovery was unavailable; no catalogue data changed"
+    db.add(BotAuditEvent(action="SHOPIFY_REFRESH", summary=summary, actor=user.username))
+    db.commit()
+    return RedirectResponse("/crm/bot-management/catalog", status_code=303)
+
+
+@app.get("/crm/bot-management/api/products")
+def bot_product_search(q: str = Query("", max_length=100),
+                       limit: int = Query(20, ge=1, le=25),
+                       cursor: str | None = Query(None, max_length=500,
+                                                  pattern=r"^[A-Za-z0-9_+=/.-]+$"),
+                       user: User = Depends(require_user)):
+    """Authenticated, bounded proxy for the reusable Shopify product picker."""
+    try:
+        result = search_products_for_management(q, limit, cursor)
+    except ShopifyCatalogError:
+        logger.warning("Shopify management product search unavailable")
+        raise HTTPException(503, "Shopify product search is temporarily unavailable") from None
+    allowed = ("title", "handle", "vendor", "product_type", "featured_image", "status")
+    return {"products": [{key: product.get(key) for key in allowed}
+                         for product in result["products"]],
+            "next_cursor": result.get("next_cursor"),
+            "has_next_page": result.get("has_next_page", False)}
+
+
+@app.get("/crm/bot-management/catalog/collection/{handle}", response_class=HTMLResponse)
+def bot_collection_workspace(request: Request, handle: str, tab: str = "overview", q: str = "",
+                             db: Session = Depends(get_db), user: User = Depends(require_user)):
+    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).one_or_none()
+    if not collection: raise HTTPException(404, "Shopify collection was not found")
+    if tab not in {"overview", "knowledge", "guided", "rules", "faqs", "products", "test"}:
+        raise HTTPException(404)
+    products, error = [], None
+    if tab == "products":
+        try: products = products_for_collection(collection.shopify_id, q, 20)
+        except ShopifyCatalogError: error = "Shopify products are temporarily unavailable."
+    return templates.TemplateResponse("bot_collection.html", _bot_page_context(
+        request, db, "catalog", collection=collection, workspace_tab=tab,
+        products=products, catalog_error=error, user=user))
+
+
+@app.post("/crm/bot-management/catalog/collection/{handle}/question")
+async def bot_add_guided_question(handle: str, request: Request, db: Session = Depends(get_db),
+                                  user: User = Depends(require_user)):
+    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).first()
+    if not collection: raise HTTPException(404, "Shopify collection was not found")
+    form = await request.form()
+    key = str(form.get("key", "")).strip().lower()
+    answer_type = str(form.get("answer_type", "")).upper()
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,49}", key):
+        raise HTTPException(400, "Question key must use lowercase letters, numbers or underscores")
+    if answer_type not in {"CHOICE", "NUMBER", "YES_NO", "TEXT"}:
+        raise HTTPException(400, "Invalid answer type")
+    choices = [x.strip() for x in str(form.get("choices", "")).split(",") if x.strip()]
+    if answer_type == "CHOICE" and len(choices) < 2:
+        raise HTTPException(400, "Choice questions require at least two choices")
+    snapshot, _ = get_snapshot(db, draft=True)
+    flows = snapshot.setdefault("guided_flows", [])
+    flow = next((x for x in flows if x.get("collection_reference") == handle), None)
+    if flow is None:
+        flow = {"collection_reference": handle, "enabled": True, "questions": [], "rules": []}
+        flows.append(flow)
+    if any(q.get("key") == key for q in flow["questions"]):
+        raise HTTPException(400, "Question key already exists")
+    flow["questions"].append({"label": str(form.get("label", "")).strip()[:100], "key": key,
+        "text": str(form.get("text", "")).strip()[:1000],
+        "text_si": str(form.get("text_si", "")).strip()[:1000], "answer_type": answer_type,
+        "choices": choices, "required": form.get("required") == "on",
+        "display_order": int(form.get("display_order", len(flow["questions"]) + 1)), "enabled": True})
+    flow["questions"].sort(key=lambda q: q["display_order"])
+    save_draft(db, snapshot, user.username, f"Added guided question to {collection.title}")
+    return RedirectResponse(f"/crm/bot-management/catalog/collection/{handle}?tab=guided", 303)
+
+
+@app.post("/crm/bot-management/catalog/collection/{handle}/rule")
+async def bot_add_guided_rule(handle: str, request: Request, db: Session = Depends(get_db),
+                              user: User = Depends(require_user)):
+    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).first()
+    if not collection: raise HTTPException(404, "Shopify collection was not found")
+    form = await request.form()
+    operator, action_type = str(form.get("operator", "")).upper(), str(form.get("action_type", "")).upper()
+    if operator not in {"EQUALS", "BETWEEN", "CONTAINS"} or action_type not in {
+            "SET_ATTRIBUTE", "CHOOSE_COLLECTION", "PRODUCT_FILTER", "SET_VALUE", "ASK_NEXT", "NO_MATCH"}:
+        raise HTTPException(400, "Unsupported rule condition or action")
+    target = str(form.get("target_collection", "")).strip()
+    if action_type == "CHOOSE_COLLECTION" and not db.query(ShopifyCollectionReference).filter_by(
+            handle=target, active=True).first():
+        raise HTTPException(400, "Select a valid Shopify target collection")
+    snapshot, _ = get_snapshot(db, draft=True)
+    flow = next((x for x in snapshot.setdefault("guided_flows", [])
+                 if x.get("collection_reference") == handle), None)
+    if not flow: raise HTTPException(400, "Create a guided question before adding rules")
+    if str(form.get("key", "")) not in {q["key"] for q in flow["questions"]}:
+        raise HTTPException(400, "Select an existing guided question")
+    flow["rules"].append({"name": str(form.get("name", "Recommendation rule")).strip()[:150],
+        "conditions": [{"key": form["key"], "operator": operator, "value": str(form.get("value", ""))[:200],
+                        "value_to": str(form.get("value_to", ""))[:200]}],
+        "action": {"type": action_type, "key": str(form.get("action_key", ""))[:100],
+                   "value": str(form.get("action_value", ""))[:200], "collection_reference": target},
+        "enabled": True})
+    save_draft(db, snapshot, user.username, f"Added recommendation rule to {collection.title}")
+    return RedirectResponse(f"/crm/bot-management/catalog/collection/{handle}?tab=rules", 303)
+
+
 @app.get("/crm", response_class=HTMLResponse)
 def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
     today = date.today()
@@ -1137,6 +2021,14 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
     )
 
     recent_leads = db.query(Lead).order_by(Lead.created_at.desc(), Lead.id.desc()).limit(10).all()
+    unread_whatsapp = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
+    human_handovers = db.query(func.count(WhatsAppConversation.id)).filter(WhatsAppConversation.mode == "HUMAN").scalar() or 0
+    payment_required = db.query(func.count(WhatsAppOrderIntent.id)).filter(WhatsAppOrderIntent.status == PAYMENT_REQUIRED_STATUS).scalar() or 0
+    active_order_intents = db.query(func.count(WhatsAppOrderIntent.id)).filter(
+        WhatsAppOrderIntent.status.notin_(["CANCELLED", "HANDED_TO_TEAM"])).scalar() or 0
+    recent_conversations = db.query(WhatsAppConversation).order_by(
+        WhatsAppConversation.last_message_at.desc()).limit(6).all()
+    recent_orders = db.query(WhatsAppOrderIntent).order_by(WhatsAppOrderIntent.updated_at.desc()).limit(6).all()
 
     return templates.TemplateResponse("crm_dashboard.html", {
         "request": request,
@@ -1147,6 +2039,10 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
         "lost_leads": lost_leads,
         "recent_leads": recent_leads,
         "pending_followups": pending_followups,
+        "unread_whatsapp": unread_whatsapp, "human_handovers": human_handovers,
+        "payment_required": payment_required, "active_order_intents": active_order_intents,
+        "recent_conversations": recent_conversations, "recent_orders": recent_orders,
+        "page_title": "CRM Dashboard", "user": user,
     })
 
 
