@@ -35,7 +35,7 @@ def test_inbox_requires_authentication_and_renders_for_staff():
     assert response.status_code == 200
     assert 'class="app-body whatsapp-page"' in response.text
     assert '/static/crm.css?v=20261020-desktop-voice' in response.text
-    assert '/static/whatsapp_inbox.js?v=20261020-desktop-voice' in response.text
+    assert '/static/whatsapp_inbox.js?v=20261020-smooth-polling' in response.text
     assert 'id="send-button">Send</button>' in response.text
     assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
     assert all(control in response.text for control in (
@@ -57,6 +57,10 @@ def test_inbox_layout_uses_dynamic_viewport_and_flexible_message_history():
     assert ".whatsapp-page .inbox{height:100%;max-height:100%}" in css
     assert "recorder.onstart = () =>" in javascript
     assert javascript.index("recorder.onstart = () =>") < javascript.index("recorder.start(1000)")
+    assert "reconcileMessages(data.messages)" in javascript
+    assert "wrapper.dataset.messageId = String(message.id)" in javascript
+    assert "messages.replaceChildren(...data.messages.map(renderMessage))" not in javascript
+    assert "if (conversationLoading) return" in javascript
 
 
 def test_conversation_order_search_unread_and_selected_read():
@@ -167,6 +171,13 @@ def test_voice_send_converts_uploads_sends_and_persists(monkeypatch):
     monkeypatch.setattr(main, "download_whatsapp_media", lambda media_id: (b"voice-bytes", "audio/ogg"))
     media = client.get(f"/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media")
     assert (media.status_code, media.content, media.headers["content-type"]) == (200, b"voice-bytes", "audio/ogg")
+    assert media.headers["accept-ranges"] == "bytes"
+    partial = client.get(
+        f"/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media",
+        headers={"Range": "bytes=2-6"},
+    )
+    assert (partial.status_code, partial.content) == (206, b"ice-b")
+    assert partial.headers["content-range"] == "bytes 2-6/11"
 
 
 def test_voice_upload_failure_is_not_persisted_as_sent(monkeypatch):

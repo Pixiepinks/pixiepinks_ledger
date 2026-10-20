@@ -1514,7 +1514,7 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
 
 
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media")
-def whatsapp_message_media(conversation_id: int, message_id: int,
+def whatsapp_message_media(conversation_id: int, message_id: int, request: Request,
                            db: Session = Depends(get_db), user: User = Depends(require_user)):
     conversation = _get_conversation(db, conversation_id)
     message = db.query(WhatsAppConversationMessage).filter_by(
@@ -1527,8 +1527,29 @@ def whatsapp_message_media(conversation_id: int, message_id: int,
         raise HTTPException(status_code=502, detail="Audio is temporarily unavailable")
     content, mime_type = downloaded
     safe_mime = mime_type if mime_type.startswith("audio/") else "audio/ogg"
-    return Response(content=content, media_type=safe_mime,
-                    headers={"Cache-Control": "private, max-age=300", "X-Content-Type-Options": "nosniff"})
+    size = len(content)
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=300",
+               "X-Content-Type-Options": "nosniff"}
+    requested_range = request.headers.get("range", "")
+    if requested_range.startswith("bytes=") and "," not in requested_range:
+        try:
+            start_text, end_text = requested_range[6:].split("-", 1)
+            if start_text:
+                start = int(start_text)
+                end = min(int(end_text), size - 1) if end_text else size - 1
+            else:
+                suffix = int(end_text)
+                start, end = max(size - suffix, 0), size - 1
+            if start < 0 or start >= size or end < start:
+                raise ValueError
+        except (ValueError, TypeError):
+            return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+        partial = content[start:end + 1]
+        headers.update({"Content-Range": f"bytes {start}-{end}/{size}",
+                        "Content-Length": str(len(partial))})
+        return Response(content=partial, status_code=206, media_type=safe_mime, headers=headers)
+    headers["Content-Length"] = str(size)
+    return Response(content=content, media_type=safe_mime, headers=headers)
 
 
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/read")

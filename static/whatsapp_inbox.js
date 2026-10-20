@@ -3,6 +3,7 @@
   const root = document.getElementById("inbox"), list = document.getElementById("conversation-list"), messages = document.getElementById("messages"), errorBox = document.getElementById("send-error"), statusBox = document.getElementById("send-status");
   let selected = Number(root.dataset.initial) || null, filter = new URLSearchParams(location.search).get("filter") || "all";
   let recorder, stream, timer, blob, blobUrl, started, duration, voiceKey, chunks = [], discard = false;
+  let conversationController, conversationLoading = false, conversationGeneration = 0, listLoading = false, detailsSignature = "";
   const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
   const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
   const badge = (value, kind = "neutral") => { const el = document.createElement("span"); el.className = `badge ${kind}`; text(el, value); return el; };
@@ -25,12 +26,15 @@
     button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true); return button;
   }
   async function loadList() {
+    if (listLoading || document.hidden) return;
+    listLoading = true;
     try {
       const search = document.getElementById("search").value;
       const data = await api(`/crm/whatsapp/api/conversations?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}`);
       list.replaceChildren(...data.conversations.map(conversationRow)); text(document.getElementById("list-status"), `${data.conversations.length} shown`);
       if (!data.conversations.length) { const empty = document.createElement("div"); empty.className = "empty"; text(empty, search ? "No search results." : "No WhatsApp conversations."); list.replaceChildren(empty); }
     } catch (_) { list.innerHTML = '<div class="empty">Could not load conversations.</div>'; }
+    finally { listLoading = false; }
   }
   function detailRow(label, value) { const row = document.createElement("div"), name = document.createElement("span"), content = document.createElement("span"); row.className = "detail-row"; text(name, label); text(content, value); row.append(name, content); return row; }
   function renderDetails(data) {
@@ -49,16 +53,42 @@
   function renderMessage(message) {
     const wrapper = document.createElement("div"), bubble = document.createElement("div"), metadata = document.createElement("small"); wrapper.className = `message ${message.direction}`; bubble.className = "bubble";
     if (message.message_type === "audio" && message.media_url) { bubble.classList.add("audio-bubble"); const label = document.createElement("span"), audio = document.createElement("audio"); text(label, `Voice message${message.duration_seconds ? ` · ${clock(message.duration_seconds)}` : ""}`); audio.controls = true; audio.preload = "metadata"; audio.src = message.media_url; bubble.append(label, audio); } else text(bubble, message.text);
-    text(metadata, `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${new Date(message.timestamp).toLocaleString()} · ${message.status}`); wrapper.append(bubble, metadata); return wrapper;
+    wrapper.dataset.messageId = String(message.id); wrapper.dataset.contentKey = messageContentKey(message); metadata.className = "message-meta"; wrapper.dataset.status = message.status;
+    text(metadata, messageMetadata(message)); wrapper.append(bubble, metadata); return wrapper;
+  }
+  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url]);
+  const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${new Date(message.timestamp).toLocaleString()} · ${message.status}`;
+  function reconcileMessages(incoming) {
+    const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
+    const containerTop = messages.getBoundingClientRect().top;
+    const anchor = [...messages.children].find(node => node.getBoundingClientRect().bottom >= containerTop);
+    const anchorId = anchor?.dataset.messageId, anchorOffset = anchor ? anchor.getBoundingClientRect().top - containerTop : 0;
+    const existing = new Map([...messages.querySelectorAll("[data-message-id]")].map(node => [node.dataset.messageId, node]));
+    const wanted = new Set(incoming.map(message => String(message.id)));
+    [...existing].forEach(([id, node]) => { if (!wanted.has(id)) { node.remove(); existing.delete(id); } });
+    incoming.forEach((message, index) => {
+      const id = String(message.id), contentKey = messageContentKey(message); let node = existing.get(id);
+      if (!node || node.dataset.contentKey !== contentKey) { const replacement = renderMessage(message); if (node) node.replaceWith(replacement); node = replacement; existing.set(id, node); }
+      else if (node.dataset.status !== message.status) { node.dataset.status = message.status; text(node.querySelector(".message-meta"), messageMetadata(message)); }
+      const current = messages.children[index]; if (current !== node) messages.insertBefore(node, current || null);
+    });
+    if (wasNearBottom) messages.scrollTop = messages.scrollHeight;
+    else if (anchorId) { const retained = messages.querySelector(`[data-message-id="${CSS.escape(anchorId)}"]`); if (retained) messages.scrollTop += retained.getBoundingClientRect().top - containerTop - anchorOffset; }
   }
   async function openConversation(id, markRead = false) {
-    selected = id; root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
+    const switching = selected !== id; selected = id; root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
+    if (switching) { conversationGeneration += 1; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); }
+    if (conversationLoading) return;
+    const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true;
     try {
-      if (markRead) await api(`/crm/whatsapp/api/conversations/${id}/read`, {method: "POST"}); const data = await api(`/crm/whatsapp/api/conversations/${id}`);
+      if (markRead) await api(`/crm/whatsapp/api/conversations/${id}/read`, {method: "POST", signal: controller.signal}); const data = await api(`/crm/whatsapp/api/conversations/${id}`, {signal: controller.signal});
+      if (generation !== conversationGeneration || selected !== id) return;
       text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));
       const action = document.getElementById("mode-action"); text(action, data.conversation.mode === "AI" ? "Take Over" : "Return to AI"); action.dataset.mode = data.conversation.mode; document.getElementById("payment-banner").hidden = !data.conversation.payment_required;
-      messages.replaceChildren(...data.messages.map(renderMessage)); messages.scrollTop = messages.scrollHeight; renderDetails(data); loadList();
-    } catch (_) { messages.innerHTML = '<div class="empty">Conversation not found or could not be loaded.</div>'; }
+      reconcileMessages(data.messages); const nextDetailsSignature = JSON.stringify([data.conversation, data.order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
+      if (markRead || switching) loadList();
+    } catch (error) { if (error.name !== "AbortError" && !messages.children.length) messages.innerHTML = '<div class="empty">Conversation not found or could not be loaded.</div>'; }
+    finally { if (conversationController === controller) { conversationLoading = false; conversationController = null; } }
   }
   const stopTracks = () => { stream?.getTracks().forEach(track => track.stop()); stream = null; };
   const recordingFilename = type => type.includes("ogg") ? "voice.ogg" : type.includes("mp4") ? "voice.m4a" : "voice.webm";
@@ -115,5 +145,6 @@
   document.getElementById("message-input").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); document.getElementById("composer").requestSubmit(); } });
   document.getElementById("record-button").onclick = startRecording; document.getElementById("stop-recording").onclick = () => { if (recorder?.state === "recording") recorder.stop(); }; document.getElementById("cancel-recording").onclick = () => { discard = true; if (recorder?.state === "recording") recorder.stop(); else resetRecording(); }; document.getElementById("delete-recording").onclick = resetRecording; document.getElementById("send-voice").onclick = sendVoice;
   document.getElementById("details-action").onclick = () => document.getElementById("details").classList.add("open"); document.getElementById("close-details").onclick = () => document.getElementById("details").classList.remove("open"); document.getElementById("back-list").onclick = () => root.classList.remove("chat-open");
-  loadList(); if (selected) openConversation(selected, true); setInterval(loadList, 7000); setInterval(() => { if (selected) openConversation(selected, false); }, 4000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadList(); if (selected) openConversation(selected, false); } });
+  loadList(); if (selected) openConversation(selected, true); setInterval(loadList, 7000); setInterval(() => { if (selected && !document.hidden) openConversation(selected, false); }, 4000);
 })();
