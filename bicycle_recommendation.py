@@ -47,7 +47,7 @@ def extract_child_age(text: str, *, standalone: bool = False) -> int | None:
     normalized = text.casefold().strip()
     if standalone:
         match = re.fullmatch(
-            r"(?:(?:age|වයස|අවුරුදු)\s*)?(\d{1,2})"
+            r"(?:(?:age|වයස|අවුරුදු|awurudu)\s*)?(\d{1,2})"
             r"(?:\s*(?:years?|yrs?)(?:\s*old)?|\s*(?:වයස|අවුරුදු))?",
             normalized,
         )

@@ -1,5 +1,66 @@
 # PixiePinks Ledger (MVP)
 
+## CRM and customer-service workspace
+
+The authenticated `/crm` area is an operational workspace built into the existing
+FastAPI/Jinja application. Its responsive sidebar keeps CRM, customer, inventory,
+supplier, journal, chart-of-accounts, and financial-report routes in one application.
+The dashboard derives unread WhatsApp, human handover, payment-required, lead,
+follow-up, and sales-intent metrics from persisted records. Action-required cards link
+directly to the applicable inbox filters or CRM records. `/crm/orders` presents
+WhatsApp sales intents explicitly as intents rather than completed Shopify orders.
+
+### WhatsApp Inbox
+
+`/crm/whatsapp` is an authenticated, responsive three-panel staff inbox. It includes
+newest-first conversations, name/phone search, All/Unread/AI/Human/Payment Required
+filters, chronological message history, customer and delivery details, persisted
+product images and pricing, and order totals. The browser polls the lightweight list
+and selected-conversation APIs every seven and four seconds respectively; Redis,
+Celery, WebSockets, and a separate frontend are intentionally not used.
+
+Inbound customer messages increment the conversation's persisted unread count. AI and
+staff replies never clear it; only opening that individual conversation does. New
+conversations default to **AI**. **Take Over** changes the persisted mode to **HUMAN**
+and records the authenticated username. In HUMAN mode the webhook continues signature
+verification, idempotency, persistence, timestamps, and unread updates, but it does not
+invoke OpenAI, Shopify replies, or the guided sales flow. **Return to AI** resumes
+automation only for a future inbound message and does not replay history. A customer's
+handover request and `READY_FOR_PAYMENT_HANDOVER` both switch the conversation to HUMAN.
+
+Manual messages reuse the server-side Meta sender. A browser-generated idempotency key
+is uniquely persisted to prevent double sends; only a successful Meta result is written
+to conversation history with `response_kind=staff`, the Meta message ID when returned,
+send status, and authenticated username. Meta failures are shown to staff and are not
+represented as successfully sent messages. API responses never include Meta IDs,
+Shopify IDs, access tokens, or other credentials.
+
+Staff can also record real voice notes from the WhatsApp composer. The browser uses
+`MediaRecorder`, always presents a local playback preview, and sends only after explicit
+confirmation. The authenticated backend validates the recording, converts browser WebM,
+OGG, MP4, MP3, or WAV input in memory to mono 48 kHz OGG/Opus with PyAV, uploads it to
+the existing Meta Media API, and sends it as a WhatsApp voice message. No speech-to-text,
+AI voice, or audio binary is stored in PostgreSQL. Conversation history stores only the
+Meta media identifier, MIME type, duration, staff identity, outbound message identifier,
+and delivery status. Playback is provided through an authenticated server-side media
+proxy, so the Meta access token is never exposed to JavaScript. Recordings are limited
+to 16 MB and ten minutes; local previews remain available after a failed upload so staff
+can retry.
+
+Database startup continues to use `Base.metadata.create_all`. It adds
+`whatsapp_conversations` for mode/unread/timestamps and `whatsapp_manual_sends` for
+manual-send idempotency. The existing `whatsapp_conversation_messages` table gains
+nullable `send_status` and `sent_by` columns via the backward-compatible startup check.
+Voice support also adds nullable `media_id`, `media_mime_type`, and
+`media_duration_seconds` columns to that same table. Deployments must install the updated
+Python requirements so the binary PyAV wheel and bundled media libraries are available;
+no system `ffmpeg` command, new environment variable, or Railway service is required.
+Production customer names, phone numbers, addresses, messages, and order data remain
+behind the existing signed-session authentication. Shopify remains read-only and the
+source of truth; the inbox performs no per-row Shopify requests and does not create
+orders, take payments, confirm payments, modify inventory, post ledger entries, or send
+broadcasts.
+
 ## Shopify bicycle collections
 
 Guided recommendations use Shopify collection membership as their authority.
@@ -122,9 +183,125 @@ Secret server-side. The backend obtains temporary access tokens automatically, c
 them in memory, and renews them before their approximately 24-hour expiry.
 
 The app requires only `read_products`, `read_inventory`, and `read_locations`; it does
-not write products or inventory. `SHOPIFY_API_VERSION` is optional and defaults to
+not write products or inventory and does not request Shopify write access.
+
+## AI Bot Management Center
+
+Authenticated staff manage the store-wide assistant at `/crm/bot-management`. The
+center uses a **Draft → Test → Publish → Live** lifecycle: ordinary saves only update
+the draft, the simulator can evaluate draft or live rules without sending WhatsApp
+messages or creating operational records, and an explicit `PUBLISH` confirmation
+creates an immutable version. Historical versions can only be restored **as a draft**,
+so rollback also requires testing and deliberate publication. Administrative saves,
+publishes, restores, and read-only Shopify discovery are audited with the signed-in
+staff username (the current application has one staff permission level).
+
+The database adds `bot_configurations` (live/draft pointers),
+`bot_configuration_versions` (immutable snapshots), `bot_knowledge_entries`
+(normalized extensibility for scoped content), and `bot_audit_events`. Startup retains
+the existing `Base.metadata.create_all()` convention. The initial published version
+preserves bicycle age-to-size rules (2–3/12, 4–5/16, 6–10/20, 11+/26), Decimal service
+fees (Rs. 2,000/2,000/2,500/2,500), free islandwide bicycle delivery, and the 3–4
+working-day estimate. New decisions use the currently published cached version;
+publishing invalidates the short-lived cache immediately. Existing selected products
+and order intents are not recomputed, so in-progress purchases remain stable.
+
+Configuration is structured into global response settings, policies, global /
+collection / product knowledge, FAQs, guided questions, generic recommendation rules,
+and specialized bicycle/service/delivery controls. Scoped retrieval is designed to
+apply global knowledge first, then collection, then product guidance; deterministic
+rules take precedence. No vector database or executable staff rule language is used.
+Collection refresh is read-only, and product-specific references are Shopify handles,
+not copied commercial data.
+
+**Authority and safety:** Shopify remains authoritative for titles, variants, SKU,
+price, inventory, images, URLs, options, and collection membership. OpenAI may
+understand and word responses but is never authoritative for those facts, fees,
+totals, order/payment state, or deterministic rules. Locked code guardrails preserve
+HUMAN-mode pausing, live Shopify checks, webhook idempotency, privacy, payment
+handover, and the ban on invented bank/payment data. Staff content is escaped by
+Jinja, inputs are bounded/validated, no staff code is executed, and secrets are never
+returned to the browser.
+
+Current limitations: roles are not finer-grained than the existing authenticated
+staff account; public holidays are stated but are not automatically calculated; the
+generic question/rule schema is versioned for expansion while the production guided
+executor currently specializes in bicycles. Railway deployment needs no new secret:
+deploy the commit normally, allow startup to create the four tables, sign in, review
+the seeded live version, test Draft and Live, then publish only intentional changes.
+`SHOPIFY_API_VERSION` is optional and defaults to
 `2026-07`. If Shopify configuration or the live service is unavailable, product requests
 degrade to a safe customer-facing response without disrupting webhook acknowledgement.
+
+### Phase 2 store-wide management
+
+Phase 2 extends—not replaces—the original configuration center. **Catalog Knowledge**
+now contains a searchable Shopify Collection Directory backed by a lightweight local
+reference cache. **Refresh Shopify Collections** performs one bounded, read-only
+GraphQL discovery, updates the observed title/handle/count and last-refresh time, and
+marks references no longer returned inactive. It never writes Shopify data. Each
+collection opens a workspace with Overview, Knowledge, Guided Selling, Recommendation
+Rules, FAQs, Products, and Test sections. The product browser fetches at most 20 live
+members only when opened; product selector search requires two characters and returns
+at most 10 results.
+
+Knowledge, policy, and FAQ forms hide irrelevant controls: global content has no
+Shopify binding, collection content uses cached titled collections, and product
+content uses live Shopify product search. The server independently verifies every
+binding. Content stays in the versioned draft until explicit publication, is escaped
+when rendered, and carries no authoritative price or stock. Runtime selection helpers
+apply enabled, non-archived global information before matching collection and product
+information and do not include unrelated scoped content.
+
+The generic guided-selling schema is collection-based. Staff can add ordered English
+questions, optional approved Sinhala wording, and `CHOICE`, `NUMBER`, `YES_NO`, or
+`TEXT` answers. Rules support only allow-listed conditions (`EQUALS`, `BETWEEN`, and
+`CONTAINS`) and actions (`SET_ATTRIBUTE`, `CHOOSE_COLLECTION`, `PRODUCT_FILTER`,
+`SET_VALUE`, `ASK_NEXT`, and `NO_MATCH`). There is no expression interpreter,
+`eval`, executable action, Shopify mutation, accounting action, payment action, or
+arbitrary external call. Target collections are selected from and validated against
+the refreshed directory. `bot_guided_flow_states` provides a persisted place to pin a
+live conversation to its starting configuration version; an active purchase and its
+selected Shopify product/variant remain governed by the existing order-intent record.
+The existing bicycle runtime remains the only live generic-flow specialization in this
+release, retaining gender isolation, approved age sizes, services, free delivery, and
+payment handover. Newly configured non-bicycle flows can be built, reviewed, and
+versioned, but require a later controlled runtime rollout before handling WhatsApp.
+
+The safe Test Bot continues to compare Live and Draft without Meta sends or production
+records. The current simulator reports mode, configuration version, detected category,
+normalized bicycle inputs, and matched age rule. Multi-turn generic test sessions,
+business-level arbitrary-version comparison, editing/archiving existing snapshot
+entries, and full generic live execution remain planned improvements rather than
+pretend controls. Authentication remains the existing staff login because this app has
+no trustworthy fine-grained permission model. Audit records cover refresh, draft save,
+publish, restore, and question/rule draft changes without credentials or customer data.
+
+#### Production verification checklist
+
+1. Sign in and open **AI Bot Management**.
+2. Open **Catalog Knowledge**, select **Refresh Shopify Collections**, and confirm the
+   last-refresh time and real collection titles appear.
+3. Search for a collection and open **Manage**.
+4. Inspect its Overview and read-only Products tab.
+5. Add collection knowledge to Draft; verify Live Test does not use it and Draft Test
+   does after the applicable simulator/runtime support is present.
+6. Edit the bicycle 6–10 age rule in Draft; test Live (still 20 inches), then Draft
+   (the edited size), and restore 20 inches if the change was only a test.
+7. Review validation, enter the exact `PUBLISH` confirmation, publish, and confirm a
+   new immutable version appears.
+8. Run a real WhatsApp bicycle enquiry for gender, age, products/images, service,
+   delivery details, and payment handover.
+9. Open CRM Inbox, confirm history/unread state, use **Take Over**, send a staff reply,
+   then **Return to AI** and verify automation only resumes on the next inbound message.
+10. Confirm leads, sales intents, accounting pages, Meta signature verification, and
+    Shopify live price/availability continue operating normally.
+
+Deployment requires no new secrets and no Shopify write scopes. Deploy the committed
+application normally; startup `Base.metadata.create_all()` creates
+`shopify_collection_references` and `bot_guided_flow_states`. Then sign in, refresh the
+directory, review Draft and Live, run the checklist above, and publish only approved
+changes. Existing Railway, Meta, OpenAI, database, and Shopify variables are unchanged.
 
 To safely check authentication, GraphQL access, and a five-product sample in the
 configured environment, run:

@@ -100,6 +100,10 @@ def add_working_days(start: date, count: int) -> date:
     return result
 
 
-def delivery_window(start: date | None = None) -> tuple[date, date, date]:
+def delivery_window(start: date | None = None, minimum_days: int = 3,
+                    maximum_days: int = 4) -> tuple[date, date, date]:
+    if minimum_days < 0 or maximum_days < minimum_days:
+        raise ValueError("invalid delivery working-day range")
     payment_date = start or datetime.now(ZoneInfo("Asia/Colombo")).date()
-    return payment_date, add_working_days(payment_date, 3), add_working_days(payment_date, 4)
+    return (payment_date, add_working_days(payment_date, minimum_days),
+            add_working_days(payment_date, maximum_days))

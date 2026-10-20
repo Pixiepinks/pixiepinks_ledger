@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum
+from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
@@ -161,7 +161,53 @@ class WhatsAppConversationMessage(Base):
     message_text = Column(Text, nullable=False)
     whatsapp_message_id = Column(String(255), nullable=True, index=True)
     response_kind = Column(String(20), nullable=True)
+    send_status = Column(String(20), nullable=True)
+    sent_by = Column(String(100), nullable=True)
+    media_id = Column(String(255), nullable=True)
+    media_mime_type = Column(String(100), nullable=True)
+    media_duration_seconds = Column(Float, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class WhatsAppConversation(Base):
+    """Operational inbox state, keyed by a normalized WhatsApp phone number."""
+
+    __tablename__ = "whatsapp_conversations"
+
+    id = Column(Integer, primary_key=True)
+    phone_number = Column(String(50), unique=True, nullable=False, index=True)
+    customer_name = Column(String(255))
+    mode = Column(String(10), nullable=False, default="AI", index=True)
+    unread_count = Column(Integer, nullable=False, default=0)
+    last_message_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    last_customer_message_at = Column(DateTime)
+    taken_over_at = Column(DateTime)
+    taken_over_by = Column(String(100))
+    returned_to_ai_at = Column(DateTime)
+    # Authoritative, restart-safe discovery state.  Message history remains useful
+    # for AI context, but must never be used as the bicycle state machine.
+    active_product_category = Column(String(50))
+    workflow_state = Column(String(50), index=True)
+    bicycle_gender = Column(String(10))
+    bicycle_age = Column(Integer)
+    bicycle_size = Column(Integer)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WhatsAppManualSend(Base):
+    """Server-side idempotency records for manual inbox sends."""
+
+    __tablename__ = "whatsapp_manual_sends"
+
+    id = Column(Integer, primary_key=True)
+    idempotency_key = Column(String(100), unique=True, nullable=False, index=True)
+    conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), nullable=False)
+    message_text = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="PROCESSING")
+    whatsapp_message_id = Column(String(255))
+    sent_by = Column(String(100))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 class WhatsAppOutboundProductMessage(Base):
@@ -211,3 +257,83 @@ class WhatsAppOrderIntent(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     details_completed_at = Column(DateTime)
     payment_handover_at = Column(DateTime)
+
+
+# ---------------------- AI Bot Management ----------------------
+class BotConfiguration(Base):
+    """The mutable draft and live pointer. Published history lives separately."""
+
+    __tablename__ = "bot_configurations"
+    id = Column(Integer, primary_key=True)
+    published_version = Column(Integer, nullable=False, default=1)
+    draft_revision = Column(Integer, nullable=False, default=0)
+    published_snapshot = Column(JSON, nullable=False)
+    draft_snapshot = Column(JSON, nullable=False)
+    published_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BotConfigurationVersion(Base):
+    __tablename__ = "bot_configuration_versions"
+    id = Column(Integer, primary_key=True)
+    version = Column(Integer, unique=True, nullable=False, index=True)
+    snapshot = Column(JSON, nullable=False)
+    change_summary = Column(Text, nullable=False)
+    published_by = Column(String(100))
+    published_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+class BotKnowledgeEntry(Base):
+    __tablename__ = "bot_knowledge_entries"
+    id = Column(Integer, primary_key=True)
+    kind = Column(String(20), nullable=False, default="KNOWLEDGE")
+    scope = Column(String(20), nullable=False, default="GLOBAL")
+    scope_reference = Column(String(255))
+    title = Column(String(255), nullable=False)
+    topic = Column(String(100))
+    content = Column(Text, nullable=False)
+    tags = Column(String(500))
+    enabled = Column(Boolean, nullable=False, default=True)
+    archived = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class BotAuditEvent(Base):
+    __tablename__ = "bot_audit_events"
+    id = Column(Integer, primary_key=True)
+    action = Column(String(80), nullable=False)
+    summary = Column(Text, nullable=False)
+    actor = Column(String(100))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class ShopifyCollectionReference(Base):
+    """Lightweight, read-only directory metadata last observed in Shopify."""
+
+    __tablename__ = "shopify_collection_references"
+    id = Column(Integer, primary_key=True)
+    shopify_id = Column(String(255), unique=True, nullable=False, index=True)
+    handle = Column(String(255), unique=True, nullable=False, index=True)
+    title = Column(String(500), nullable=False, index=True)
+    product_count = Column(Integer)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    refreshed_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class BotGuidedFlowState(Base):
+    """Version-pinned structured state for a live generic guided flow."""
+
+    __tablename__ = "bot_guided_flow_states"
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"),
+                             unique=True, nullable=False, index=True)
+    configuration_version = Column(Integer, nullable=False, index=True)
+    collection_reference = Column(String(255), nullable=False, index=True)
+    current_question_key = Column(String(100))
+    normalized_answers = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="ACTIVE", index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow,
+                        onupdate=datetime.utcnow)
