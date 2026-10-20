@@ -3,35 +3,55 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{{ request.app.title }} - {{ settings.APP_NAME if settings else "" }}</title>
+  <title>{{ page_title or request.app.title }}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="/static/crm.css">
 </head>
-<body class="bg-gray-50 text-gray-900">
-  {% if request.url.path != '/login' %}
-  <nav class="bg-white shadow mb-6">
-    <div class="max-w-7xl mx-auto px-4">
-      <div class="flex gap-6 py-4 overflow-x-auto whitespace-nowrap">
-        <a href="/dashboard">Dashboard</a>
-        <a href="/crm">CRM</a>
-        <a href="/customers">Customers</a>
-        <a href="/suppliers">Suppliers</a>
-        <a href="/items">Items</a>
-        <a href="/entries">Journal</a>
-        <a href="/accounts">Chart of Accounts</a>
-        <a href="/reports/trial-balance">Trial Balance</a>
-        <a href="/reports/income-statement">Income Statement</a>
-        <a href="/reports/balance-sheet">Balance Sheet</a>
-        <a href="/logout">Logout</a>
-      </div>
-    </div>
-  </nav>
-  {% endif %}
-  <main class="max-w-6xl mx-auto p-4">
-    {% block content %}{% endblock %}
+<body class="app-body">
+{% if request.url.path != '/login' %}
+  <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation" aria-expanded="false">☰</button>
+  <div class="sidebar-scrim" id="sidebar-scrim"></div>
+  <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
+    <div class="brand"><span class="brand-mark">P</span><span><strong>PixiePinks</strong><small>Operations</small></span></div>
+    <nav>
+      <p class="nav-label">Overview</p>
+      <a href="/crm" class="{{ 'active' if request.url.path == '/crm' else '' }}"><span>▦</span> CRM Dashboard</a>
+      <a href="/dashboard" class="{{ 'active' if request.url.path == '/dashboard' else '' }}"><span>◫</span> Finance Overview</a>
+      <p class="nav-label">Customer service</p>
+      <a href="/crm/whatsapp" class="{{ 'active' if request.url.path.startswith('/crm/whatsapp') else '' }}"><span>◉</span> WhatsApp Inbox{% if unread_whatsapp %}<b class="nav-count">{{ unread_whatsapp }}</b>{% endif %}</a>
+      <a href="/crm/leads" class="{{ 'active' if request.url.path.startswith('/crm/leads') else '' }}"><span>◎</span> CRM / Leads</a>
+      <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>
+      <p class="nav-label">Sales</p>
+      <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>
+      <p class="nav-label">Inventory / business</p>
+      <a href="/items" class="{{ 'active' if request.url.path == '/items' else '' }}"><span>□</span> Items</a>
+      <a href="/suppliers" class="{{ 'active' if request.url.path == '/suppliers' else '' }}"><span>♢</span> Suppliers</a>
+      <p class="nav-label">Accounting</p>
+      <a href="/entries" class="{{ 'active' if request.url.path == '/entries' else '' }}"><span>≡</span> Journal</a>
+      <a href="/accounts" class="{{ 'active' if request.url.path == '/accounts' else '' }}"><span>⌘</span> Chart of Accounts</a>
+      <a href="/reports/trial-balance" class="{{ 'active' if 'trial-balance' in request.url.path else '' }}"><span>⊜</span> Trial Balance</a>
+      <a href="/reports/income-statement" class="{{ 'active' if 'income-statement' in request.url.path else '' }}"><span>↗</span> Income Statement</a>
+      <a href="/reports/balance-sheet" class="{{ 'active' if 'balance-sheet' in request.url.path else '' }}"><span>▤</span> Balance Sheet</a>
+    </nav>
+    <div class="sidebar-user"><span class="avatar">{{ (request.session.get('user', {}).get('username', 'S'))[:1]|upper }}</span><span><strong>{{ request.session.get('user', {}).get('username', 'Staff') }}</strong><small>Staff account</small></span><a href="/logout" title="Log out">↪</a></div>
+  </aside>
+  <div class="app-shell">
+    <header class="topbar"><div><small>PixiePinks Workspace</small><h1>{{ page_title or 'Business Operations' }}</h1></div><div class="topbar-status"><span class="status-dot"></span> System online</div></header>
+    <main class="main-content">
+{% else %}
+  <main>
+{% endif %}
+{% block content %}{% endblock %}
   </main>
-  <footer class="max-w-6xl mx-auto px-4 py-8 text-sm text-gray-500">
-    PixiePinks Ledger • LKR
-  </footer>
+{% if request.url.path != '/login' %}
+    <footer>PixiePinks Ledger · Internal business system · LKR</footer>
+  </div>
+{% endif %}
+<script>
+const menu=document.getElementById('mobile-menu'), sidebar=document.getElementById('sidebar'), scrim=document.getElementById('sidebar-scrim');
+function toggleNav(){const open=sidebar.classList.toggle('open');scrim.classList.toggle('open',open);menu?.setAttribute('aria-expanded',open)}
+menu?.addEventListener('click',toggleNav);scrim?.addEventListener('click',toggleNav);
+</script>
 </body>
 </html>

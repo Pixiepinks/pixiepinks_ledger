@@ -1,5 +1,66 @@
 # PixiePinks Ledger (MVP)
 
+## CRM and customer-service workspace
+
+The authenticated `/crm` area is an operational workspace built into the existing
+FastAPI/Jinja application. Its responsive sidebar keeps CRM, customer, inventory,
+supplier, journal, chart-of-accounts, and financial-report routes in one application.
+The dashboard derives unread WhatsApp, human handover, payment-required, lead,
+follow-up, and sales-intent metrics from persisted records. Action-required cards link
+directly to the applicable inbox filters or CRM records. `/crm/orders` presents
+WhatsApp sales intents explicitly as intents rather than completed Shopify orders.
+
+### WhatsApp Inbox
+
+`/crm/whatsapp` is an authenticated, responsive three-panel staff inbox. It includes
+newest-first conversations, name/phone search, All/Unread/AI/Human/Payment Required
+filters, chronological message history, customer and delivery details, persisted
+product images and pricing, and order totals. The browser polls the lightweight list
+and selected-conversation APIs every seven and four seconds respectively; Redis,
+Celery, WebSockets, and a separate frontend are intentionally not used.
+
+Inbound customer messages increment the conversation's persisted unread count. AI and
+staff replies never clear it; only opening that individual conversation does. New
+conversations default to **AI**. **Take Over** changes the persisted mode to **HUMAN**
+and records the authenticated username. In HUMAN mode the webhook continues signature
+verification, idempotency, persistence, timestamps, and unread updates, but it does not
+invoke OpenAI, Shopify replies, or the guided sales flow. **Return to AI** resumes
+automation only for a future inbound message and does not replay history. A customer's
+handover request and `READY_FOR_PAYMENT_HANDOVER` both switch the conversation to HUMAN.
+
+Manual messages reuse the server-side Meta sender. A browser-generated idempotency key
+is uniquely persisted to prevent double sends; only a successful Meta result is written
+to conversation history with `response_kind=staff`, the Meta message ID when returned,
+send status, and authenticated username. Meta failures are shown to staff and are not
+represented as successfully sent messages. API responses never include Meta IDs,
+Shopify IDs, access tokens, or other credentials.
+
+Staff can also record real voice notes from the WhatsApp composer. The browser uses
+`MediaRecorder`, always presents a local playback preview, and sends only after explicit
+confirmation. The authenticated backend validates the recording, converts browser WebM,
+OGG, MP4, MP3, or WAV input in memory to mono 48 kHz OGG/Opus with PyAV, uploads it to
+the existing Meta Media API, and sends it as a WhatsApp voice message. No speech-to-text,
+AI voice, or audio binary is stored in PostgreSQL. Conversation history stores only the
+Meta media identifier, MIME type, duration, staff identity, outbound message identifier,
+and delivery status. Playback is provided through an authenticated server-side media
+proxy, so the Meta access token is never exposed to JavaScript. Recordings are limited
+to 16 MB and ten minutes; local previews remain available after a failed upload so staff
+can retry.
+
+Database startup continues to use `Base.metadata.create_all`. It adds
+`whatsapp_conversations` for mode/unread/timestamps and `whatsapp_manual_sends` for
+manual-send idempotency. The existing `whatsapp_conversation_messages` table gains
+nullable `send_status` and `sent_by` columns via the backward-compatible startup check.
+Voice support also adds nullable `media_id`, `media_mime_type`, and
+`media_duration_seconds` columns to that same table. Deployments must install the updated
+Python requirements so the binary PyAV wheel and bundled media libraries are available;
+no system `ffmpeg` command, new environment variable, or Railway service is required.
+Production customer names, phone numbers, addresses, messages, and order data remain
+behind the existing signed-session authentication. Shopify remains read-only and the
+source of truth; the inbox performs no per-row Shopify requests and does not create
+orders, take payments, confirm payments, modify inventory, post ledger entries, or send
+broadcasts.
+
 ## Shopify bicycle collections
 
 Guided recommendations use Shopify collection membership as their authority.

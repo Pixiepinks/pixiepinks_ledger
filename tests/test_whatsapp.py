@@ -9,8 +9,8 @@ import ai_service
 import whatsapp_service
 from database import Base, SessionLocal, engine
 from models import (
-    ProcessedWhatsAppMessage, WhatsAppConversationMessage,
-    WhatsAppOutboundProductMessage,
+    ProcessedWhatsAppMessage, WhatsAppConversation, WhatsAppConversationMessage,
+    WhatsAppManualSend, WhatsAppOutboundProductMessage,
 )
 
 
@@ -34,7 +34,10 @@ def _message_payload(message_id="wamid.123", message_type="text", body="Hello"):
 
 def setup_function():
     Base.metadata.create_all(bind=engine)
+    main.ensure_whatsapp_inbox_columns()
     with SessionLocal() as db:
+        db.query(WhatsAppManualSend).delete()
+        db.query(WhatsAppConversation).delete()
         db.query(ProcessedWhatsAppMessage).delete()
         db.query(WhatsAppConversationMessage).delete()
         db.query(WhatsAppOutboundProductMessage).delete()
@@ -136,6 +139,28 @@ def test_ai_failure_uses_safe_fallback_and_webhook_stays_ok(monkeypatch):
 def test_missing_openai_key_returns_fallback():
     main.settings.OPENAI_API_KEY = None
     assert ai_service.generate_customer_reply("Hello") == ai_service.FALLBACK_REPLY
+
+
+def test_meta_audio_upload_and_voice_send(monkeypatch):
+    monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_ACCESS_TOKEN", "secret-token")
+    monkeypatch.setattr(whatsapp_service.settings, "META_WHATSAPP_PHONE_NUMBER_ID", "123456")
+    requests = []
+
+    class Response:
+        status_code = 200
+        def raise_for_status(self): pass
+        def json(self):
+            return {"id": "media-1"} if requests[-1][0].endswith("/media") else {"messages": [{"id": "wamid.voice"}]}
+
+    def post(url, **kwargs):
+        requests.append((url, kwargs))
+        return Response()
+
+    monkeypatch.setattr(whatsapp_service.httpx, "post", post)
+    assert whatsapp_service.upload_whatsapp_audio(b"OggS") == "media-1"
+    assert whatsapp_service.send_whatsapp_audio("94770000000", "media-1") == "wamid.voice"
+    assert requests[0][1]["files"]["file"][2] == "audio/ogg"
+    assert requests[1][1]["json"]["audio"] == {"id": "media-1", "voice": True}
 
 
 def test_ai_service_uses_responses_api_and_cleans_reply(monkeypatch):
