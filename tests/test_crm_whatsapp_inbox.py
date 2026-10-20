@@ -34,6 +34,8 @@ def test_inbox_requires_authentication_and_renders_for_staff():
     response = authenticated_client().get("/crm/whatsapp")
     assert response.status_code == 200
     assert 'class="app-body whatsapp-page"' in response.text
+    assert '/static/crm.css?v=20261020-desktop-voice' in response.text
+    assert '/static/whatsapp_inbox.js?v=20261020-desktop-voice' in response.text
     assert 'id="send-button">Send</button>' in response.text
     assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
     assert all(control in response.text for control in (
@@ -51,6 +53,8 @@ def test_inbox_layout_uses_dynamic_viewport_and_flexible_message_history():
     assert "#messages{flex:1 1 auto;min-height:0;overflow-y:auto" in css
     assert "#composer{flex:0 0 auto;max-height:min(48%,420px);overflow-y:auto" in css
     assert "@media(max-width:380px)" in css
+    assert "@media(min-width:701px)" in css
+    assert ".whatsapp-page .inbox{height:100%;max-height:100%}" in css
     assert "recorder.onstart = () =>" in javascript
     assert javascript.index("recorder.onstart = () =>") < javascript.index("recorder.start(1000)")
 
