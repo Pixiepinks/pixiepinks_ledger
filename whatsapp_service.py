@@ -130,3 +130,92 @@ def send_whatsapp_text(
     )
     message_id = _message_id(response)
     return message_id if return_message_id else True
+
+
+def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str | None:
+    """Upload an OGG/Opus voice recording to Meta and return only its media ID."""
+    access_token = settings.META_WHATSAPP_ACCESS_TOKEN
+    phone_number_id = settings.META_WHATSAPP_PHONE_NUMBER_ID
+    if not access_token or not phone_number_id:
+        logger.error("WhatsApp audio upload skipped reason=missing_configuration")
+        return None
+    version = settings.META_GRAPH_API_VERSION.strip().lstrip("/") or "v26.0"
+    try:
+        response = httpx.post(
+            f"https://graph.facebook.com/{version}/{phone_number_id}/media",
+            headers={"Authorization": f"Bearer {access_token}"},
+            data={"messaging_product": "whatsapp", "type": "audio/ogg"},
+            files={"file": (filename, audio, "audio/ogg")}, timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        logger.error("WhatsApp audio upload failed status_code=%s error_type=%s", status, type(exc).__name__)
+        return None
+    media_id = payload.get("id") if isinstance(payload, dict) else None
+    return media_id if isinstance(media_id, str) and media_id.strip() else None
+
+
+def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True) -> str | None:
+    """Send previously uploaded Meta media as an audio message/voice note."""
+    access_token = settings.META_WHATSAPP_ACCESS_TOKEN
+    phone_number_id = settings.META_WHATSAPP_PHONE_NUMBER_ID
+    if not access_token or not phone_number_id or not media_id:
+        logger.error("WhatsApp audio send skipped reason=missing_configuration_or_media")
+        return None
+    version = settings.META_GRAPH_API_VERSION.strip().lstrip("/") or "v26.0"
+    audio = {"id": media_id}
+    if voice:
+        audio["voice"] = True
+    try:
+        response = httpx.post(
+            f"https://graph.facebook.com/{version}/{phone_number_id}/messages",
+            headers={"Authorization": f"Bearer {access_token}"},
+            json={"messaging_product": "whatsapp", "to": recipient, "type": "audio", "audio": audio},
+            timeout=15.0,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        logger.error("WhatsApp audio send failed status_code=%s error_type=%s", status, type(exc).__name__)
+        return None
+    return _message_id(response)
+
+
+def download_whatsapp_media(media_id: str) -> tuple[bytes, str] | None:
+    """Fetch Meta media server-side so credentials never reach the browser."""
+    access_token = settings.META_WHATSAPP_ACCESS_TOKEN
+    if not access_token or not media_id:
+        return None
+    version = settings.META_GRAPH_API_VERSION.strip().lstrip("/") or "v26.0"
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        metadata = httpx.get(
+            f"https://graph.facebook.com/{version}/{media_id}", headers=headers, timeout=10.0
+        )
+        metadata.raise_for_status()
+        payload = metadata.json()
+        url = payload.get("url") if isinstance(payload, dict) else None
+        mime = payload.get("mime_type") if isinstance(payload, dict) else None
+        parsed = urlparse(url) if isinstance(url, str) else None
+        hostname = (parsed.hostname or "").casefold() if parsed else ""
+        trusted_media_host = (
+            hostname == "lookaside.fbsbx.com" or hostname == "graph.facebook.com"
+            or hostname.endswith(".fbcdn.net") or hostname.endswith(".facebook.com")
+        )
+        if not parsed or parsed.scheme != "https" or not trusted_media_host:
+            logger.warning("WhatsApp media download rejected reason=untrusted_url")
+            return None
+        media = httpx.get(url, headers=headers, timeout=30.0)
+        media.raise_for_status()
+        if len(media.content) > MAX_DOWNLOAD_BYTES:
+            logger.warning("WhatsApp media download rejected reason=too_large")
+            return None
+        return media.content, mime if isinstance(mime, str) else "audio/ogg"
+    except (httpx.HTTPError, ValueError, TypeError) as exc:
+        logger.error("WhatsApp media download failed error_type=%s", type(exc).__name__)
+        return None
+
+
+MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024

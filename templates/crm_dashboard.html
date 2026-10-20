@@ -1,66 +1,18 @@
-{% extends "base.html" %}
-{% block content %}
-<div class="space-y-6">
-  <div class="flex items-center justify-between">
-    <h1 class="text-2xl font-bold text-gray-900">CRM Dashboard</h1>
-    <a href="/crm/leads" class="bg-emerald-600 text-white px-4 py-2 rounded-lg">Manage Leads</a>
-  </div>
-
-  <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">Total Leads</p><p class="text-2xl font-bold">{{ total_leads }}</p></div>
-    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">New Leads</p><p class="text-2xl font-bold text-emerald-600">{{ new_leads }}</p></div>
-    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">Follow-ups Today</p><p class="text-2xl font-bold">{{ followups_today }}</p></div>
-    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">Completed Sales</p><p class="text-2xl font-bold text-blue-600">{{ completed_sales }}</p></div>
-    <div class="bg-white rounded-xl shadow p-4"><p class="text-sm text-gray-500">Lost Leads</p><p class="text-2xl font-bold text-rose-600">{{ lost_leads }}</p></div>
-  </div>
-
-  <div class="bg-red-50 border border-red-200 rounded-2xl p-4">
-    
-    <h2 class="text-lg font-bold text-red-600 mb-3">
-        Today's Pending Follow-ups
-    </h2>
-
-    {% if pending_followups %}
-    <div class="max-h-72 overflow-y-auto pr-2 space-y-2">
-
-        {% for lead in pending_followups %}
-        <a
-            href="/crm/leads/{{ lead.id }}"
-            class="block bg-white border border-red-100 rounded-xl px-3 py-2 hover:bg-red-100 hover:shadow-sm transition-all duration-200"
-        >
-            <div class="flex justify-between items-center text-sm gap-2">
-                
-                <div class="font-medium text-red-700 truncate">
-                    {{ lead.lead_no }} - {{ lead.customer_name }}
-                </div>
-
-                <div class="text-xs text-gray-500 ml-3 whitespace-nowrap">
-                    {{ lead.next_followup }}
-                </div>
-
-            </div>
-        </a>
-        {% endfor %}
-
-    </div>
-    {% else %}
-    <p class="text-sm text-red-600">No pending follow-ups.</p>
-    {% endif %}
-
-</div>
-
-  <div class="bg-white rounded-xl shadow p-4">
-    <h2 class="font-semibold mb-3">Recent Leads</h2>
-    <div class="overflow-x-auto">
-      <table class="min-w-full text-sm">
-        <thead><tr class="text-left border-b"><th class="py-2">Lead No</th><th>Customer</th><th>Mobile</th><th>Status</th><th>Next Follow-up</th></tr></thead>
-        <tbody>
-        {% for lead in recent_leads %}
-          <tr class="border-b"><td class="py-2"><a class="text-emerald-700 underline" href="/crm/leads/{{ lead.id }}">{{ lead.lead_no }}</a></td><td>{{ lead.customer_name }}</td><td>{{ lead.mobile }}</td><td>{{ lead.status }}</td><td>{{ lead.next_followup or '-' }}</td></tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    </div>
-  </div>
+{% extends "base.html" %}{% block content %}
+<div class="flex flex-wrap items-center justify-between gap-3 mb-5"><div><p class="text-sm text-gray-500">Customer service command centre</p><h2 class="text-2xl font-bold">Good day, {{ request.session.get('user', {}).get('username', 'team') }}</h2></div><div class="flex gap-2"><a href="/crm/whatsapp" class="btn btn-secondary">Open inbox</a><a href="/crm/leads" class="btn btn-primary">Manage leads</a></div></div>
+<section class="grid grid-cols-2 lg:grid-cols-4 xl:grid-cols-7 gap-3 mb-6">
+{% for label,value,href,tone in [('Unread WhatsApp',unread_whatsapp,'/crm/whatsapp?filter=unread','text-rose-700'),('Human Handovers',human_handovers,'/crm/whatsapp?filter=human','text-amber-700'),('Payment Required',payment_required,'/crm/whatsapp?filter=payment','text-rose-700'),('New Leads',new_leads,'/crm/leads','text-gray-900'),('Follow-ups Today',followups_today,'/crm/leads','text-gray-900'),('Active Intents',active_order_intents,'/crm/orders','text-blue-700'),('Completed Sales',completed_sales,'/crm/leads','text-emerald-700')] %}
+<a href="{{ href }}" class="card p-4 no-underline"><p class="text-xs text-gray-500 min-h-8">{{ label }}</p><strong class="text-2xl {{ tone }}">{{ value }}</strong></a>{% endfor %}
+</section>
+<section class="card mb-6 overflow-hidden"><div class="px-5 py-4 border-b flex justify-between"><div><p class="text-xs font-bold tracking-wider text-rose-700">ACTION REQUIRED</p><h3 class="font-semibold">Items needing staff attention</h3></div><span class="badge payment">{{ payment_required + human_handovers + (pending_followups|length) }} open</span></div>
+<div class="divide-y">
+{% if payment_required %}<a href="/crm/whatsapp?filter=payment" class="flex justify-between p-4 hover:bg-gray-50"><span><b>Payment details required</b><small class="block text-gray-500">Order intents ready for secure staff handover</small></span><b>{{ payment_required }} →</b></a>{% endif %}
+{% if human_handovers %}<a href="/crm/whatsapp?filter=human" class="flex justify-between p-4 hover:bg-gray-50"><span><b>Human-owned conversations</b><small class="block text-gray-500">Customers waiting for your team</small></span><b>{{ human_handovers }} →</b></a>{% endif %}
+{% for lead in pending_followups[:5] %}<a href="/crm/leads/{{ lead.id }}" class="flex justify-between p-4 hover:bg-gray-50"><span><b>{{ lead.customer_name }}</b><small class="block text-gray-500">Follow-up due or overdue</small></span><span>{{ lead.next_followup }} →</span></a>{% endfor %}
+{% if not payment_required and not human_handovers and not pending_followups %}<div class="empty">Nothing needs immediate attention.</div>{% endif %}</div></section>
+<div class="grid lg:grid-cols-3 gap-5">
+<section class="card"><div class="p-4 border-b"><h3 class="font-semibold">Recent conversations</h3></div><div class="divide-y">{% for c in recent_conversations %}<a class="block p-3 hover:bg-gray-50" href="/crm/whatsapp?conversation={{ c.id }}"><b>{{ c.customer_name or 'WhatsApp customer' }}</b><small class="block text-gray-500">{{ c.phone_number }} · {{ c.mode }}</small></a>{% else %}<div class="empty">No conversations yet.</div>{% endfor %}</div></section>
+<section class="card"><div class="p-4 border-b"><h3 class="font-semibold">Recent leads</h3></div><div class="divide-y">{% for lead in recent_leads[:6] %}<a class="block p-3 hover:bg-gray-50" href="/crm/leads/{{ lead.id }}"><b>{{ lead.customer_name }}</b><small class="block text-gray-500">{{ lead.lead_no }} · {{ lead.status }}</small></a>{% else %}<div class="empty">No leads yet.</div>{% endfor %}</div></section>
+<section class="card"><div class="p-4 border-b"><h3 class="font-semibold">Recent sales intents</h3></div><div class="divide-y">{% for order in recent_orders %}<a class="block p-3 hover:bg-gray-50" href="/crm/orders"><b>{{ order.product_title }}</b><small class="block text-gray-500">Rs. {{ '%.2f'|format(order.final_total) }} · {{ order.status|replace('_',' ') }}</small></a>{% else %}<div class="empty">No sales intents yet.</div>{% endfor %}</div></section>
 </div>
 {% endblock %}
