@@ -44,7 +44,7 @@
     const order = document.getElementById("order"); order.replaceChildren();
     if (data.sales_order) {
       const value = data.sales_order, heading = document.createElement("h3"), actions = document.createElement("div"); heading.className = "detail-title"; text(heading, "Latest sales order"); actions.className = "detail-actions";
-      order.append(heading, detailRow("Order", value.internal_order_number), detailRow("Order status", value.order_status.replaceAll("_", " ")), detailRow("Payment", value.payment_status.replaceAll("_", " ")), detailRow("Products", value.product_count), detailRow("Grand total", money(value.grand_total)));
+      order.append(heading, detailRow("Order", value.internal_order_number), detailRow("Order status", value.order_status.replaceAll("_", " ")), detailRow("Payment", value.payment_status.replaceAll("_", " ")), detailRow("Shopify sync", value.shopify_sync_status.replaceAll("_", " ")), detailRow("Products", value.product_count), detailRow("Grand total", money(value.grand_total)));
       actions.append(detailLink("View Order", value.view_url)); if (value.edit_url) actions.append(detailLink("Edit Draft", value.edit_url, true)); order.append(actions);
       if (value.conversation_order_count > 1) { const note = document.createElement("small"); note.className = "detail-note"; text(note, `${value.conversation_order_count} sales orders are linked to this conversation. Showing the latest.`); order.append(note); }
     }

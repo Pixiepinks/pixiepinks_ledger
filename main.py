@@ -51,7 +51,7 @@ from models import (
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
     BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
-    SalesOrder, SalesOrderStatusHistory,
+    SalesOrder, SalesOrderStatusHistory, ShopifySyncEvent,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -102,6 +102,10 @@ from sales_order_service import (
     transition_order, update_draft,
 )
 from migrations import upgrade_database
+from shopify_draft_order_service import (
+    ShopifyDraftSyncError, create_shopify_draft, refresh_shopify_draft,
+    shopify_admin_draft_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1601,6 +1605,7 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
         "internal_order_number": sales_order.internal_order_number,
         "order_status": sales_order.order_status,
         "payment_status": sales_order.payment_status,
+        "shopify_sync_status": sales_order.shopify_sync_status,
         "grand_total": float(sales_order.grand_total),
         "currency": sales_order.currency,
         "product_count": len(sales_order.lines),
@@ -1895,7 +1900,8 @@ def crm_orders(request: Request, status_filter: str = "active", db: Session = De
 
 
 @app.get("/crm/sales-orders", response_class=HTMLResponse)
-def sales_orders_page(request: Request, q: str = "", status_filter: str = "", date_from: date | None = None,
+def sales_orders_page(request: Request, q: str = "", status_filter: str = "", sync_status: str = "",
+                      date_from: date | None = None,
                       date_to: date | None = None, sort: str = "newest", page: int = 1,
                       db: Session = Depends(get_db), user: User = Depends(require_user)):
     _require_sales_orders_enabled()
@@ -1906,6 +1912,7 @@ def sales_orders_page(request: Request, q: str = "", status_filter: str = "", da
                                  SalesOrder.customer_name.ilike(term), SalesOrder.whatsapp_phone.ilike(term),
                                  SalesOrder.shopify_order_name.ilike(term)))
     if status_filter: query = query.filter(SalesOrder.order_status == status_filter.upper())
+    if sync_status: query = query.filter(SalesOrder.shopify_sync_status == sync_status.upper())
     if date_from: query = query.filter(SalesOrder.created_at >= datetime.combine(date_from, datetime.min.time()))
     if date_to: query = query.filter(SalesOrder.created_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()))
     total = query.count(); page_size = 25; page = max(page, 1)
@@ -1914,9 +1921,12 @@ def sales_orders_page(request: Request, q: str = "", status_filter: str = "", da
             SalesOrder.created_at.asc() if sort == "oldest" else SalesOrder.created_at.desc()))
     orders = query.order_by(order_by, SalesOrder.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
     return templates.TemplateResponse("sales_orders.html", {"request": request, "page_title": "Sales Orders",
-        "orders": orders, "q": q, "status_filter": status_filter, "date_from": date_from,
+        "orders": orders, "q": q, "status_filter": status_filter, "sync_status": sync_status,
+        "date_from": date_from,
         "date_to": date_to, "sort": sort, "page": page, "page_size": page_size, "total": total,
-        "statuses": sorted(ORDER_STATUSES), "user": user})
+        "statuses": sorted(ORDER_STATUSES),
+        "sync_statuses": ["NOT_SYNCED", "SYNCING", "SYNCED", "SYNC_FAILED", "RECONCILIATION_REQUIRED"],
+        "user": user})
 
 
 @app.get("/crm/sales-orders/{order_id}", response_class=HTMLResponse)
@@ -1927,10 +1937,17 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
     if not order: raise HTTPException(404, "Sales order not found")
     history = db.query(SalesOrderStatusHistory).filter_by(sales_order_id=order.id).order_by(
         SalesOrderStatusHistory.created_at.desc()).all()
-    can_edit = "edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()) and order.order_status == "DRAFT"
+    can_edit = ("edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set())
+                and order.order_status == "DRAFT" and not order.shopify_draft_order_id)
+    can_sync = (settings.SHOPIFY_ORDER_SYNC_ENABLED
+                and "sync_shopify" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()))
+    sync_events = db.query(ShopifySyncEvent).filter_by(sales_order_id=order.id).order_by(
+        ShopifySyncEvent.created_at.desc(), ShopifySyncEvent.id.desc()).limit(20).all()
     return templates.TemplateResponse("sales_order_detail.html", {"request": request,
         "page_title": order.internal_order_number, "order": order, "history": history,
-        "can_edit": can_edit, "user": user})
+        "can_edit": can_edit, "can_sync": can_sync, "csrf_token": _csrf_token(request),
+        "shopify_admin_url": shopify_admin_draft_url(order, settings.SHOPIFY_SHOP),
+        "sync_events": sync_events, "user": user})
 
 
 def _sales_order_payload(order: SalesOrder) -> dict:
@@ -1945,6 +1962,12 @@ def _sales_order_payload(order: SalesOrder) -> dict:
         "order_status": order.order_status, "payment_status": order.payment_status,
         "fulfillment_status": order.fulfillment_status,
         "shopify_sync_status": order.shopify_sync_status,
+        "shopify_draft_order_id": order.shopify_draft_order_id,
+        "shopify_draft_order_name": order.shopify_draft_order_name,
+        "shopify_order_id": order.shopify_order_id, "shopify_order_name": order.shopify_order_name,
+        "shopify_sync_updated_at": (order.shopify_sync_updated_at.isoformat()
+                                    if order.shopify_sync_updated_at else None),
+        "shopify_sync_error": order.shopify_sync_error,
         "subtotal": str(order.subtotal), "discount_total": str(order.discount_total),
         "shipping_total": str(order.shipping_total), "tax_total": str(order.tax_total),
         "grand_total": str(order.grand_total), "currency": order.currency,
@@ -2079,6 +2102,43 @@ async def transition_sales_order(order_id: int, request: Request, db: Session = 
     if not isinstance(payload, dict): raise HTTPException(400, "Invalid request")
     try: order = transition_order(db, order, payload.get("status"), user.username, payload.get("reason"))
     except InvalidOrderTransition as exc: raise HTTPException(409, str(exc)) from None
+    return {"order": _sales_order_payload(order)}
+
+
+def _require_shopify_order_sync_enabled() -> None:
+    if not settings.SHOPIFY_ORDER_SYNC_ENABLED:
+        raise HTTPException(status_code=404, detail="Shopify order synchronization is disabled")
+
+
+@app.post("/api/sales-orders/{order_id}/shopify-draft")
+async def create_sales_order_shopify_draft(order_id: int, request: Request,
+                                            db: Session = Depends(get_db),
+                                            user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_shopify_order_sync_enabled()
+    _require_sales_permission(user, "sync_shopify"); _require_csrf(request)
+    try: payload = await request.json()
+    except ValueError: raise HTTPException(400, "Invalid JSON") from None
+    if not isinstance(payload, dict) or payload.get("confirmation") != "CREATE SHOPIFY DRAFT":
+        raise HTTPException(422, "Explicit Shopify Draft Order confirmation is required")
+    order = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter_by(id=order_id).one_or_none()
+    if not order: raise HTTPException(404, "Sales order not found")
+    try:
+        order, created = create_shopify_draft(db, order, user.username)
+    except ShopifyDraftSyncError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
+    return {"created": created, "order": _sales_order_payload(order)}
+
+
+@app.post("/api/sales-orders/{order_id}/shopify-refresh")
+def refresh_sales_order_shopify_draft(order_id: int, request: Request,
+                                       db: Session = Depends(get_db),
+                                       user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_shopify_order_sync_enabled()
+    _require_sales_permission(user, "sync_shopify"); _require_csrf(request)
+    order = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter_by(id=order_id).one_or_none()
+    if not order: raise HTTPException(404, "Sales order not found")
+    try: order = refresh_shopify_draft(db, order, user.username)
+    except ShopifyDraftSyncError as exc: raise HTTPException(exc.status_code, str(exc)) from None
     return {"order": _sales_order_payload(order)}
 
 

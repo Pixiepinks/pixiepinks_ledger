@@ -402,3 +402,41 @@ columns to `sales_order_lines`. Back up PostgreSQL and run `alembic upgrade head
 enabling the feature. Verify WhatsApp text/product/voice operations and all accounting reports, then
 exercise desktop and mobile order creation. Roll back the application by disabling
 `SALES_ORDERS_ENABLED`; the migration deliberately does not delete saved drafts or audit data.
+
+## Commercial Sales Orders — Phase 3 Shopify Draft synchronization
+
+Phase 3 can create **one Shopify Draft Order** from an eligible Ledger sales order. It remains disabled
+unless both `SALES_ORDERS_ENABLED=true` and `SHOPIFY_ORDER_SYNC_ENABLED=true`; keep
+`SALES_ACCOUNTING_AUTO_POST_ENABLED=false`. Only an authenticated `ADMIN` currently has the
+`sync_shopify` permission. Creation and refresh actions are CSRF-protected, require explicit staff
+confirmation, and run only on the server.
+
+The integration uses the existing Shopify client-credentials token flow and Admin GraphQL API version
+`2026-07`. The Shopify app must be configured and reauthorized with the minimum Phase 3 scopes
+`write_draft_orders` and `read_draft_orders`; `read_orders` is required to read the associated Order
+reference if a merchant later completes a draft in Shopify. Preserve the existing catalogue scopes
+(`read_products` and, where inventory availability is displayed, `read_inventory`). Phase 3 does not request fulfillment,
+refund, inventory-write, or payment-write permissions. No new Railway secrets are required: retain
+`SHOPIFY_SHOP`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`, and `SHOPIFY_API_VERSION`.
+
+Draft creation revalidates every exact variant, availability, and price against Shopify, maps customer
+and delivery snapshots, whole-number quantities, discounts, shipping, and LKR currency, and compares
+the returned Shopify total **and Shopify-calculated tax** with Ledger. The live variant taxability and
+Shopify tax engine are authoritative for the remote draft; the Ledger-approved amounts are never
+rewritten. Missing taxable-order address data, inconsistent local taxability, and any total/tax or LKR
+rounding mismatch are retained as `RECONCILIATION_REQUIRED`. Staff must inspect the draft in Shopify,
+confirm the tax and shipping-tax setup, and resolve or remove the remote draft before an approved local
+draft can be synchronized again. A deterministic tag, durable `ShopifySyncEvent` operation key, and
+atomic expiring database claim are checked before every write. An expired claim is treated as an
+uncertain outcome—not automatically retried—until Shopify is reconciled. Status refresh records a
+remotely completed Order reference for staff review but never
+changes local payment, fulfillment, sales-order, inventory, or accounting state.
+
+Migration `20261021_03` additively adds the draft name, last-sync timestamp, safe error summary, and
+sync-event actor/timestamp. Migration `20261021_04` additively adds nullable worker claim and lease
+columns plus indexes; it does not alter historical orders or event outcomes. Before rollout, back up PostgreSQL, restore to staging, run `alembic upgrade
+head`, keep both feature flags off, and confirm existing accounting and WhatsApp behavior. Then enable
+Sales Orders and Shopify sync in staging, reauthorize the Shopify app, create one controlled draft,
+verify its totals and deterministic Ledger tag, test Refresh, and confirm repeated clicks do not create
+a second draft. For rollback, disable `SHOPIFY_ORDER_SYNC_ENABLED` and deploy the prior application;
+do not delete the additive columns, Shopify references, or audit history.

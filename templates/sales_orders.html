@@ -3,6 +3,7 @@
 <form id="sales-order-filters" class="card order-filters" method="get">
  <label>Search<input name="q" value="{{ q }}" placeholder="Order, customer, phone or Shopify order"></label>
  <label>Order status<select name="status_filter"><option value="">All statuses</option>{% for status in statuses %}<option value="{{ status }}" {{ 'selected' if status_filter == status }}>{{ status|replace('_',' ')|title }}</option>{% endfor %}</select></label>
+ <label>Shopify sync<select name="sync_status"><option value="">All sync states</option>{% for status in sync_statuses %}<option value="{{ status }}" {{ 'selected' if sync_status == status }}>{{ status|replace('_',' ')|title }}</option>{% endfor %}</select></label>
  <label>From<input type="date" name="date_from" value="{{ date_from or '' }}"></label>
  <label>To<input type="date" name="date_to" value="{{ date_to or '' }}"></label>
  <label>Sort<select name="sort"><option value="newest" {{ 'selected' if sort == 'newest' }}>Newest</option><option value="oldest" {{ 'selected' if sort == 'oldest' }}>Oldest</option><option value="total_desc" {{ 'selected' if sort == 'total_desc' }}>Highest total</option><option value="total_asc" {{ 'selected' if sort == 'total_asc' }}>Lowest total</option></select></label>

@@ -176,6 +176,8 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str) -
 def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> SalesOrder:
     if order.order_status != "DRAFT":
         raise SalesOrderValidationError("Only draft orders can be edited")
+    if order.shopify_draft_order_id:
+        raise SalesOrderValidationError("A draft linked to Shopify cannot be edited in Ledger")
     if not isinstance(payload, dict):
         raise SalesOrderValidationError("A valid payload is required")
     # Reuse creation validation without committing a second order.

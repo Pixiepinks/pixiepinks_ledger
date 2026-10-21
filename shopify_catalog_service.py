@@ -121,7 +121,7 @@ query SearchProducts($first: Int!, $query: String!) {
   products(first: $first, query: $query, sortKey: RELEVANCE) {
     nodes { id title handle productType vendor tags status
       featuredImage { url }
-      variants(first: 50) { nodes { id title sku price availableForSale
+      variants(first: 50) { nodes { id title sku price taxable availableForSale
         inventoryQuantity inventoryItem { tracked }
         selectedOptions { name value }
       } }
@@ -145,7 +145,7 @@ INBOX_PRODUCT_PICKER_QUERY = """
 query InboxProductPicker($first: Int!, $query: String!, $after: String) {
   products(first: $first, query: $query, after: $after, sortKey: RELEVANCE) {
     nodes { id title handle productType vendor tags status publishedAt featuredImage { url }
-      variants(first: 50) { nodes { id title sku price availableForSale
+      variants(first: 50) { nodes { id title sku price taxable availableForSale
         image { url } inventoryQuantity inventoryItem { tracked } } }
     }
     pageInfo { hasNextPage endCursor }
@@ -373,6 +373,7 @@ def resolve_inbox_product(product_id: str, variant_id: str,
     return {"id": product_id, "variant_id": variant_id, "handle": handle,
             "title": node.get("title"), "variant_title": variant.get("title"),
             "sku": variant.get("sku") or "", "price": price, "currency": "LKR",
+            "taxable": bool(variant.get("taxable")),
             "image": image, "url": f"{STOREFRONT_ROOT}/products/{handle}"}
 
 
