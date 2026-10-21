@@ -25,6 +25,7 @@
       <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>
       <p class="nav-label">Sales</p>
       <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>
+      {% if settings.SALES_ORDERS_ENABLED %}<a href="/crm/sales-orders" class="{{ 'active' if request.url.path.startswith('/crm/sales-orders') else '' }}"><span>▣</span> Sales Orders</a>{% endif %}
       <p class="nav-label">Inventory / business</p>
       <a href="/items" class="{{ 'active' if request.url.path == '/items' else '' }}"><span>□</span> Items</a>
       <a href="/suppliers" class="{{ 'active' if request.url.path == '/suppliers' else '' }}"><span>♢</span> Suppliers</a>

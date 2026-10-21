@@ -12,6 +12,16 @@ from sales_order_service import SalesOrderValidationError, calculate_order
 from utils_auth import hash_password
 
 
+def _verified_product(product_id, variant_id):
+    suffix = variant_id.rsplit("/", 1)[-1]
+    return {"id": product_id, "variant_id": variant_id, "handle": f"product-{suffix}",
+            "title": "Product One" if suffix == "11" else "Product Two",
+            "variant_title": "Pink" if suffix == "11" else "Standard", "sku": f"SKU-{suffix}",
+            "price": Decimal("1000.00") if suffix == "11" else Decimal("200.00"),
+            "currency": "LKR", "image": "https://cdn.example/product.jpg",
+            "url": f"https://www.pixiepinks.shop/products/product-{suffix}"}
+
+
 def setup_function():
     Base.metadata.create_all(engine)
     upgrade_database()
@@ -76,7 +86,7 @@ def test_versioned_migration_is_idempotent_and_creates_phase_one_tables():
                   "sales_order_status_history", "shopify_sync_events", "accounting_posting_links"):
         assert inspector.has_table(table)
     with engine.connect() as connection:
-        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "20261021_01"
+        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "20261021_02"
 
 
 def test_decimal_calculation_handles_quantity_discounts_shipping_and_tax():
@@ -120,6 +130,7 @@ def test_csrf_and_role_are_enforced_server_side(monkeypatch):
 
 def test_draft_creation_is_idempotent_and_persists_decimal_totals(monkeypatch):
     monkeypatch.setattr(main.settings, "SALES_ORDERS_ENABLED", True)
+    monkeypatch.setattr(main, "resolve_inbox_product", _verified_product)
     client = client_for(); token = csrf(client)
     headers = {"Idempotency-Key": "same-draft", "X-CSRF-Token": token}
     first = client.post("/api/sales-orders", json=payload(), headers=headers)
@@ -137,6 +148,7 @@ def test_draft_creation_is_idempotent_and_persists_decimal_totals(monkeypatch):
 
 def test_draft_update_recalculates_and_status_transition_is_audited(monkeypatch):
     monkeypatch.setattr(main.settings, "SALES_ORDERS_ENABLED", True)
+    monkeypatch.setattr(main, "resolve_inbox_product", _verified_product)
     client = client_for(); token = csrf(client)
     created = client.post("/api/sales-orders", json=payload(order_discount="0"),
         headers={"Idempotency-Key": "editable", "X-CSRF-Token": token}).json()["order"]

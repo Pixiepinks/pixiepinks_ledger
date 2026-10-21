@@ -154,6 +154,8 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str) -
             sku=str(raw.get("sku") or "").strip() or None,
             product_name_snapshot=_required_text(raw, "product_name", 500),
             variant_name_snapshot=str(raw.get("variant_name") or "").strip() or None,
+            product_image_url=str(raw.get("product_image_url") or "").strip() or None,
+            product_url=str(raw.get("product_url") or "").strip() or None,
             quantity=calculated.quantity, unit_price=calculated.unit_price,
             discount_amount=calculated.discount_amount, tax_amount=calculated.tax_amount,
             line_total=calculated.line_total,
@@ -193,6 +195,8 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
             sku=str(raw.get("sku") or "").strip() or None,
             product_name_snapshot=_required_text(raw, "product_name", 500),
             variant_name_snapshot=str(raw.get("variant_name") or "").strip() or None,
+            product_image_url=str(raw.get("product_image_url") or "").strip() or None,
+            product_url=str(raw.get("product_url") or "").strip() or None,
             quantity=calculated.quantity, unit_price=calculated.unit_price,
             discount_amount=calculated.discount_amount, tax_amount=calculated.tax_amount,
             line_total=calculated.line_total))

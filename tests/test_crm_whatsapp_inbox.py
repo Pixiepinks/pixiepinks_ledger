@@ -37,7 +37,7 @@ def test_inbox_requires_authentication_and_renders_for_staff():
     assert response.status_code == 200
     assert 'class="app-body whatsapp-page"' in response.text
     assert '/static/crm.css?v=20261020-desktop-voice' in response.text
-    assert '/static/whatsapp_inbox.js?v=20261020-product-picker' in response.text
+    assert '/static/whatsapp_inbox.js?v=20261021-sales-orders-phase-2' in response.text
     assert 'id="send-button">Send</button>' in response.text
     assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
     assert all(control in response.text for control in (

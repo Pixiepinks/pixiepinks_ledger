@@ -3,7 +3,7 @@
   const root = document.getElementById("inbox"), list = document.getElementById("conversation-list"), messages = document.getElementById("messages"), errorBox = document.getElementById("send-error"), statusBox = document.getElementById("send-status");
   let selected = Number(root.dataset.initial) || null, filter = new URLSearchParams(location.search).get("filter") || "all";
   let recorder, stream, timer, blob, blobUrl, started, duration, voiceKey, chunks = [], discard = false;
-  let conversationController, conversationLoading = false, conversationGeneration = 0, listLoading = false, detailsSignature = "";
+  let conversationController, conversationLoading = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null;
   const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
   const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
   const badge = (value, kind = "neutral") => { const el = document.createElement("span"); el.className = `badge ${kind}`; text(el, value); return el; };
@@ -89,6 +89,7 @@
     try {
       if (markRead) await api(`/crm/whatsapp/api/conversations/${id}/read`, {method: "POST", signal: controller.signal}); const data = await api(`/crm/whatsapp/api/conversations/${id}`, {signal: controller.signal});
       if (generation !== conversationGeneration || selected !== id) return;
+      currentConversationData = data;
       text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));
       const action = document.getElementById("mode-action"); text(action, data.conversation.mode === "AI" ? "Take Over" : "Return to AI"); action.dataset.mode = data.conversation.mode; document.getElementById("payment-banner").hidden = !data.conversation.payment_required;
       reconcileMessages(data.messages); const nextDetailsSignature = JSON.stringify([data.conversation, data.order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
@@ -171,6 +172,74 @@
   document.getElementById("message-input").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); document.getElementById("composer").requestSubmit(); } });
   document.getElementById("record-button").onclick = startRecording; document.getElementById("stop-recording").onclick = () => { if (recorder?.state === "recording") recorder.stop(); }; document.getElementById("cancel-recording").onclick = () => { discard = true; if (recorder?.state === "recording") recorder.stop(); else resetRecording(); }; document.getElementById("delete-recording").onclick = resetRecording; document.getElementById("send-voice").onclick = sendVoice;
   document.getElementById("details-action").onclick = () => document.getElementById("details").classList.add("open"); document.getElementById("close-details").onclick = () => document.getElementById("details").classList.remove("open"); document.getElementById("back-list").onclick = () => root.classList.remove("chat-open");
+
+  // Phase 2 commercial-order drawer. It reuses the authenticated Shopify picker API;
+  // Shopify is re-queried server-side when saving, so these browser snapshots are never authoritative.
+  const orderDrawer = document.getElementById("order-drawer");
+  if (orderDrawer) {
+    const orderScrim = document.getElementById("order-scrim"), orderLinesNode = document.getElementById("order-lines"), orderError = document.getElementById("order-error");
+    let orderLines = [], orderSearchTimer, orderSearchGeneration = 0, orderDraftKey = crypto.randomUUID();
+    const orderInput = id => document.getElementById(id);
+    const numeric = value => Math.max(0, Number(value) || 0);
+    function closeOrderDrawer() { orderDrawer.hidden = true; orderScrim.hidden = true; document.body.classList.remove("order-drawer-open"); }
+    function calculateOrderPreview() {
+      const subtotal = orderLines.reduce((sum, line) => sum + numeric(line.quantity) * numeric(line.price), 0);
+      const lineDiscounts = orderLines.reduce((sum, line) => sum + numeric(line.discount), 0);
+      const lineTaxes = orderLines.reduce((sum, line) => sum + numeric(line.tax), 0);
+      const discount = lineDiscounts + numeric(orderInput("order-discount").value), shipping = numeric(orderInput("order-shipping").value), tax = lineTaxes + numeric(orderInput("order-tax").value);
+      const total = Math.max(0, subtotal - discount + shipping + tax), totals = document.getElementById("order-preview-totals"); totals.replaceChildren();
+      [["Subtotal", subtotal], ["Discounts", -discount], ["Shipping", shipping], ["Tax", tax], ["Grand total", total]].forEach(([label, value], index) => { const row = document.createElement("span"); if (index === 4) row.className = "grand"; const name = document.createElement("span"), amount = document.createElement("b"); text(name, label); text(amount, money(value)); row.append(name, amount); totals.append(row); });
+    }
+    function renderOrderLines() {
+      orderLinesNode.replaceChildren();
+      if (!orderLines.length) { const empty = document.createElement("div"); empty.className = "empty"; text(empty, "Add at least one Shopify product."); orderLinesNode.append(empty); calculateOrderPreview(); return; }
+      orderLines.forEach((line, index) => {
+        const row = document.createElement("article"); row.className = "order-edit-line";
+        const image = new Image(); image.alt = ""; if (line.image?.startsWith("https://")) image.src = line.image;
+        const info = document.createElement("div"), title = document.createElement("strong"), variant = document.createElement("span"); text(title, line.title); text(variant, `${line.variantTitle === "Default Title" ? "Standard" : line.variantTitle}${line.sku ? ` · ${line.sku}` : ""} · ${money(line.price)}`); info.append(title, variant);
+        const quantity = document.createElement("input"); quantity.type = "number"; quantity.min = "0.001"; quantity.step = "1"; quantity.value = line.quantity; quantity.setAttribute("aria-label", `Quantity for ${line.title}`); quantity.oninput = () => { line.quantity = quantity.value; calculateOrderPreview(); };
+        const remove = document.createElement("button"); remove.type = "button"; remove.className = "btn btn-secondary"; text(remove, "Remove"); remove.onclick = () => { orderLines.splice(index, 1); renderOrderLines(); };
+        row.append(image, info, quantity, remove); orderLinesNode.append(row);
+      }); calculateOrderPreview();
+    }
+    function openOrderDrawer(order = null) {
+      if (!selected && !order) { showComposerMessage("Select a conversation first.", true); return; }
+      const conversation = currentConversationData?.conversation || {};
+      orderInput("order-id").value = order?.id || ""; text(document.getElementById("order-drawer-title"), order ? `Edit ${order.internal_order_number}` : "Create Order");
+      orderInput("order-customer-name").value = order?.customer_name || conversation.customer_name || "";
+      orderInput("order-phone").value = order?.whatsapp_phone || conversation.phone_number || "";
+      orderInput("order-alt-phone").value = order?.alternative_phone || currentConversationData?.order?.alternative_phone || "";
+      orderInput("order-contact").value = order?.delivery_contact_person || currentConversationData?.order?.contact_person_name || conversation.customer_name || "";
+      orderInput("order-address").value = order?.delivery_address || currentConversationData?.order?.delivery_address || "";
+      orderInput("order-city").value = order?.city || ""; orderInput("order-district").value = order?.district || ""; orderInput("order-postal").value = order?.postal_code || ""; orderInput("order-notes").value = order?.customer_notes || "";
+      orderInput("order-discount").value = order?.discount_total || "0"; orderInput("order-shipping").value = order?.shipping_total || "0"; orderInput("order-tax").value = order?.tax_total || "0";
+      orderLines = (order?.lines || []).map(line => ({productId: line.shopify_product_id, variantId: line.shopify_variant_id, title: line.product_name, variantTitle: line.variant_name, sku: line.sku, image: line.product_image_url, url: line.product_url, price: line.unit_price, quantity: line.quantity, discount: line.discount_amount, tax: line.tax_amount}));
+      orderDraftKey = crypto.randomUUID(); renderOrderLines(); text(orderError, ""); orderDrawer.hidden = false; orderScrim.hidden = false; document.body.classList.add("order-drawer-open");
+    }
+    function orderProductCard(product) {
+      const card = document.createElement("article"), image = new Image(), content = document.createElement("div"), title = document.createElement("strong"), select = document.createElement("select"), add = document.createElement("button"); card.className = "order-picker-card"; image.alt = product.title; if (product.image?.startsWith("https://")) image.src = product.image; text(title, product.title);
+      product.variants.forEach((variant, index) => { const option = document.createElement("option"); option.value = index; option.disabled = !variant.available; text(option, `${variant.title === "Default Title" ? "Standard" : variant.title} · ${money(variant.price)}${variant.sku ? ` · ${variant.sku}` : ""}${variant.available ? "" : " · Unavailable"}`); select.append(option); });
+      const first = product.status === "ACTIVE" && product.published ? product.variants.findIndex(item => item.available) : -1; if (first >= 0) select.value = first; select.disabled = first < 0; add.type = "button"; add.className = "btn btn-primary"; add.disabled = first < 0; text(add, first < 0 ? "Unavailable" : "Add");
+      add.onclick = () => { const variant = product.variants[Number(select.value)]; if (!variant?.available) return; const duplicate = orderLines.find(item => item.variantId === variant.id); if (duplicate) duplicate.quantity = String(numeric(duplicate.quantity) + 1); else orderLines.push({productId: product.id, variantId: variant.id, title: product.title, variantTitle: variant.title, sku: variant.sku, image: variant.image || product.image, url: product.url, price: variant.price, quantity: "1", discount: "0", tax: "0"}); renderOrderLines(); document.getElementById("order-product-search").hidden = true; };
+      select.onchange = () => { const variant = product.variants[Number(select.value)]; if (variant?.image?.startsWith("https://")) image.src = variant.image; }; content.append(title, select, add); card.append(image, content); return card;
+    }
+    async function searchOrderProducts() {
+      const generation = ++orderSearchGeneration, results = document.getElementById("order-product-results"), status = document.getElementById("order-product-status"); text(status, "Searching Shopify…");
+      try { const data = await api(`/crm/whatsapp/api/products?q=${encodeURIComponent(orderInput("order-product-query").value.trim())}&limit=20`); if (generation !== orderSearchGeneration) return; results.replaceChildren(...data.products.map(orderProductCard)); text(status, data.products.length ? "Choose an available variant." : "No products found."); } catch (error) { text(status, error.message); }
+    }
+    document.getElementById("create-order-button").onclick = () => openOrderDrawer();
+    document.getElementById("close-order").onclick = closeOrderDrawer; document.getElementById("cancel-order").onclick = closeOrderDrawer; orderScrim.onclick = closeOrderDrawer;
+    document.getElementById("order-add-product").onclick = () => { document.getElementById("order-product-search").hidden = false; orderInput("order-product-query").focus(); searchOrderProducts(); };
+    orderInput("order-product-query").oninput = () => { clearTimeout(orderSearchTimer); orderSearchTimer = setTimeout(searchOrderProducts, 300); };
+    ["order-discount", "order-shipping", "order-tax"].forEach(id => orderInput(id).oninput = calculateOrderPreview);
+    document.getElementById("order-form").onsubmit = async event => {
+      event.preventDefault(); if (!orderLines.length) { text(orderError, "Add at least one product."); return; } const save = document.getElementById("save-order"), orderId = orderInput("order-id").value;
+      const payload = {crm_conversation_id: selected, customer_name: orderInput("order-customer-name").value, whatsapp_phone: orderInput("order-phone").value, alternative_phone: orderInput("order-alt-phone").value, delivery_contact_person: orderInput("order-contact").value, delivery_address: orderInput("order-address").value, city: orderInput("order-city").value, district: orderInput("order-district").value, postal_code: orderInput("order-postal").value, customer_notes: orderInput("order-notes").value, order_discount: orderInput("order-discount").value, shipping_total: orderInput("order-shipping").value, tax_total: orderInput("order-tax").value, lines: orderLines.map(line => ({shopify_product_id: line.productId, shopify_variant_id: line.variantId, quantity: line.quantity, discount_amount: line.discount, tax_amount: line.tax}))};
+      save.disabled = true; text(save, "Saving…"); text(orderError, "");
+      try { const csrfData = await api("/api/sales-orders/csrf"); const data = await api(orderId ? `/api/sales-orders/${orderId}` : "/api/sales-orders", {method: orderId ? "PUT" : "POST", headers:{"Content-Type":"application/json", "X-CSRF-Token":csrfData.csrf_token, ...(orderId ? {} : {"Idempotency-Key":orderDraftKey})}, body:JSON.stringify(payload)}); location.href = `/crm/sales-orders/${data.order.id}`; } catch (error) { text(orderError, error.message); save.disabled = false; text(save, "Save Draft"); }
+    };
+    const editId = Number(orderDrawer.dataset.editOrder); if (editId) api(`/api/sales-orders/${editId}`).then(data => openOrderDrawer(data.order)).catch(error => showComposerMessage(error.message, true));
+  }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadList(); if (selected) openConversation(selected, false); } });
   loadList(); if (selected) openConversation(selected, true); setInterval(loadList, 7000); setInterval(() => { if (selected && !document.hidden) openConversation(selected, false); }, 4000);
 })();

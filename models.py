@@ -137,6 +137,8 @@ class SalesOrderLine(Base):
     sku = Column(String(255), index=True)
     product_name_snapshot = Column(String(500), nullable=False)
     variant_name_snapshot = Column(String(500))
+    product_image_url = Column(Text)
+    product_url = Column(Text)
     quantity = Column(Numeric(14, 3), nullable=False)
     unit_price = Column(Numeric(14, 2), nullable=False)
     discount_amount = Column(Numeric(14, 2), nullable=False, default=0)

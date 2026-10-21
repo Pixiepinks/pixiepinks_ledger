@@ -27,7 +27,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func, inspect, text, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from settings import settings
 from database import SessionLocal, engine
@@ -51,7 +51,7 @@ from models import (
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
     BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
-    SalesOrder,
+    SalesOrder, SalesOrderStatusHistory,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -98,7 +98,8 @@ from bot_configuration_service import (
     service_charge as configured_service_charge, validate_snapshot,
 )
 from sales_order_service import (
-    InvalidOrderTransition, SalesOrderValidationError, create_draft, transition_order, update_draft,
+    ORDER_STATUSES, InvalidOrderTransition, SalesOrderValidationError, create_draft,
+    transition_order, update_draft,
 )
 from migrations import upgrade_database
 
@@ -1494,12 +1495,17 @@ def _conversation_payload(db: Session, conversation: WhatsAppConversation,
 
 
 @app.get("/crm/whatsapp", response_class=HTMLResponse)
-def whatsapp_inbox(request: Request, conversation: int | None = None,
+def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order: int | None = None,
                    db: Session = Depends(get_db), user: User = Depends(require_user)):
     unread = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
     return templates.TemplateResponse("whatsapp_inbox.html", {
         "request": request, "initial_conversation_id": conversation, "unread_whatsapp": unread,
-        "page_title": "WhatsApp Inbox", "user": user,
+        "page_title": "WhatsApp Inbox", "user": user, "edit_order_id": edit_order,
+        "sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
+        "can_create_sales_order": settings.SALES_ORDERS_ENABLED and
+            "create" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()),
+        "can_approve_sales_discount": "approve_discount" in
+            SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()),
     })
 
 
@@ -1864,24 +1870,117 @@ def crm_orders(request: Request, status_filter: str = "active", db: Session = De
         "status_filter": status_filter, "page_title": "Orders / Sales Intents", "user": user})
 
 
+@app.get("/crm/sales-orders", response_class=HTMLResponse)
+def sales_orders_page(request: Request, q: str = "", status_filter: str = "", date_from: date | None = None,
+                      date_to: date | None = None, sort: str = "newest", page: int = 1,
+                      db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_sales_orders_enabled()
+    query = db.query(SalesOrder).options(selectinload(SalesOrder.lines))
+    if q.strip():
+        term = f"%{q.strip()}%"
+        query = query.filter(or_(SalesOrder.internal_order_number.ilike(term),
+                                 SalesOrder.customer_name.ilike(term), SalesOrder.whatsapp_phone.ilike(term),
+                                 SalesOrder.shopify_order_name.ilike(term)))
+    if status_filter: query = query.filter(SalesOrder.order_status == status_filter.upper())
+    if date_from: query = query.filter(SalesOrder.created_at >= datetime.combine(date_from, datetime.min.time()))
+    if date_to: query = query.filter(SalesOrder.created_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()))
+    total = query.count(); page_size = 25; page = max(page, 1)
+    order_by = SalesOrder.grand_total.desc() if sort == "total_desc" else (
+        SalesOrder.grand_total.asc() if sort == "total_asc" else (
+            SalesOrder.created_at.asc() if sort == "oldest" else SalesOrder.created_at.desc()))
+    orders = query.order_by(order_by, SalesOrder.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return templates.TemplateResponse("sales_orders.html", {"request": request, "page_title": "Sales Orders",
+        "orders": orders, "q": q, "status_filter": status_filter, "date_from": date_from,
+        "date_to": date_to, "sort": sort, "page": page, "page_size": page_size, "total": total,
+        "statuses": sorted(ORDER_STATUSES), "user": user})
+
+
+@app.get("/crm/sales-orders/{order_id}", response_class=HTMLResponse)
+def sales_order_detail_page(order_id: int, request: Request, db: Session = Depends(get_db),
+                            user: User = Depends(require_user)):
+    _require_sales_orders_enabled()
+    order = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter_by(id=order_id).one_or_none()
+    if not order: raise HTTPException(404, "Sales order not found")
+    history = db.query(SalesOrderStatusHistory).filter_by(sales_order_id=order.id).order_by(
+        SalesOrderStatusHistory.created_at.desc()).all()
+    can_edit = "edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()) and order.order_status == "DRAFT"
+    return templates.TemplateResponse("sales_order_detail.html", {"request": request,
+        "page_title": order.internal_order_number, "order": order, "history": history,
+        "can_edit": can_edit, "user": user})
+
+
 def _sales_order_payload(order: SalesOrder) -> dict:
     return {
         "id": order.id, "internal_order_number": order.internal_order_number,
         "customer_name": order.customer_name, "whatsapp_phone": order.whatsapp_phone,
+        "alternative_phone": order.alternative_phone,
+        "delivery_contact_person": order.delivery_contact_person,
+        "delivery_address": order.delivery_address, "city": order.city,
+        "district": order.district, "postal_code": order.postal_code,
+        "customer_notes": order.customer_notes, "notes": order.notes,
         "order_status": order.order_status, "payment_status": order.payment_status,
         "fulfillment_status": order.fulfillment_status,
         "shopify_sync_status": order.shopify_sync_status,
         "subtotal": str(order.subtotal), "discount_total": str(order.discount_total),
         "shipping_total": str(order.shipping_total), "tax_total": str(order.tax_total),
         "grand_total": str(order.grand_total), "currency": order.currency,
+        "created_by": order.created_by, "created_at": order.created_at.isoformat(),
+        "crm_conversation_id": order.crm_conversation_id,
         "lines": [{"id": line.id, "shopify_product_id": line.shopify_product_id,
                    "shopify_variant_id": line.shopify_variant_id, "sku": line.sku,
                    "product_name": line.product_name_snapshot,
                    "variant_name": line.variant_name_snapshot, "quantity": str(line.quantity),
+                   "product_image_url": line.product_image_url, "product_url": line.product_url,
                    "unit_price": str(line.unit_price), "discount_amount": str(line.discount_amount),
                    "tax_amount": str(line.tax_amount), "line_total": str(line.line_total)}
                   for line in order.lines],
     }
+
+
+def _verify_sales_order_products(payload: object) -> dict:
+    """Replace all client product snapshots and prices with current Shopify values."""
+    if not isinstance(payload, dict) or not isinstance(payload.get("lines"), list):
+        raise SalesOrderValidationError("A valid order with line items is required")
+    verified = dict(payload)
+    verified_lines = []
+    for raw in payload["lines"]:
+        if not isinstance(raw, dict):
+            raise SalesOrderValidationError("Every order line must be valid")
+        try:
+            product = resolve_inbox_product(raw.get("shopify_product_id"), raw.get("shopify_variant_id"))
+        except ShopifyCatalogError:
+            raise HTTPException(503, "Shopify product verification is temporarily unavailable") from None
+        if product is None:
+            raise SalesOrderValidationError("A selected Shopify product or variant is no longer available")
+        verified_lines.append({
+            "shopify_product_id": product["id"], "shopify_variant_id": product["variant_id"],
+            "sku": product.get("sku"), "product_name": product["title"],
+            "variant_name": product.get("variant_title"), "unit_price": str(product["price"]),
+            "product_image_url": product.get("image"), "product_url": product.get("url"),
+            "quantity": raw.get("quantity"), "discount_amount": raw.get("discount_amount", 0),
+            "tax_amount": raw.get("tax_amount", 0), "inventory_item_id": raw.get("inventory_item_id"),
+        })
+    verified["lines"] = verified_lines
+    return verified
+
+
+@app.get("/api/sales-orders")
+def list_sales_orders(conversation_id: int | None = None, q: str = Query("", max_length=100),
+                      status_filter: str = Query("", max_length=40), limit: int = Query(25, ge=1, le=100),
+                      offset: int = Query(0, ge=0), db: Session = Depends(get_db),
+                      user: User = Depends(require_user)):
+    _require_sales_orders_enabled()
+    query = db.query(SalesOrder).options(selectinload(SalesOrder.lines))
+    if conversation_id is not None: query = query.filter(SalesOrder.crm_conversation_id == conversation_id)
+    if q.strip():
+        term = f"%{q.strip()}%"
+        query = query.filter(or_(SalesOrder.internal_order_number.ilike(term),
+                                 SalesOrder.customer_name.ilike(term), SalesOrder.whatsapp_phone.ilike(term)))
+    if status_filter: query = query.filter(SalesOrder.order_status == status_filter.upper())
+    total = query.count()
+    rows = query.order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc()).offset(offset).limit(limit).all()
+    return {"orders": [_sales_order_payload(row) for row in rows], "total": total,
+            "limit": limit, "offset": offset}
 
 
 @app.get("/api/sales-orders/config")
@@ -1898,6 +1997,14 @@ def sales_order_csrf(request: Request, user: User = Depends(require_user)):
     return {"csrf_token": _csrf_token(request)}
 
 
+@app.get("/api/sales-orders/{order_id}")
+def get_sales_order(order_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_sales_orders_enabled()
+    order = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter_by(id=order_id).one_or_none()
+    if not order: raise HTTPException(404, "Sales order not found")
+    return {"order": _sales_order_payload(order)}
+
+
 @app.post("/api/sales-orders", status_code=201)
 async def create_sales_order(request: Request, db: Session = Depends(get_db),
                              user: User = Depends(require_user)):
@@ -1908,7 +2015,12 @@ async def create_sales_order(request: Request, db: Session = Depends(get_db),
     if _sales_payload_has_discount(payload):
         _require_sales_permission(user, "approve_discount")
     try:
-        order, created = create_draft(db, payload, user.username, key)
+        existing = db.query(SalesOrder).filter_by(idempotency_key=key).one_or_none() if key else None
+        if existing:
+            order, created = existing, False
+        else:
+            payload = _verify_sales_order_products(payload)
+            order, created = create_draft(db, payload, user.username, key)
     except SalesOrderValidationError as exc:
         raise HTTPException(422, str(exc)) from None
     return JSONResponse({"created": created, "order": _sales_order_payload(order)},
@@ -1925,7 +2037,9 @@ async def update_sales_order(order_id: int, request: Request, db: Session = Depe
     except ValueError: raise HTTPException(400, "Invalid JSON") from None
     if _sales_payload_has_discount(payload):
         _require_sales_permission(user, "approve_discount")
-    try: order = update_draft(db, order, payload, user.username)
+    try:
+        payload = _verify_sales_order_products(payload)
+        order = update_draft(db, order, payload, user.username)
     except SalesOrderValidationError as exc: raise HTTPException(422, str(exc)) from None
     return {"order": _sales_order_payload(order)}
 

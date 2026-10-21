@@ -378,3 +378,27 @@ balance sheet, customers, CRM conversations, and sales intents with the pre-migr
 enable only `SALES_ORDERS_ENABLED` in staging and exercise the authenticated draft APIs. Downgrade is
 intentionally non-destructive: rollback means disabling flags and deploying the prior application;
 do not drop order or audit records.
+
+## Commercial Sales Orders — Phase 2 staff interface
+
+With `SALES_ORDERS_ENABLED=true`, authorized `ADMIN`, `SALES_MANAGER`, and `SALES_AGENT`
+staff can open **Create Order** from a selected WhatsApp conversation. The responsive drawer
+prefills the conversation name and phone, accepts delivery details, and reuses the authenticated,
+read-only Shopify product search to add multiple exact variants. The browser shows an immediate
+total preview, but the server retrieves every selected variant from Shopify again and replaces all
+client-submitted title, SKU, image, URL, availability, and price values before the existing Decimal
+service saves the draft. The existing CSRF, permission, discount-approval, and idempotency controls
+remain authoritative.
+
+**Sales Orders** at `/crm/sales-orders` provides authenticated search, status/date filters, sorting,
+pagination, and links to order detail and the originating WhatsApp conversation. Draft detail pages
+show customer/delivery snapshots, product images and variants, authoritative totals, separate order,
+payment, fulfillment and Shopify-sync states, and status history. Drafts can be reopened in the
+WhatsApp drawer after a refresh. Shopify order creation, inventory changes, payment verification and
+accounting posting remain intentionally unavailable; the other two Phase 1 flags should stay disabled.
+
+Phase 2 migration `20261021_02` only adds nullable `product_image_url` and `product_url` snapshot
+columns to `sales_order_lines`. Back up PostgreSQL and run `alembic upgrade head` in staging before
+enabling the feature. Verify WhatsApp text/product/voice operations and all accounting reports, then
+exercise desktop and mobile order creation. Roll back the application by disabling
+`SALES_ORDERS_ENABLED`; the migration deliberately does not delete saved drafts or audit data.
