@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     SHOPIFY_CLIENT_ID: Optional[str] = None
     SHOPIFY_CLIENT_SECRET: Optional[str] = None
     SHOPIFY_API_VERSION: str = "2026-07"
+    SALES_ORDERS_ENABLED: bool = False
+    SHOPIFY_ORDER_SYNC_ENABLED: bool = False
+    SALES_ACCOUNTING_AUTO_POST_ENABLED: bool = False
 
 
 settings = Settings()

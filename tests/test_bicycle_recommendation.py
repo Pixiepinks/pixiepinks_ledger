@@ -8,13 +8,16 @@ from bicycle_recommendation import (
     recommended_bicycle_size,
 )
 from database import Base, SessionLocal, engine
-from models import WhatsAppConversationMessage
+from models import WhatsAppConversation, WhatsAppConversationMessage, WhatsAppManualSend
 
 
 def setup_function():
     Base.metadata.create_all(bind=engine)
+    main.ensure_whatsapp_inbox_columns()
     with SessionLocal() as db:
+        db.query(WhatsAppManualSend).delete()
         db.query(WhatsAppConversationMessage).delete()
+        db.query(WhatsAppConversation).delete()
         db.commit()
 
 
