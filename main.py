@@ -1559,6 +1559,16 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     order = db.query(WhatsAppOrderIntent).filter(
         WhatsAppOrderIntent.customer_whatsapp_phone == conversation.phone_number
     ).order_by(WhatsAppOrderIntent.updated_at.desc(), WhatsAppOrderIntent.id.desc()).first()
+    sales_order = None
+    sales_order_count = 0
+    if settings.SALES_ORDERS_ENABLED:
+        sales_order_query = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter(
+            SalesOrder.crm_conversation_id == conversation.id
+        )
+        sales_order_count = sales_order_query.count()
+        sales_order = sales_order_query.order_by(
+            SalesOrder.updated_at.desc(), SalesOrder.id.desc()
+        ).first()
     message_data = [{
         "id": item.id,
         "direction": item.direction, "text": item.message_text,
@@ -1586,8 +1596,22 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
         "delivery_address": order.delivery_address, "primary_phone": order.primary_phone,
         "alternative_phone": order.alternative_phone,
     }
+    sales_order_data = None if sales_order is None else {
+        "id": sales_order.id,
+        "internal_order_number": sales_order.internal_order_number,
+        "order_status": sales_order.order_status,
+        "payment_status": sales_order.payment_status,
+        "grand_total": float(sales_order.grand_total),
+        "currency": sales_order.currency,
+        "product_count": len(sales_order.lines),
+        "conversation_order_count": sales_order_count,
+        "view_url": f"/crm/sales-orders/{sales_order.id}",
+        "edit_url": (f"/crm/whatsapp?conversation={conversation.id}&edit_order={sales_order.id}"
+                     if sales_order.order_status == "DRAFT"
+                     and "edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()) else None),
+    }
     return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
-            "order": order_data}
+            "order": order_data, "sales_order": sales_order_data}
 
 
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media")

@@ -37,12 +37,19 @@
     finally { listLoading = false; }
   }
   function detailRow(label, value) { const row = document.createElement("div"), name = document.createElement("span"), content = document.createElement("span"); row.className = "detail-row"; text(name, label); text(content, value); row.append(name, content); return row; }
+  function detailLink(label, url, primary = false) { const link = document.createElement("a"); link.className = `btn ${primary ? "btn-primary" : "btn-secondary"}`; link.href = url; text(link, label); return link; }
   function renderDetails(data) {
     const profile = document.getElementById("profile"); profile.replaceChildren(); const heading = document.createElement("h3"); text(heading, "Customer profile");
     profile.append(heading, detailRow("Name", data.conversation.customer_name), detailRow("WhatsApp", data.conversation.phone_number), detailRow("Mode", data.conversation.mode));
     const order = document.getElementById("order"); order.replaceChildren();
-    if (!data.order) { const empty = document.createElement("div"); empty.className = "empty"; text(empty, "No active order."); order.append(empty); return; }
-    const value = data.order, orderHeading = document.createElement("h3"); text(orderHeading, "Order summary"); order.append(orderHeading);
+    if (data.sales_order) {
+      const value = data.sales_order, heading = document.createElement("h3"), actions = document.createElement("div"); heading.className = "detail-title"; text(heading, "Latest sales order"); actions.className = "detail-actions";
+      order.append(heading, detailRow("Order", value.internal_order_number), detailRow("Order status", value.order_status.replaceAll("_", " ")), detailRow("Payment", value.payment_status.replaceAll("_", " ")), detailRow("Products", value.product_count), detailRow("Grand total", money(value.grand_total)));
+      actions.append(detailLink("View Order", value.view_url)); if (value.edit_url) actions.append(detailLink("Edit Draft", value.edit_url, true)); order.append(actions);
+      if (value.conversation_order_count > 1) { const note = document.createElement("small"); note.className = "detail-note"; text(note, `${value.conversation_order_count} sales orders are linked to this conversation. Showing the latest.`); order.append(note); }
+    }
+    if (!data.order) { if (!data.sales_order) { const empty = document.createElement("div"); empty.className = "empty"; text(empty, "No active order."); order.append(empty); } return; }
+    const value = data.order, orderHeading = document.createElement("h3"); text(orderHeading, "WhatsApp sales intent"); order.append(orderHeading);
     if (value.product_image_url?.startsWith("https://")) { const image = new Image(); image.className = "product-thumb"; image.alt = value.product_title; image.src = value.product_image_url; order.append(image); }
     order.append(detailRow("Product", value.product_title), detailRow("Variant", value.variant_title || "—"));
     if (value.bicycle_size) order.append(detailRow("Bicycle", `${value.bicycle_gender || ""} · age ${value.bicycle_age || "—"} · ${value.bicycle_size}\"`));
@@ -92,7 +99,7 @@
       currentConversationData = data;
       text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));
       const action = document.getElementById("mode-action"); text(action, data.conversation.mode === "AI" ? "Take Over" : "Return to AI"); action.dataset.mode = data.conversation.mode; document.getElementById("payment-banner").hidden = !data.conversation.payment_required;
-      reconcileMessages(data.messages); const nextDetailsSignature = JSON.stringify([data.conversation, data.order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
+      reconcileMessages(data.messages); const nextDetailsSignature = JSON.stringify([data.conversation, data.order, data.sales_order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
       if (markRead || switching) loadList();
     } catch (error) { if (error.name !== "AbortError" && !messages.children.length) messages.innerHTML = '<div class="empty">Conversation not found or could not be loaded.</div>'; }
     finally { if (conversationController === controller) { conversationLoading = false; conversationController = null; } }

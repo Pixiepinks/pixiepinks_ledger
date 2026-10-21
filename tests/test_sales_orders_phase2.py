@@ -106,6 +106,50 @@ def test_dashboard_detail_and_authenticated_read_api(monkeypatch):
     assert anonymous.get(f"/api/sales-orders/{created['id']}", follow_redirects=False).status_code == 303
 
 
+def test_inbox_panel_uses_latest_order_for_exact_conversation(monkeypatch):
+    monkeypatch.setattr(main.settings, "SALES_ORDERS_ENABLED", True)
+    client = client_for()
+    first = create_order(client, monkeypatch, "panel-order-one").json()["order"]
+    second = create_order(client, monkeypatch, "panel-order-two").json()["order"]
+    conversation_id = second["crm_conversation_id"]
+
+    detail = client.get(f"/crm/whatsapp/api/conversations/{conversation_id}")
+    assert detail.status_code == 200
+    panel = detail.json()["sales_order"]
+    assert panel["id"] == second["id"]
+    assert panel["internal_order_number"] == second["internal_order_number"]
+    assert panel["order_status"] == "DRAFT"
+    assert panel["payment_status"] == "UNPAID"
+    assert panel["grand_total"] == 16400.0
+    assert panel["product_count"] == 1
+    assert panel["conversation_order_count"] == 2
+    assert panel["view_url"] == f"/crm/sales-orders/{second['id']}"
+    assert panel["edit_url"].endswith(f"conversation={conversation_id}&edit_order={second['id']}")
+
+    linked = client.get("/api/sales-orders", params={"conversation_id": conversation_id}).json()
+    assert linked["total"] == 2
+    assert {item["id"] for item in linked["orders"]} == {first["id"], second["id"]}
+
+
+def test_inbox_panel_does_not_leak_another_conversations_order(monkeypatch):
+    monkeypatch.setattr(main.settings, "SALES_ORDERS_ENABLED", True)
+    client = client_for(); create_order(client, monkeypatch, "other-conversation-order")
+    with SessionLocal() as db:
+        other = WhatsAppConversation(phone_number="94770000000", customer_name="Different customer")
+        db.add(other); db.commit(); other_id = other.id
+    response = client.get(f"/crm/whatsapp/api/conversations/{other_id}")
+    assert response.status_code == 200
+    assert response.json()["sales_order"] is None
+    assert response.json()["order"] is None
+
+
+def test_order_panel_poll_signature_and_actions_include_commercial_order():
+    source = Path("static/whatsapp_inbox.js").read_text()
+    assert "[data.conversation, data.order, data.sales_order]" in source
+    assert 'detailLink("View Order", value.view_url)' in source
+    assert 'detailLink("Edit Draft", value.edit_url, true)' in source
+
+
 def test_phase_two_pages_are_disabled_by_feature_flag(monkeypatch):
     monkeypatch.setattr(main.settings, "SALES_ORDERS_ENABLED", False)
     client = client_for()
