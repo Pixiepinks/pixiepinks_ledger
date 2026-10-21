@@ -98,6 +98,29 @@ def test_decimal_calculation_handles_quantity_discounts_shipping_and_tax():
     assert totals.lines[1].quantity == Decimal("1.500")
 
 
+def test_supported_whole_and_fractional_quantities_and_totals():
+    for raw_quantity, expected_quantity, expected_total in (
+        ("1", Decimal("1.000"), Decimal("125.00")),
+        ("2", Decimal("2.000"), Decimal("250.00")),
+        ("3", Decimal("3.000"), Decimal("375.00")),
+        ("1.5", Decimal("1.500"), Decimal("187.50")),
+        ("0.001", Decimal("0.001"), Decimal("0.13")),
+    ):
+        totals = calculate_order([{"quantity": raw_quantity, "unit_price": "125.00"}])
+        assert totals.lines[0].quantity == expected_quantity
+        assert totals.grand_total == expected_total
+
+
+def test_zero_and_negative_quantities_are_rejected():
+    for invalid in ("0", "-1", "-0.001"):
+        try:
+            calculate_order([{"quantity": invalid, "unit_price": "125.00"}])
+        except SalesOrderValidationError as exc:
+            assert "quantity is outside the allowed range" in str(exc)
+        else:
+            raise AssertionError(f"invalid quantity {invalid} was accepted")
+
+
 def test_invalid_discount_is_rejected():
     bad = payload()["lines"]
     bad[0]["discount_amount"] = "3000"

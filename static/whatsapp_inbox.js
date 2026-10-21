@@ -197,7 +197,7 @@
         const row = document.createElement("article"); row.className = "order-edit-line";
         const image = new Image(); image.alt = ""; if (line.image?.startsWith("https://")) image.src = line.image;
         const info = document.createElement("div"), title = document.createElement("strong"), variant = document.createElement("span"); text(title, line.title); text(variant, `${line.variantTitle === "Default Title" ? "Standard" : line.variantTitle}${line.sku ? ` · ${line.sku}` : ""} · ${money(line.price)}`); info.append(title, variant);
-        const quantity = document.createElement("input"); quantity.type = "number"; quantity.min = "0.001"; quantity.step = "1"; quantity.value = line.quantity; quantity.setAttribute("aria-label", `Quantity for ${line.title}`); quantity.oninput = () => { line.quantity = quantity.value; calculateOrderPreview(); };
+        const quantity = document.createElement("input"); quantity.type = "number"; quantity.min = "0.001"; quantity.step = "0.001"; quantity.value = line.quantity; quantity.setAttribute("aria-label", `Quantity for ${line.title}`); quantity.oninput = () => { line.quantity = quantity.value; calculateOrderPreview(); };
         const remove = document.createElement("button"); remove.type = "button"; remove.className = "btn btn-secondary"; text(remove, "Remove"); remove.onclick = () => { orderLines.splice(index, 1); renderOrderLines(); };
         row.append(image, info, quantity, remove); orderLinesNode.append(row);
       }); calculateOrderPreview();
