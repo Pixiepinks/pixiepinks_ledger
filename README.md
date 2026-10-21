@@ -338,3 +338,43 @@ messages are rejected when the customer's 24-hour service window has expired. Th
 historical product snapshot (references, title, variant, SKU, price/currency, image URL, and storefront
 URL), not a duplicate catalogue or image binary. Existing databases receive nullable snapshot columns
 through the application's additive startup compatibility check; no destructive migration is required.
+
+## Commercial Sales Orders — Phase 1 backend
+
+Phase 1 adds a local, commercial order foundation without changing the existing WhatsApp sales-intent
+flow. It includes versioned Alembic migrations, Decimal-only totals, idempotent draft creation,
+draft updates, audited order-state transitions, CSRF-protected JSON mutations, and server-side roles.
+It deliberately does **not** create Shopify orders, move inventory, verify payments, or post journals.
+
+All new capabilities default to disabled:
+
+```text
+SALES_ORDERS_ENABLED=false
+SHOPIFY_ORDER_SYNC_ENABLED=false
+SALES_ACCOUNTING_AUTO_POST_ENABLED=false
+```
+
+`SALES_ORDERS_ENABLED` gates local draft mutations. The other two flags are reserved for later reviewed
+phases and do not enable any behavior in Phase 1. Supported sales roles are `ADMIN`, `SALES_MANAGER`,
+`SALES_AGENT`, and least-privilege `STAFF`; existing accounts receive `STAFF`, while the conventional
+`admin` account is migrated to `ADMIN`. Browser clients obtain a signed-session CSRF token from
+`GET /api/sales-orders/csrf` and supply it as `X-CSRF-Token`; creates also require an
+`Idempotency-Key`.
+
+### Migration and staging verification
+
+Back up PostgreSQL first. Restore it to staging, install dependencies, and run:
+
+```bash
+alembic upgrade head
+alembic current
+```
+
+The initial revision is additive, baselines the legacy `create_all` schema, adds `users.role`, and
+creates `sales_orders`, `sales_order_lines`, `sales_payments`, `sales_order_status_history`,
+`shopify_sync_events`, and `accounting_posting_links`. Run `alembic upgrade head` a second time to
+verify it is a no-op. Keep all flags disabled while comparing existing trial balance, income statement,
+balance sheet, customers, CRM conversations, and sales intents with the pre-migration baseline. Then
+enable only `SALES_ORDERS_ENABLED` in staging and exercise the authenticated draft APIs. Downgrade is
+intentionally non-destructive: rollback means disabling flags and deploying the prior application;
+do not drop order or audit records.

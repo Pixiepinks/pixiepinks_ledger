@@ -3,6 +3,7 @@ import hmac
 import json
 import logging
 import re
+import secrets
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import quote, urlparse
@@ -50,6 +51,7 @@ from models import (
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
     BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
+    SalesOrder,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -95,6 +97,10 @@ from bot_configuration_service import (
     recommended_size as configured_bicycle_size, restore_as_draft, save_draft,
     service_charge as configured_service_charge, validate_snapshot,
 )
+from sales_order_service import (
+    InvalidOrderTransition, SalesOrderValidationError, create_draft, transition_order, update_draft,
+)
+from migrations import upgrade_database
 
 logger = logging.getLogger(__name__)
 
@@ -1104,6 +1110,52 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
     )
 
 
+SALES_ORDER_PERMISSIONS = {
+    "ADMIN": {"create", "edit", "transition", "approve_discount", "verify_payment",
+              "dispatch", "cancel", "refund", "post_accounting", "sync_shopify"},
+    "SALES_MANAGER": {"create", "edit", "transition", "approve_discount", "dispatch", "cancel"},
+    "SALES_AGENT": {"create", "edit"},
+    "STAFF": set(),
+}
+
+
+def _require_sales_orders_enabled() -> None:
+    if not settings.SALES_ORDERS_ENABLED:
+        raise HTTPException(status_code=404, detail="Sales Orders is disabled")
+
+
+def _require_sales_permission(user: User, permission: str) -> None:
+    if permission not in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()):
+        raise HTTPException(status_code=403, detail="You are not authorized for this sales-order action")
+
+
+def _csrf_token(request: Request) -> str:
+    token = request.session.get("csrf_token")
+    if not isinstance(token, str) or len(token) < 32:
+        token = secrets.token_urlsafe(32)
+        request.session["csrf_token"] = token
+    return token
+
+
+def _require_csrf(request: Request) -> None:
+    supplied = request.headers.get("X-CSRF-Token", "")
+    expected = request.session.get("csrf_token", "")
+    if not supplied or not expected or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+
+def _sales_payload_has_discount(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    values = [payload.get("order_discount", 0)]
+    values.extend(line.get("discount_amount", 0) for line in payload.get("lines", [])
+                  if isinstance(line, dict))
+    try:
+        return any(Decimal(str(value or 0)) != 0 for value in values)
+    except Exception:
+        return True
+
+
 def _bot_page_context(request: Request, db: Session, active: str, **extra) -> dict:
     config = ensure_configuration(db)
     draft, _ = get_snapshot(db, draft=True)
@@ -1150,13 +1202,16 @@ def startup():
     else:
         Base.metadata.create_all(bind=engine)
 
+    upgrade_database()
+
     ensure_item_sku_column()
     ensure_whatsapp_inbox_columns()
     init_db()
 
     with SessionLocal() as db:
-        if not db.query(User).filter_by(username="admin").first():
-            db.add(User(username="admin", password_hash=hash_password("change-me")))
+        admin = db.query(User).filter_by(username="admin").first()
+        if not admin:
+            db.add(User(username="admin", password_hash=hash_password("change-me"), role="ADMIN"))
             db.commit()
 
 
@@ -1807,6 +1862,86 @@ def crm_orders(request: Request, status_filter: str = "active", db: Session = De
     orders = query.order_by(WhatsAppOrderIntent.updated_at.desc()).limit(200).all()
     return templates.TemplateResponse("crm_orders.html", {"request": request, "orders": orders,
         "status_filter": status_filter, "page_title": "Orders / Sales Intents", "user": user})
+
+
+def _sales_order_payload(order: SalesOrder) -> dict:
+    return {
+        "id": order.id, "internal_order_number": order.internal_order_number,
+        "customer_name": order.customer_name, "whatsapp_phone": order.whatsapp_phone,
+        "order_status": order.order_status, "payment_status": order.payment_status,
+        "fulfillment_status": order.fulfillment_status,
+        "shopify_sync_status": order.shopify_sync_status,
+        "subtotal": str(order.subtotal), "discount_total": str(order.discount_total),
+        "shipping_total": str(order.shipping_total), "tax_total": str(order.tax_total),
+        "grand_total": str(order.grand_total), "currency": order.currency,
+        "lines": [{"id": line.id, "shopify_product_id": line.shopify_product_id,
+                   "shopify_variant_id": line.shopify_variant_id, "sku": line.sku,
+                   "product_name": line.product_name_snapshot,
+                   "variant_name": line.variant_name_snapshot, "quantity": str(line.quantity),
+                   "unit_price": str(line.unit_price), "discount_amount": str(line.discount_amount),
+                   "tax_amount": str(line.tax_amount), "line_total": str(line.line_total)}
+                  for line in order.lines],
+    }
+
+
+@app.get("/api/sales-orders/config")
+def sales_order_config(user: User = Depends(require_user)):
+    return {"sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
+            "shopify_order_sync_enabled": settings.SHOPIFY_ORDER_SYNC_ENABLED,
+            "sales_accounting_auto_post_enabled": settings.SALES_ACCOUNTING_AUTO_POST_ENABLED,
+            "role": user.role or "STAFF"}
+
+
+@app.get("/api/sales-orders/csrf")
+def sales_order_csrf(request: Request, user: User = Depends(require_user)):
+    _require_sales_orders_enabled()
+    return {"csrf_token": _csrf_token(request)}
+
+
+@app.post("/api/sales-orders", status_code=201)
+async def create_sales_order(request: Request, db: Session = Depends(get_db),
+                             user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_sales_permission(user, "create"); _require_csrf(request)
+    key = request.headers.get("Idempotency-Key", "").strip()
+    try: payload = await request.json()
+    except ValueError: raise HTTPException(400, "Invalid JSON") from None
+    if _sales_payload_has_discount(payload):
+        _require_sales_permission(user, "approve_discount")
+    try:
+        order, created = create_draft(db, payload, user.username, key)
+    except SalesOrderValidationError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return JSONResponse({"created": created, "order": _sales_order_payload(order)},
+                        status_code=201 if created else 200)
+
+
+@app.put("/api/sales-orders/{order_id}")
+async def update_sales_order(order_id: int, request: Request, db: Session = Depends(get_db),
+                             user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_sales_permission(user, "edit"); _require_csrf(request)
+    order = db.get(SalesOrder, order_id)
+    if not order: raise HTTPException(404, "Sales order not found")
+    try: payload = await request.json()
+    except ValueError: raise HTTPException(400, "Invalid JSON") from None
+    if _sales_payload_has_discount(payload):
+        _require_sales_permission(user, "approve_discount")
+    try: order = update_draft(db, order, payload, user.username)
+    except SalesOrderValidationError as exc: raise HTTPException(422, str(exc)) from None
+    return {"order": _sales_order_payload(order)}
+
+
+@app.post("/api/sales-orders/{order_id}/transition")
+async def transition_sales_order(order_id: int, request: Request, db: Session = Depends(get_db),
+                                 user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_sales_permission(user, "transition"); _require_csrf(request)
+    order = db.get(SalesOrder, order_id)
+    if not order: raise HTTPException(404, "Sales order not found")
+    try: payload = await request.json()
+    except ValueError: raise HTTPException(400, "Invalid JSON") from None
+    if not isinstance(payload, dict): raise HTTPException(400, "Invalid request")
+    try: order = transition_order(db, order, payload.get("status"), user.username, payload.get("reason"))
+    except InvalidOrderTransition as exc: raise HTTPException(409, str(exc)) from None
+    return {"order": _sales_order_payload(order)}
 
 
 @app.get("/crm/bot-management", response_class=HTMLResponse)
