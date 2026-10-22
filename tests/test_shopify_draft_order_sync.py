@@ -124,6 +124,66 @@ def test_catalog_preflight_requests_variant_taxability():
     assert "sku price taxable availableForSale" in INBOX_PRODUCT_PICKER_QUERY
 
 
+def test_admin_draft_preflight_accepts_unpublished_variant_with_inventory(monkeypatch):
+    """Storefront availability must not reject a valid Admin Draft Order line."""
+    response = {"products": {"nodes": [{
+        "id": "gid://shopify/Product/1", "title": "Halloween Party Shaker Pen",
+        "handle": "halloween-party-shaker-pen", "status": "ACTIVE", "publishedAt": None,
+        "featuredImage": {"url": "https://cdn.shopify.com/pen.jpg"},
+        "variants": {"nodes": [{
+            "id": "gid://shopify/ProductVariant/11", "title": "Default Title",
+            "sku": "5007438", "price": "350.00", "taxable": True,
+            "availableForSale": False, "inventoryQuantity": 21,
+            "inventoryItem": {"tracked": True}, "image": None,
+        }]},
+    }]}}
+
+    class Catalog:
+        def graphql(self, *_):
+            return response
+
+    from shopify_catalog_service import resolve_inbox_product
+    resolved = resolve_inbox_product(
+        "gid://shopify/Product/1", "gid://shopify/ProductVariant/11", Catalog(), False)
+    assert resolved["available"] is False
+    assert resolved["published"] is False
+    assert resolved["inventory_quantity"] == 21
+    assert resolve_inbox_product(
+        "gid://shopify/Product/1", "gid://shopify/ProductVariant/11", Catalog()) is None
+
+    def admin_resolver(product_id, variant_id, _client, require_storefront):
+        assert require_storefront is False
+        return resolved
+
+    monkeypatch.setattr(sync, "resolve_inbox_product", admin_resolver)
+    with SessionLocal() as db:
+        draft = order(db)
+        draft.lines[0].product_name_snapshot = "Halloween Party Shaker Pen"
+        draft.lines[0].sku = "5007438"
+        draft.lines[0].unit_price = Decimal("350.00")
+        draft.lines[0].line_total = Decimal("350.00")
+        draft.subtotal = draft.grand_total = Decimal("350.00")
+        db.commit()
+        payload = sync._shopify_input(draft)
+        assert payload["lineItems"] == [{
+            "variantId": "gid://shopify/ProductVariant/11", "quantity": 1}]
+
+
+def test_admin_draft_preflight_rejects_insufficient_tracked_inventory(monkeypatch):
+    def insufficient(*_):
+        return {"id": "gid://shopify/Product/1",
+                "variant_id": "gid://shopify/ProductVariant/11",
+                "title": "Bicycle", "price": Decimal("1000.00"),
+                "available": False, "taxable": True,
+                "inventory_tracked": True, "inventory_quantity": 0}
+
+    monkeypatch.setattr(sync, "resolve_inbox_product", insufficient)
+    with SessionLocal() as db:
+        draft = order(db)
+        with pytest.raises(sync.ShopifyDraftSyncError, match="insufficient Shopify inventory"):
+            sync._shopify_input(draft)
+
+
 def test_duplicate_and_concurrent_requests_do_not_create_again(monkeypatch):
     monkeypatch.setattr(sync, "resolve_inbox_product", available)
     with SessionLocal() as db:

@@ -341,8 +341,15 @@ def search_products_for_inbox(query: str, limit: int = 20, cursor: str | None = 
 
 
 def resolve_inbox_product(product_id: str, variant_id: str,
-                          catalog_client: ShopifyCatalogClient | None = None) -> dict | None:
-    """Resolve an exact browser selection again from Shopify before it is sent."""
+                          catalog_client: ShopifyCatalogClient | None = None,
+                          require_storefront_availability: bool = True) -> dict | None:
+    """Resolve an exact selection from Shopify.
+
+    Customer-facing product messages require publication and storefront purchase
+    availability.  Admin Draft Orders do not: an active, valid variant may be
+    added through Admin even when it is not published to the Online Store.  The
+    caller must separately enforce tracked inventory for the requested quantity.
+    """
     if not re.fullmatch(r"gid://shopify/Product/\d+", str(product_id or "")):
         return None
     if not re.fullmatch(r"gid://shopify/ProductVariant/\d+", str(variant_id or "")):
@@ -359,8 +366,10 @@ def resolve_inbox_product(product_id: str, variant_id: str,
     node = nodes[0]
     variant = next((item for item in (node.get("variants") or {}).get("nodes", [])
                     if item.get("id") == variant_id), None)
-    if (node.get("status") != "ACTIVE" or not node.get("publishedAt")
-            or not variant or not variant.get("availableForSale")):
+    if node.get("status") != "ACTIVE" or not variant:
+        return None
+    if require_storefront_availability and (
+            not node.get("publishedAt") or not variant.get("availableForSale")):
         return None
     try:
         price = Decimal(str(variant.get("price"))).quantize(Decimal("0.01"))
@@ -368,13 +377,20 @@ def resolve_inbox_product(product_id: str, variant_id: str,
         return None
     handle = node.get("handle")
     image = (variant.get("image") or {}).get("url") or (node.get("featuredImage") or {}).get("url")
-    if not handle or not isinstance(image, str) or not image.startswith("https://"):
+    if require_storefront_availability and (
+            not handle or not isinstance(image, str) or not image.startswith("https://")):
         return None
+    tracked = bool((variant.get("inventoryItem") or {}).get("tracked"))
     return {"id": product_id, "variant_id": variant_id, "handle": handle,
             "title": node.get("title"), "variant_title": variant.get("title"),
             "sku": variant.get("sku") or "", "price": price, "currency": "LKR",
             "taxable": bool(variant.get("taxable")),
-            "image": image, "url": f"{STOREFRONT_ROOT}/products/{handle}"}
+            "available": bool(variant.get("availableForSale")),
+            "inventory_tracked": tracked,
+            "inventory_quantity": variant.get("inventoryQuantity") if tracked else None,
+            "published": bool(node.get("publishedAt")),
+            "image": image,
+            "url": f"{STOREFRONT_ROOT}/products/{handle}" if handle else None}
 
 
 def resolve_products_for_management(handles: list[str],

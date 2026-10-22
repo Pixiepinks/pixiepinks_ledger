@@ -185,11 +185,20 @@ def _shopify_input(order: SalesOrder) -> dict:
         if quantity != quantity.to_integral_value() or quantity <= 0:
             raise ShopifyDraftSyncError("Shopify Draft Orders require whole-number product quantities")
         try:
-            current = resolve_inbox_product(line.shopify_product_id, line.shopify_variant_id)
+            current = resolve_inbox_product(
+                line.shopify_product_id, line.shopify_variant_id, None, False)
         except ShopifyCatalogError as exc:
             raise ShopifyDraftSyncError(str(exc), status_code=503) from None
-        if not current or not current.get("available"):
+        if not current:
             raise ShopifyDraftSyncError(f"{line.product_name_snapshot} is no longer available")
+        if current.get("inventory_tracked"):
+            inventory_quantity = current.get("inventory_quantity")
+            if inventory_quantity is None:
+                raise ShopifyDraftSyncError(
+                    f"Inventory for {line.product_name_snapshot} could not be verified")
+            if Decimal(str(inventory_quantity)) < quantity:
+                raise ShopifyDraftSyncError(
+                    f"{line.product_name_snapshot} has insufficient Shopify inventory")
         if _money(current.get("price")) != _money(line.unit_price):
             raise ShopifyDraftSyncError(
                 f"The Shopify price for {line.product_name_snapshot} changed; update the Ledger draft first")
