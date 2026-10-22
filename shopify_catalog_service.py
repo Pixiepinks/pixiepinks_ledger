@@ -121,11 +121,34 @@ query SearchProducts($first: Int!, $query: String!) {
   products(first: $first, query: $query, sortKey: RELEVANCE) {
     nodes { id title handle productType vendor tags status
       featuredImage { url }
-      variants(first: 50) { nodes { id title sku price availableForSale
+      variants(first: 50) { nodes { id title sku price taxable availableForSale
         inventoryQuantity inventoryItem { tracked }
         selectedOptions { name value }
       } }
     }
+  }
+}
+"""
+
+# The management picker intentionally requests no variants.  It needs identity and
+# presentation metadata only, and must remain cheap even for a large catalogue.
+PRODUCT_PICKER_QUERY = """
+query ProductPicker($first: Int!, $query: String!, $after: String) {
+  products(first: $first, query: $query, after: $after, sortKey: RELEVANCE) {
+    nodes { id title handle productType vendor status featuredImage { url } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+INBOX_PRODUCT_PICKER_QUERY = """
+query InboxProductPicker($first: Int!, $query: String!, $after: String) {
+  products(first: $first, query: $query, after: $after, sortKey: RELEVANCE) {
+    nodes { id title handle productType vendor tags status publishedAt featuredImage { url }
+      variants(first: 50) { nodes { id title sku price taxable availableForSale
+        image { url } inventoryQuantity inventoryItem { tracked } } }
+    }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """
@@ -184,6 +207,14 @@ query BicycleCollectionDiagnostic($first: Int!) {
 }
 """
 
+COLLECTION_BROWSER_QUERY = """
+query CollectionBrowser($first: Int!, $query: String!) {
+  collections(first: $first, query: $query, sortKey: TITLE) {
+    nodes { id title handle productsCount { count } }
+  }
+}
+"""
+
 
 def parse_filters(query: str) -> dict:
     text = query.casefold()
@@ -215,6 +246,171 @@ def parse_filters(query: str) -> dict:
         "size": next((group for group in size.groups() if group), None) if size else None,
         "colour": colour,
     }
+
+
+def discover_collections(query: str = "", limit: int = 100,
+                         catalog_client: ShopifyCatalogClient | None = None) -> list[dict]:
+    """Read current collection metadata for the management browser; never mutates Shopify."""
+    client = catalog_client or ShopifyCatalogClient()
+    data = client.graphql(COLLECTION_BROWSER_QUERY,
+                          {"first": max(1, min(int(limit), 100)), "query": query.strip()})
+    return [{"id": node.get("id"), "title": node.get("title"),
+             "handle": node.get("handle"),
+             "product_count": (node.get("productsCount") or {}).get("count")}
+            for node in (data.get("collections") or {}).get("nodes", [])]
+
+
+def search_products_for_management(query: str, limit: int = 20, cursor: str | None = None,
+                                   catalog_client: ShopifyCatalogClient | None = None) -> dict:
+    """Return one cursor-paginated page for the read-only staff product picker."""
+    query = str(query or "").strip()
+    safe_query = " ".join(re.sub(r"[^\w\s\-']+", " ", query,
+                                 flags=re.UNICODE).split())
+    shopify_query = f"title:{safe_query}*" if safe_query else ""
+    client_instance = catalog_client or ShopifyCatalogClient()
+    data = client_instance.graphql(PRODUCT_PICKER_QUERY, {
+        "first": min(max(int(limit), 1), 25), "query": shopify_query,
+        "after": cursor or None,
+    })
+    connection = data.get("products") or {}
+    products = []
+    for node in connection.get("nodes", []):
+        handle = node.get("handle")
+        if not handle:
+            continue
+        products.append({
+            "id": node.get("id"), "handle": handle, "title": node.get("title"),
+            "vendor": node.get("vendor"), "product_type": node.get("productType"),
+            "featured_image": (node.get("featuredImage") or {}).get("url"),
+            "status": node.get("status"),
+        })
+    page_info = connection.get("pageInfo") or {}
+    return {"products": products, "next_cursor": page_info.get("endCursor"),
+            "has_next_page": bool(page_info.get("hasNextPage"))}
+
+
+def search_products_for_inbox(query: str, limit: int = 20, cursor: str | None = None,
+                              catalog_client: ShopifyCatalogClient | None = None) -> dict:
+    """Return current sellable product/variant data for the authenticated inbox picker."""
+    safe = " ".join(re.sub(r"[^\w\s\-']+", " ", str(query or ""), flags=re.UNICODE).split())
+    if safe:
+        terms = safe.split()[:5]
+        shopify_query = " AND ".join(
+            "(" + " OR ".join(f"{field}:{term}*" for field in (*SEARCH_FIELDS, "sku")) + ")"
+            for term in terms
+        )
+    else:
+        shopify_query = "status:active"
+    client_instance = catalog_client or ShopifyCatalogClient()
+    data = client_instance.graphql(INBOX_PRODUCT_PICKER_QUERY, {
+        "first": min(max(int(limit), 1), 25), "query": shopify_query,
+        "after": cursor or None,
+    })
+    connection = data.get("products") or {}
+    products = []
+    for node in connection.get("nodes", []):
+        handle = node.get("handle")
+        if not handle:
+            continue
+        variants = []
+        for variant in (node.get("variants") or {}).get("nodes", []):
+            try:
+                price = str(Decimal(str(variant.get("price"))).quantize(Decimal("0.01")))
+            except (InvalidOperation, TypeError):
+                continue
+            tracked = bool((variant.get("inventoryItem") or {}).get("tracked"))
+            variants.append({
+                "id": variant.get("id"), "title": variant.get("title"),
+                "sku": variant.get("sku") or "", "price": price,
+                "available": bool(variant.get("availableForSale")),
+                "inventory_quantity": variant.get("inventoryQuantity") if tracked else None,
+                "image": (variant.get("image") or {}).get("url")
+                         or (node.get("featuredImage") or {}).get("url"),
+            })
+        products.append({
+            "id": node.get("id"), "handle": handle, "title": node.get("title"),
+            "vendor": node.get("vendor"), "product_type": node.get("productType"),
+            "status": node.get("status"), "published": bool(node.get("publishedAt")),
+            "image": (node.get("featuredImage") or {}).get("url"),
+            "url": f"{STOREFRONT_ROOT}/products/{handle}", "currency": "LKR",
+            "variants": variants,
+        })
+    page_info = connection.get("pageInfo") or {}
+    return {"products": products, "next_cursor": page_info.get("endCursor"),
+            "has_next_page": bool(page_info.get("hasNextPage"))}
+
+
+def resolve_inbox_product(product_id: str, variant_id: str,
+                          catalog_client: ShopifyCatalogClient | None = None) -> dict | None:
+    """Resolve an exact browser selection again from Shopify before it is sent."""
+    if not re.fullmatch(r"gid://shopify/Product/\d+", str(product_id or "")):
+        return None
+    if not re.fullmatch(r"gid://shopify/ProductVariant/\d+", str(variant_id or "")):
+        return None
+    client_instance = catalog_client or ShopifyCatalogClient()
+    data = client_instance.graphql(INBOX_PRODUCT_PICKER_QUERY, {
+        "first": 1, "query": f"id:{product_id.rsplit('/', 1)[-1]}", "after": None,
+    })
+    page = data.get("products") or {}
+    # Normalize the returned node through the same public shape without a second request.
+    nodes = page.get("nodes") or []
+    if not nodes or nodes[0].get("id") != product_id:
+        return None
+    node = nodes[0]
+    variant = next((item for item in (node.get("variants") or {}).get("nodes", [])
+                    if item.get("id") == variant_id), None)
+    if (node.get("status") != "ACTIVE" or not node.get("publishedAt")
+            or not variant or not variant.get("availableForSale")):
+        return None
+    try:
+        price = Decimal(str(variant.get("price"))).quantize(Decimal("0.01"))
+    except (InvalidOperation, TypeError):
+        return None
+    handle = node.get("handle")
+    image = (variant.get("image") or {}).get("url") or (node.get("featuredImage") or {}).get("url")
+    if not handle or not isinstance(image, str) or not image.startswith("https://"):
+        return None
+    return {"id": product_id, "variant_id": variant_id, "handle": handle,
+            "title": node.get("title"), "variant_title": variant.get("title"),
+            "sku": variant.get("sku") or "", "price": price, "currency": "LKR",
+            "taxable": bool(variant.get("taxable")),
+            "image": image, "url": f"{STOREFRONT_ROOT}/products/{handle}"}
+
+
+def resolve_products_for_management(handles: list[str],
+                                    catalog_client: ShopifyCatalogClient | None = None) -> dict[str, dict]:
+    """Resolve a bounded group of saved handles so edit screens show current Shopify titles."""
+    unique = list(dict.fromkeys(handle.strip() for handle in handles if handle.strip()))[:25]
+    if not unique:
+        return {}
+    query = " OR ".join(f"handle:{re.sub(r'[^a-zA-Z0-9_-]', '', handle)}" for handle in unique)
+    client_instance = catalog_client or ShopifyCatalogClient()
+    data = client_instance.graphql(PRODUCT_PICKER_QUERY, {
+        "first": len(unique), "query": query, "after": None})
+    products = {}
+    for node in (data.get("products") or {}).get("nodes", []):
+        handle = node.get("handle")
+        if handle in unique:
+            products[handle] = {"id": node.get("id"), "handle": handle,
+                "title": node.get("title"), "vendor": node.get("vendor"),
+                "product_type": node.get("productType"), "status": node.get("status"),
+                "featured_image": (node.get("featuredImage") or {}).get("url")}
+    return products
+
+
+def products_for_collection(collection_id: str, query: str = "", limit: int = 20) -> list[dict]:
+    """Read a bounded set of products for a verified cached collection ID."""
+    collection = {"id": collection_id, "title": None, "handle": None}
+    data = client.graphql(COLLECTION_PRODUCTS_QUERY,
+                          {"id": collection_id, "first": min(max(limit, 1), 20)})
+    resolved = data.get("collection") or {}
+    terms = parse_search_intent(query).get("terms", []) if query else []
+    result = []
+    for node in resolved.get("products", {}).get("nodes", []):
+        if terms and not _matches_product_terms(node, terms): continue
+        product = _normalize_product(node, parse_filters(""))
+        if product: result.append(product)
+    return result[:limit]
 
 
 def parse_search_intent(text: str) -> dict:
