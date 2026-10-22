@@ -107,6 +107,45 @@ def _safe_error(exc: Exception) -> str:
                 "Shopify synchronization failed")
 
 
+def _safe_user_error(errors: list[dict]) -> str:
+    """Summarize Shopify validation errors without echoing customer input."""
+    fields = []
+    reasons = []
+    for item in errors[:5]:
+        raw_field = item.get("field")
+        field = (".".join(str(part) for part in raw_field)
+                 if isinstance(raw_field, list) else str(raw_field or "input"))
+        field = re.sub(r"[^A-Za-z0-9_.\[\]-]", "", field)[:120] or "input"
+        if field not in fields:
+            fields.append(field)
+        message = str(item.get("message") or "").casefold()
+        context = f"{field.casefold()} {message}"
+        if "phone" in context:
+            reason = "phone number format is invalid"
+        elif any(word in context for word in ("address", "country", "province", "postal", "zip")):
+            reason = "delivery address is invalid"
+        elif any(word in context for word in ("variant", "line item", "lineitem")):
+            reason = "product variant or line item is invalid"
+        elif "quantity" in context:
+            reason = "quantity is invalid"
+        elif "currency" in context:
+            reason = "currency is invalid"
+        elif "discount" in context:
+            reason = "discount is invalid"
+        elif "shipping" in context:
+            reason = "shipping information is invalid"
+        elif "tax" in context:
+            reason = "tax information is invalid"
+        elif "price" in context or "amount" in context:
+            reason = "price or amount is invalid"
+        else:
+            reason = "value was rejected"
+        if reason not in reasons:
+            reasons.append(reason)
+    return (f"Shopify rejected {', '.join(fields) or 'input'}: "
+            f"{'; '.join(reasons) or 'value was rejected'}")
+
+
 def _fixed_discount(discount: Decimal, title: str, reference: str) -> dict:
     """Return the 2026-07 DraftOrderAppliedDiscountInput fixed-amount shape."""
     if discount <= 0:
@@ -417,7 +456,7 @@ def create_shopify_draft(db: Session, order: SalesOrder, actor: str,
                 message = " ".join(str(item.get("message", "")) for item in errors).casefold()
                 if "access" in message or "permission" in message or "scope" in message:
                     raise ShopifyDraftSyncError("Shopify permission is missing; grant write_draft_orders")
-                raise ShopifyDraftSyncError("Shopify Draft Order creation was rejected")
+                raise ShopifyDraftSyncError(_safe_user_error(errors), status_code=422)
             draft, created = result.get("draftOrder"), True
             if not draft or not draft.get("id"):
                 raise ShopifyOutcomeUncertain("Shopify did not return a Draft Order reference")

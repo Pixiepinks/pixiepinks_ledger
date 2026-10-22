@@ -448,7 +448,7 @@ def test_invalid_local_order_is_rejected_before_shopify_write(change, message):
         assert db.query(ShopifySyncEvent).filter_by(sales_order_id=draft.id).count() == 0
 
 
-def test_graphql_user_errors_are_sanitized_and_safe_to_retry(monkeypatch):
+def test_graphql_user_errors_are_classified_persisted_and_safe_to_retry(monkeypatch):
     monkeypatch.setattr(sync, "resolve_inbox_product", available)
 
     class UserErrorShopify(FakeShopify):
@@ -460,11 +460,26 @@ def test_graphql_user_errors_are_sanitized_and_safe_to_retry(monkeypatch):
 
     with SessionLocal() as db:
         draft = order(db)
-        with pytest.raises(sync.ShopifyDraftSyncError, match="creation was rejected"):
+        with pytest.raises(sync.ShopifyDraftSyncError, match="lineItems.*product variant"):
             sync.create_shopify_draft(db, draft, "sync-admin", UserErrorShopify())
         db.refresh(draft)
         assert draft.shopify_sync_status == "SYNC_FAILED"
         assert "secret-detail" not in (draft.shopify_sync_error or "")
+        assert draft.shopify_sync_error == (
+            "Shopify rejected lineItems: product variant or line item is invalid")
+        event = db.query(ShopifySyncEvent).filter_by(sales_order_id=draft.id).one()
+        assert event.status == "SYNC_FAILED"
+        assert event.error_summary == draft.shopify_sync_error
+
+
+def test_shipping_phone_user_error_is_actionable_without_echoing_customer_data():
+    message = sync._safe_user_error([{
+        "field": ["input", "shippingAddress", "phone"],
+        "message": "Phone +94771234567 is invalid",
+    }])
+    assert message == (
+        "Shopify rejected input.shippingAddress.phone: phone number format is invalid")
+    assert "94771234567" not in message
 
 
 def test_sync_has_no_payment_inventory_or_accounting_side_effects(monkeypatch):
