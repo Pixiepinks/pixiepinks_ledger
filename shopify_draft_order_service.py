@@ -23,6 +23,9 @@ REFRESH_EVENT = "DRAFT_ORDER_REFRESH"
 ELIGIBLE_ORDER_STATUSES = {"DRAFT", "AWAITING_CUSTOMER_CONFIRMATION", "AWAITING_PAYMENT", "CONFIRMED"}
 CLAIM_LEASE_SECONDS = 300
 DRAFT_ORDER_GID = re.compile(r"^gid://shopify/DraftOrder/([0-9]+)$")
+PRODUCT_GID = re.compile(r"^gid://shopify/Product/[0-9]+$")
+VARIANT_GID = re.compile(r"^gid://shopify/ProductVariant/[0-9]+$")
+PHONE = re.compile(r"^[0-9]{10,15}$")
 
 
 class ShopifyDraftSyncError(RuntimeError):
@@ -117,11 +120,63 @@ def _fixed_discount(discount: Decimal, title: str, reference: str) -> dict:
     }
 
 
-def _shopify_input(order: SalesOrder) -> dict:
-    if order.order_status not in ELIGIBLE_ORDER_STATUSES:
-        raise ShopifyDraftSyncError(f"An order in {order.order_status} cannot be synchronized")
+def _validate_local_order(order: SalesOrder) -> None:
+    """Reject incomplete or internally inconsistent Ledger snapshots before any remote write."""
+    required = {
+        "customer name": order.customer_name,
+        "WhatsApp phone": order.whatsapp_phone,
+        "delivery contact": order.delivery_contact_person,
+        "delivery address": order.delivery_address,
+        "city": order.city,
+        "district": order.district,
+    }
+    missing = [name for name, value in required.items() if not str(value or "").strip()]
+    if missing:
+        raise ShopifyDraftSyncError(
+            "Complete the following Ledger order fields before synchronizing: " + ", ".join(missing))
+    if not PHONE.fullmatch(str(order.whatsapp_phone)):
+        raise ShopifyDraftSyncError("The Ledger order has an invalid WhatsApp phone number")
+    if order.currency != "LKR":
+        raise ShopifyDraftSyncError("Shopify Draft synchronization currently supports LKR orders only")
     if not order.lines:
         raise ShopifyDraftSyncError("The order has no products")
+
+    subtotal = line_discounts = Decimal("0.00")
+    for line in order.lines:
+        if not PRODUCT_GID.fullmatch(str(line.shopify_product_id or "")):
+            raise ShopifyDraftSyncError("A line has an invalid Shopify product reference")
+        if not VARIANT_GID.fullmatch(str(line.shopify_variant_id or "")):
+            raise ShopifyDraftSyncError("A line has an invalid Shopify variant reference")
+        quantity = Decimal(str(line.quantity))
+        if quantity != quantity.to_integral_value() or quantity <= 0:
+            raise ShopifyDraftSyncError("Shopify Draft Orders require whole-number product quantities")
+        unit_price = _money(line.unit_price)
+        discount = _money(line.discount_amount)
+        line_tax = _money(line.tax_amount)
+        gross = (quantity * unit_price).quantize(Decimal("0.01"))
+        if unit_price < 0 or discount < 0 or discount > gross or line_tax < 0:
+            raise ShopifyDraftSyncError("A Ledger order line contains invalid financial values")
+        if _money(line.line_total) != gross - discount + line_tax:
+            raise ShopifyDraftSyncError("A Ledger order line total is inconsistent")
+        subtotal += gross
+        line_discounts += discount
+
+    discount_total = _money(order.discount_total)
+    shipping_total = _money(order.shipping_total)
+    tax_total = _money(order.tax_total)
+    if discount_total < line_discounts or discount_total > subtotal:
+        raise ShopifyDraftSyncError("Ledger discount totals are inconsistent")
+    if shipping_total < 0 or tax_total < 0:
+        raise ShopifyDraftSyncError("Ledger shipping and tax totals cannot be negative")
+    expected_total = (subtotal - discount_total + shipping_total + tax_total).quantize(Decimal("0.01"))
+    if _money(order.subtotal) != subtotal or _money(order.grand_total) != expected_total:
+        raise ShopifyDraftSyncError("Ledger order totals are inconsistent; edit and save the draft first")
+
+
+def _shopify_input(order: SalesOrder) -> dict:
+    _validate_local_order(order)
+    if order.order_status not in ELIGIBLE_ORDER_STATUSES:
+        raise ShopifyDraftSyncError(f"An order in {order.order_status} cannot be synchronized")
     line_items = []
     line_discount_total = Decimal("0.00")
     has_taxable_product = False
@@ -265,6 +320,9 @@ def create_shopify_draft(db: Session, order: SalesOrder, actor: str,
     client = client or ShopifyCatalogClient()
     if order.shopify_draft_order_id:
         return order, False
+    _validate_local_order(order)
+    if order.order_status not in ELIGIBLE_ORDER_STATUSES:
+        raise ShopifyDraftSyncError(f"An order in {order.order_status} cannot be synchronized")
     key = _operation_key(order)
     event = db.query(ShopifySyncEvent).filter_by(idempotency_key=key).one_or_none()
     if event and event.status in {"RECONCILIATION_REQUIRED", "UNCERTAIN"}:

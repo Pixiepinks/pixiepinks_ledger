@@ -103,7 +103,7 @@ from sales_order_service import (
 )
 from migrations import upgrade_database
 from shopify_draft_order_service import (
-    ShopifyDraftSyncError, create_shopify_draft, refresh_shopify_draft,
+    ELIGIBLE_ORDER_STATUSES, ShopifyDraftSyncError, create_shopify_draft, refresh_shopify_draft,
     shopify_admin_draft_url,
 )
 
@@ -1122,6 +1122,8 @@ SALES_ORDER_PERMISSIONS = {
     "SALES_AGENT": {"create", "edit"},
     "STAFF": set(),
 }
+SHOPIFY_SYNC_LABELS = {"NOT_SYNCED": "Not Synced", "SYNCING": "Syncing", "SYNCED": "Synced",
+                       "SYNC_FAILED": "Failed", "RECONCILIATION_REQUIRED": "Needs Reconciliation"}
 
 
 def _require_sales_orders_enabled() -> None:
@@ -1926,6 +1928,7 @@ def sales_orders_page(request: Request, q: str = "", status_filter: str = "", sy
         "date_to": date_to, "sort": sort, "page": page, "page_size": page_size, "total": total,
         "statuses": sorted(ORDER_STATUSES),
         "sync_statuses": ["NOT_SYNCED", "SYNCING", "SYNCED", "SYNC_FAILED", "RECONCILIATION_REQUIRED"],
+        "sync_labels": SHOPIFY_SYNC_LABELS,
         "user": user})
 
 
@@ -1941,11 +1944,20 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
                 and order.order_status == "DRAFT" and not order.shopify_draft_order_id)
     can_sync = (settings.SHOPIFY_ORDER_SYNC_ENABLED
                 and "sync_shopify" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()))
+    can_create_sync = (can_sync and not order.shopify_draft_order_id
+                       and order.order_status in ELIGIBLE_ORDER_STATUSES
+                       and order.shopify_sync_status in {"NOT_SYNCED", "SYNC_FAILED"})
+    can_reconcile_sync = (can_sync and not order.shopify_draft_order_id
+                          and order.shopify_sync_status == "RECONCILIATION_REQUIRED")
     sync_events = db.query(ShopifySyncEvent).filter_by(sales_order_id=order.id).order_by(
         ShopifySyncEvent.created_at.desc(), ShopifySyncEvent.id.desc()).limit(20).all()
     return templates.TemplateResponse("sales_order_detail.html", {"request": request,
         "page_title": order.internal_order_number, "order": order, "history": history,
-        "can_edit": can_edit, "can_sync": can_sync, "csrf_token": _csrf_token(request),
+        "can_edit": can_edit, "can_sync": can_sync, "can_create_sync": can_create_sync,
+        "can_reconcile_sync": can_reconcile_sync,
+        "sync_label": SHOPIFY_SYNC_LABELS.get(
+            order.shopify_sync_status, order.shopify_sync_status.replace("_", " ").title()),
+        "csrf_token": _csrf_token(request),
         "shopify_admin_url": shopify_admin_draft_url(order, settings.SHOPIFY_SHOP),
         "sync_events": sync_events, "user": user})
 

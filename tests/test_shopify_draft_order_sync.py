@@ -12,7 +12,7 @@ import main
 import shopify_draft_order_service as sync
 from database import Base, SessionLocal, engine
 from migrations import upgrade_database
-from models import SalesOrder, SalesOrderLine, ShopifySyncEvent, User
+from models import Item, JournalEntry, SalesOrder, SalesOrderLine, ShopifySyncEvent, User
 from sales_order_service import create_draft
 from utils_auth import hash_password
 
@@ -368,6 +368,59 @@ def test_invalid_remote_draft_gid_is_not_persisted(monkeypatch):
         assert draft.shopify_sync_status == "RECONCILIATION_REQUIRED"
 
 
+@pytest.mark.parametrize(("change", "message"), [
+    (lambda draft: setattr(draft.lines[0], "shopify_variant_id", "variant-11"), "variant reference"),
+    (lambda draft: setattr(draft.lines[0], "quantity", Decimal("0")), "whole-number"),
+    (lambda draft: setattr(draft.lines[0], "quantity", Decimal("1.5")), "whole-number"),
+    (lambda draft: setattr(draft, "customer_name", ""), "customer name"),
+    (lambda draft: setattr(draft, "delivery_address", None), "delivery address"),
+    (lambda draft: setattr(draft, "currency", "USD"), "LKR"),
+    (lambda draft: setattr(draft, "grand_total", Decimal("999.00")), "totals are inconsistent"),
+])
+def test_invalid_local_order_is_rejected_before_shopify_write(change, message):
+    with SessionLocal() as db:
+        draft = order(db)
+        change(draft)
+        remote = FakeShopify()
+        with pytest.raises(sync.ShopifyDraftSyncError, match=message):
+            sync.create_shopify_draft(db, draft, "sync-admin", remote)
+        assert remote.calls == []
+        assert db.query(ShopifySyncEvent).filter_by(sales_order_id=draft.id).count() == 0
+
+
+def test_graphql_user_errors_are_sanitized_and_safe_to_retry(monkeypatch):
+    monkeypatch.setattr(sync, "resolve_inbox_product", available)
+
+    class UserErrorShopify(FakeShopify):
+        def graphql(self, query, variables):
+            if "FindLedgerDraft" in query:
+                return {"draftOrders": {"nodes": []}}
+            return {"draftOrderCreate": {"draftOrder": None,
+                    "userErrors": [{"field": ["lineItems"], "message": "invalid input secret-detail"}]}}
+
+    with SessionLocal() as db:
+        draft = order(db)
+        with pytest.raises(sync.ShopifyDraftSyncError, match="creation was rejected"):
+            sync.create_shopify_draft(db, draft, "sync-admin", UserErrorShopify())
+        db.refresh(draft)
+        assert draft.shopify_sync_status == "SYNC_FAILED"
+        assert "secret-detail" not in (draft.shopify_sync_error or "")
+
+
+def test_sync_has_no_payment_inventory_or_accounting_side_effects(monkeypatch):
+    monkeypatch.setattr(sync, "resolve_inbox_product", available)
+    with SessionLocal() as db:
+        draft = order(db)
+        journal_count = db.query(JournalEntry).count()
+        item_count = db.query(Item).count()
+        saved, _ = sync.create_shopify_draft(db, draft, "sync-admin", FakeShopify())
+        assert saved.payment_status == "UNPAID"
+        assert saved.amount_paid == Decimal("0.00")
+        assert saved.fulfillment_status == "UNFULFILLED"
+        assert db.query(JournalEntry).count() == journal_count
+        assert db.query(Item).count() == item_count
+
+
 def test_endpoint_flags_authorization_csrf_confirmation_and_success(monkeypatch):
     monkeypatch.setattr(sync, "resolve_inbox_product", available)
     with SessionLocal() as db: draft_id = order(db).id
@@ -396,5 +449,31 @@ def test_detail_controls_dashboard_filter_and_whatsapp_payload(monkeypatch):
     client = client_for()
     detail = client.get(f"/crm/sales-orders/{draft_id}")
     assert "Create Shopify Draft" in detail.text and "Shopify integration" in detail.text
+    assert "Failed" in detail.text
     dashboard = client.get("/crm/sales-orders", params={"sync_status": "SYNC_FAILED"})
-    assert dashboard.status_code == 200 and "SYNC FAILED" in dashboard.text
+    assert dashboard.status_code == 200 and "Failed" in dashboard.text
+
+
+def test_detail_hides_create_for_ineligible_order_and_offers_safe_reconciliation(monkeypatch):
+    monkeypatch.setattr(main.settings, "SALES_ORDERS_ENABLED", True)
+    monkeypatch.setattr(main.settings, "SHOPIFY_ORDER_SYNC_ENABLED", True)
+    with SessionLocal() as db:
+        cancelled = order(db)
+        cancelled.order_status = "CANCELLED"
+        db.commit(); cancelled_id = cancelled.id
+    client = client_for()
+    detail = client.get(f"/crm/sales-orders/{cancelled_id}")
+    assert "Create Shopify Draft" not in detail.text
+    assert "cannot create a Shopify Draft" in detail.text
+
+    with SessionLocal() as db:
+        draft = db.get(SalesOrder, cancelled_id)
+        draft.order_status = "DRAFT"
+        draft.shopify_sync_status = "RECONCILIATION_REQUIRED"
+        draft.shopify_sync_error = "Previous outcome uncertain"
+        db.commit()
+    detail = client.get(f"/crm/sales-orders/{cancelled_id}")
+    assert "Needs Reconciliation" in detail.text
+    assert "Reconcile Shopify Draft" in detail.text
+    assert "will not blindly create another draft" in detail.text
+    assert "(create || reconcile) ? 'draft' : 'refresh'" in detail.text

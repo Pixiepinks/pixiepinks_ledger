@@ -8,6 +8,7 @@
   const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
   const badge = (value, kind = "neutral") => { const el = document.createElement("span"); el.className = `badge ${kind}`; text(el, value); return el; };
   const money = value => new Intl.NumberFormat("en-LK", {style: "currency", currency: "LKR", maximumFractionDigits: 2}).format(value || 0);
+  const syncLabel = value => ({NOT_SYNCED: "Not Synced", SYNCING: "Syncing", SYNCED: "Synced", SYNC_FAILED: "Failed", RECONCILIATION_REQUIRED: "Needs Reconciliation"})[value] || value.replaceAll("_", " ");
   async function api(url, options) {
     const response = await fetch(url, {credentials: "same-origin", ...options}); let data = {};
     try { data = await response.json(); } catch (_) { /* generic error below */ }
@@ -44,7 +45,7 @@
     const order = document.getElementById("order"); order.replaceChildren();
     if (data.sales_order) {
       const value = data.sales_order, heading = document.createElement("h3"), actions = document.createElement("div"); heading.className = "detail-title"; text(heading, "Latest sales order"); actions.className = "detail-actions";
-      order.append(heading, detailRow("Order", value.internal_order_number), detailRow("Order status", value.order_status.replaceAll("_", " ")), detailRow("Payment", value.payment_status.replaceAll("_", " ")), detailRow("Shopify sync", value.shopify_sync_status.replaceAll("_", " ")), detailRow("Products", value.product_count), detailRow("Grand total", money(value.grand_total)));
+      order.append(heading, detailRow("Order", value.internal_order_number), detailRow("Order status", value.order_status.replaceAll("_", " ")), detailRow("Payment", value.payment_status.replaceAll("_", " ")), detailRow("Shopify sync", syncLabel(value.shopify_sync_status)), detailRow("Products", value.product_count), detailRow("Grand total", money(value.grand_total)));
       actions.append(detailLink("View Order", value.view_url)); if (value.edit_url) actions.append(detailLink("Edit Draft", value.edit_url, true)); order.append(actions);
       if (value.conversation_order_count > 1) { const note = document.createElement("small"); note.className = "detail-note"; text(note, `${value.conversation_order_count} sales orders are linked to this conversation. Showing the latest.`); order.append(note); }
     }

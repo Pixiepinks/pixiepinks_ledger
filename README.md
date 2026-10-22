@@ -414,13 +414,16 @@ confirmation, and run only on the server.
 The integration uses the existing Shopify client-credentials token flow and Admin GraphQL API version
 `2026-07`. The Shopify app must be configured and reauthorized with the minimum Phase 3 scopes
 `write_draft_orders` and `read_draft_orders`; `read_orders` is required to read the associated Order
-reference if a merchant later completes a draft in Shopify. Preserve the existing catalogue scopes
-(`read_products` and, where inventory availability is displayed, `read_inventory`). Phase 3 does not request fulfillment,
+reference if a merchant later completes a draft in Shopify. Preserve the verified catalogue scopes
+(`read_products`, `read_inventory`, and `read_locations`). Phase 3 does not request fulfillment,
 refund, inventory-write, or payment-write permissions. No new Railway secrets are required: retain
 `SHOPIFY_SHOP`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`, and `SHOPIFY_API_VERSION`.
 
 Draft creation revalidates every exact variant, availability, and price against Shopify, maps customer
-and delivery snapshots, whole-number quantities, discounts, shipping, and LKR currency, and compares
+and delivery snapshots, whole-number quantities, discounts, shipping, and LKR currency, and verifies
+the stored Ledger line/subtotal/grand-total arithmetic before any remote request. Missing customer or
+delivery fields, malformed product/variant GIDs, non-LKR orders, and inconsistent totals are rejected
+without creating a synchronization event or calling Shopify. The integration compares
 the returned Shopify total **and Shopify-calculated tax** with Ledger. The live variant taxability and
 Shopify tax engine are authoritative for the remote draft; the Ledger-approved amounts are never
 rewritten. Missing taxable-order address data, inconsistent local taxability, and any total/tax or LKR
