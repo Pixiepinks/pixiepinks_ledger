@@ -124,6 +124,39 @@ def test_catalog_preflight_requests_variant_taxability():
     assert "sku price taxable availableForSale" in INBOX_PRODUCT_PICKER_QUERY
 
 
+@pytest.mark.parametrize("value", [
+    "0703322111",
+    "94703322111",
+    "+94703322111",
+    "+94 70 332 2111",
+    "070-332-2111",
+])
+def test_sri_lankan_mobile_normalization(value):
+    assert sync.normalize_sri_lankan_mobile(value) == "+94703322111"
+
+
+@pytest.mark.parametrize("value", [
+    "", "703322111", "070332211", "07033221111", "9470332211",
+    "+947033221110", "07123", "0094703322111", "+440703322111",
+    "070 332 211A", "94+703322111",
+])
+def test_sri_lankan_mobile_normalization_rejects_invalid_values(value):
+    with pytest.raises(sync.ShopifyDraftSyncError, match="invalid Sri Lankan mobile number"):
+        sync.normalize_sri_lankan_mobile(value)
+
+
+def test_shopify_payload_normalizes_all_phone_fields_without_changing_ledger(monkeypatch):
+    monkeypatch.setattr(sync, "resolve_inbox_product", available)
+    with SessionLocal() as db:
+        draft = order(db)
+        draft.whatsapp_phone = "+94 70 332 2111"
+        db.commit()
+        payload = sync._shopify_input(draft)
+        assert payload["phone"] == "+94703322111"
+        assert payload["shippingAddress"]["phone"] == "+94703322111"
+        assert draft.whatsapp_phone == "+94 70 332 2111"
+
+
 def test_admin_draft_preflight_accepts_unpublished_variant_with_inventory(monkeypatch):
     """Storefront availability must not reject a valid Admin Draft Order line."""
     response = {"products": {"nodes": [{

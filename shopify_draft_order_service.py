@@ -25,7 +25,6 @@ CLAIM_LEASE_SECONDS = 300
 DRAFT_ORDER_GID = re.compile(r"^gid://shopify/DraftOrder/([0-9]+)$")
 PRODUCT_GID = re.compile(r"^gid://shopify/Product/[0-9]+$")
 VARIANT_GID = re.compile(r"^gid://shopify/ProductVariant/[0-9]+$")
-PHONE = re.compile(r"^[0-9]{10,15}$")
 
 
 class ShopifyDraftSyncError(RuntimeError):
@@ -38,6 +37,32 @@ class ShopifyDraftSyncError(RuntimeError):
 
 class ShopifyOutcomeUncertain(ShopifyDraftSyncError):
     pass
+
+
+def normalize_sri_lankan_mobile(value: str) -> str:
+    """Return a validated Sri Lankan mobile number in E.164 form.
+
+    Ledger/WhatsApp data is left untouched; this normalized copy is used only
+    in the Shopify Draft Order payload.
+    """
+    raw = str(value or "").strip()
+    if not raw or not re.fullmatch(r"\+?[0-9 -]+", raw):
+        raise ShopifyDraftSyncError(
+            "The Ledger order has an invalid Sri Lankan mobile number")
+    if "+" in raw and not raw.startswith("+"):
+        raise ShopifyDraftSyncError(
+            "The Ledger order has an invalid Sri Lankan mobile number")
+    compact = raw.replace(" ", "").replace("-", "")
+    if compact.startswith("+"):
+        compact = compact[1:]
+    if re.fullmatch(r"07[0-9]{8}", compact):
+        national = compact[1:]
+    elif re.fullmatch(r"947[0-9]{8}", compact):
+        national = compact[2:]
+    else:
+        raise ShopifyDraftSyncError(
+            "The Ledger order has an invalid Sri Lankan mobile number")
+    return f"+94{national}"
 
 
 DRAFT_FIELDS = """
@@ -173,8 +198,7 @@ def _validate_local_order(order: SalesOrder) -> None:
     if missing:
         raise ShopifyDraftSyncError(
             "Complete the following Ledger order fields before synchronizing: " + ", ".join(missing))
-    if not PHONE.fullmatch(str(order.whatsapp_phone)):
-        raise ShopifyDraftSyncError("The Ledger order has an invalid WhatsApp phone number")
+    normalize_sri_lankan_mobile(order.whatsapp_phone)
     if order.currency != "LKR":
         raise ShopifyDraftSyncError("Shopify Draft synchronization currently supports LKR orders only")
     if not order.lines:
@@ -263,6 +287,7 @@ def _shopify_input(order: SalesOrder) -> dict:
     if _money(order.tax_total) > 0 and not has_taxable_product:
         raise ShopifyDraftSyncError(
             "Ledger tax is nonzero, but Shopify reports every selected product as non-taxable")
+    shopify_phone = normalize_sri_lankan_mobile(order.whatsapp_phone)
     data = {
         "lineItems": line_items,
         "note": f"PixiePinks Ledger order {order.internal_order_number}",
@@ -270,12 +295,12 @@ def _shopify_input(order: SalesOrder) -> dict:
         "customAttributes": [{"key": "PixiePinks Ledger Order", "value": order.internal_order_number}],
         "presentmentCurrencyCode": order.currency,
         "taxExempt": False,
-        "phone": order.whatsapp_phone,
+        "phone": shopify_phone,
         "shippingAddress": {
             "firstName": order.delivery_contact_person or order.customer_name,
             "address1": order.delivery_address,
             "city": order.city, "province": order.district,
-            "zip": order.postal_code, "countryCode": "LK", "phone": order.whatsapp_phone,
+            "zip": order.postal_code, "countryCode": "LK", "phone": shopify_phone,
         },
     }
     data["shippingAddress"] = {key: value for key, value in data["shippingAddress"].items() if value}
