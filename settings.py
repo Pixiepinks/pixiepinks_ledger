@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     SHOPIFY_ORDER_SYNC_ENABLED: bool = False
     SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED: bool = False
     SALES_PAYMENT_TRACKING_ENABLED: bool = False
+    SHOPIFY_PAYMENT_SYNC_ENABLED: bool = False
     SALES_ACCOUNTING_AUTO_POST_ENABLED: bool = False
 
 

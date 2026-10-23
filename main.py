@@ -52,6 +52,7 @@ from models import (
     WhatsAppOutboundProductMessage,
     BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
     SalesOrder, SalesOrderStatusHistory, SalesPayment, SalesPaymentAuditEvent, ShopifySyncEvent,
+    ShopifyPaymentSyncOperation, ShopifyPaymentSyncAuditEvent,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -113,6 +114,9 @@ from shopify_order_lifecycle_service import (
 from sales_payment_service import (
     PAYMENT_CATEGORIES, PAYMENT_METHODS, PaymentValidationError, decide_payment, record_payment_claim,
     refresh_shopify_payment_status,
+)
+from shopify_payment_sync_service import (
+    ShopifyPaymentSyncError, create_preflight, execute_operation, recover_operation,
 )
 
 logger = logging.getLogger(__name__)
@@ -1156,7 +1160,7 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
 
 
 SALES_ORDER_PERMISSIONS = {
-    "ADMIN": {"create", "edit", "transition", "approve_discount", "verify_payment",
+    "ADMIN": {"create", "edit", "transition", "approve_discount", "verify_payment", "sync_shopify_payment",
               "record_payment_claim", "dispatch", "cancel", "refund", "post_accounting", "sync_shopify"},
     "SALES_MANAGER": {"create", "edit", "transition", "approve_discount",
                       "record_payment_claim", "dispatch", "cancel"},
@@ -2000,6 +2004,8 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
         SalesPaymentAuditEvent.created_at.desc(), SalesPaymentAuditEvent.id.desc()).limit(50).all()
     payment_permissions = SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set())
     payment_enabled = settings.SALES_PAYMENT_TRACKING_ENABLED
+    payment_sync_operations = db.query(ShopifyPaymentSyncOperation).filter_by(
+        sales_order_id=order.id).order_by(ShopifyPaymentSyncOperation.created_at.desc()).limit(10).all()
     return templates.TemplateResponse("sales_order_detail.html", {"request": request,
         "page_title": order.internal_order_number, "order": order, "history": history,
         "can_edit": can_edit, "can_sync": can_sync, "can_create_sync": can_create_sync,
@@ -2018,6 +2024,10 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
         "can_record_payment": (payment_enabled and "record_payment_claim" in payment_permissions),
         "can_verify_payment": (payment_enabled and "verify_payment" in payment_permissions),
         "can_refresh_shopify_payment": (payment_enabled and can_sync and bool(order.shopify_order_id)),
+        "can_sync_shopify_payment": (settings.SHOPIFY_PAYMENT_SYNC_ENABLED
+            and settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED and payment_enabled
+            and "sync_shopify_payment" in payment_permissions and bool(order.shopify_order_id)),
+        "payment_sync_operations": payment_sync_operations,
         "sync_events": sync_events, "user": user})
 
 
@@ -2195,6 +2205,13 @@ def _require_payment_tracking_enabled() -> None:
         raise HTTPException(status_code=404, detail="Sales payment tracking is disabled")
 
 
+def _require_shopify_payment_sync_enabled() -> None:
+    if not (settings.SALES_PAYMENT_TRACKING_ENABLED
+            and settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED
+            and settings.SHOPIFY_PAYMENT_SYNC_ENABLED):
+        raise HTTPException(status_code=404, detail="Shopify payment synchronization is disabled")
+
+
 def _payment_payload(payment: SalesPayment) -> dict:
     return {
         "id": payment.id, "sales_order_id": payment.sales_order_id,
@@ -2353,6 +2370,57 @@ def refresh_sales_order_shopify_payment(order_id: int, request: Request,
             "shopify_financial_status": order.shopify_financial_status,
             "reconciliation_status": order.shopify_payment_reconciliation_status,
             "warning": order.shopify_payment_reconciliation_warning}
+
+
+def _payment_sync_payload(operation: ShopifyPaymentSyncOperation) -> dict:
+    return {"operation_id": operation.operation_id, "status": operation.status,
+            "mutation_name": operation.mutation_name, "intended_amount": str(operation.intended_amount),
+            "currency": operation.currency, "shopify_order_id": operation.shopify_order_id,
+            "preflight_financial_status": operation.preflight_financial_status,
+            "preflight_shopify_outstanding": str(operation.preflight_shopify_outstanding),
+            "preflight_expires_at": operation.preflight_expires_at.isoformat(),
+            "shopify_transaction_id": operation.shopify_transaction_id,
+            "error_summary": operation.error_summary,
+            "approved_by": operation.approved_by,
+            "completed_at": operation.completed_at.isoformat() if operation.completed_at else None}
+
+
+@app.post("/api/sales-orders/{order_id}/shopify-payment-sync/preflight")
+def preflight_shopify_payment_sync(order_id: int, request: Request, db: Session = Depends(get_db),
+                                   user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_shopify_payment_sync_enabled()
+    _require_sales_permission(user, "sync_shopify_payment"); _require_csrf(request)
+    try:
+        operation = create_preflight(db, order_id, user.username,
+                                     request.headers.get("Idempotency-Key", ""))
+    except ShopifyPaymentSyncError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
+    return {"operation": _payment_sync_payload(operation)}
+
+
+@app.post("/api/sales-orders/{order_id}/shopify-payment-sync/{operation_id}/execute")
+async def execute_shopify_payment_sync(order_id: int, operation_id: str, request: Request,
+                                       db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_shopify_payment_sync_enabled()
+    _require_sales_permission(user, "sync_shopify_payment"); _require_csrf(request)
+    try: payload = await request.json()
+    except ValueError: raise HTTPException(400, "Invalid JSON") from None
+    try:
+        operation = execute_operation(db, order_id, operation_id, user.username,
+                                      payload.get("confirmation") if isinstance(payload, dict) else "")
+    except ShopifyPaymentSyncError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
+    return {"operation": _payment_sync_payload(operation)}
+
+
+@app.post("/api/sales-orders/{order_id}/shopify-payment-sync/{operation_id}/recover")
+def recover_shopify_payment_sync(order_id: int, operation_id: str, request: Request,
+                                 db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_shopify_payment_sync_enabled()
+    _require_sales_permission(user, "sync_shopify_payment"); _require_csrf(request)
+    try: operation = recover_operation(db, order_id, operation_id, user.username)
+    except ShopifyPaymentSyncError as exc: raise HTTPException(exc.status_code, str(exc)) from None
+    return {"operation": _payment_sync_payload(operation)}
 
 
 @app.get("/crm/bot-management", response_class=HTMLResponse)

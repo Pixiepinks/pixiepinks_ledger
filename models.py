@@ -241,6 +241,48 @@ class ShopifySyncEvent(Base):
     processed_at = Column(DateTime)
 
 
+class ShopifyPaymentSyncOperation(Base):
+    __tablename__ = "shopify_payment_sync_operations"
+    id = Column(Integer, primary_key=True)
+    operation_id = Column(String(36), unique=True, nullable=False, index=True)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    shopify_order_id = Column(String(255), nullable=False, index=True)
+    # A nullable unique key is the portable equivalent of an active-operation partial index.
+    # It remains populated for successful and unresolved operations and is cleared only when
+    # read-only evidence proves a mutation was never issued.
+    active_shopify_order_id = Column(String(255), unique=True, index=True)
+    mutation_name = Column(String(80), nullable=False, default="orderMarkAsPaid")
+    intended_amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(8), nullable=False)
+    ledger_payment_fingerprint = Column(String(64), nullable=False)
+    preflight_financial_status = Column(String(40), nullable=False)
+    preflight_shopify_outstanding = Column(Numeric(14, 2), nullable=False)
+    preflight_transaction_fingerprint = Column(String(64), nullable=False)
+    status = Column(String(40), nullable=False, index=True)
+    claim_token = Column(String(64), index=True)
+    claim_expires_at = Column(DateTime, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    shopify_transaction_id = Column(String(255), index=True)
+    error_summary = Column(String(500))
+    approved_by = Column(String(100))
+    approved_at = Column(DateTime)
+    preflight_expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime)
+
+
+class ShopifyPaymentSyncAuditEvent(Base):
+    __tablename__ = "shopify_payment_sync_audit_events"
+    id = Column(Integer, primary_key=True)
+    operation_id = Column(Integer, ForeignKey("shopify_payment_sync_operations.id", ondelete="RESTRICT"), nullable=False, index=True)
+    action = Column(String(50), nullable=False, index=True)
+    actor = Column(String(100), nullable=False)
+    detail = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
 class ShopifyWebhookEvent(Base):
     __tablename__ = "shopify_webhook_events"
     id = Column(Integer, primary_key=True)

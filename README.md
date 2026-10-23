@@ -523,3 +523,41 @@ tracking off, back up PostgreSQL, run `alembic upgrade head`, verify existing Sa
 verified receipts are operational records and do not create journal entries, receivables, inventory
 movements, or cost-of-goods-sold postings. Roll back by disabling the flag and deploying the prior
 application; retain the additive columns and audit records.
+
+## Commercial Sales Orders — Phase 4C Shopify payment synchronization
+
+Phase 4C is disabled by default with `SHOPIFY_PAYMENT_SYNC_ENABLED=false`. It adds an explicit,
+ADMIN-only **Check Shopify Payment Sync** preflight followed by a separately confirmed **Approve and
+Mark Shopify Paid** action. It is never triggered by recording or verifying a Ledger receipt. Execution
+also requires Sales Orders, payment tracking, and Shopify lifecycle synchronization to be enabled; keep
+`SALES_ACCOUNTING_AUTO_POST_ENABLED=false`.
+
+The Shopify app must have the existing `read_orders` scope plus `write_orders`, and the installation
+must permit `mark_orders_as_paid`. The application checks `currentAppInstallation.accessScopes` before
+creating or executing an operation and does not request or install scopes automatically. Release and
+authorize the updated Shopify app configuration manually, then verify the installed scopes before
+enabling the feature. Phase 4C uses only `orderMarkAsPaid`; partial payments and
+`orderCreateManualPayment` are out of scope.
+
+Eligibility is fail-closed: the Ledger order must be confirmed, Phase 4A-linked, fully covered by
+verified Phase 4B receipts, have no pending claims, and exactly match Shopify currency, total, received,
+and outstanding values. The complete reported Shopify transaction set must be available. Successful or
+capturable authorizations, pending gateway activity, `AWAITING_RESPONSE`, successful prior payment
+transactions, and unknown transaction states block the action so this workflow cannot capture an
+existing card authorization. A five-minute preview expires whenever material Ledger or Shopify state
+changes.
+
+Migration `20261024_07` additively creates `shopify_payment_sync_operations` and its append-only audit
+table. A unique active Shopify Order key, durable database claim, request idempotency, and committed
+worker lease prevent normal double-click and concurrent execution. HTTP timeouts, worker interruption,
+or failed readback become `OUTCOME_UNCERTAIN`; they are never automatically retried. The read-only
+recovery action may mark an operation synchronized only when Shopify proves exactly one matching
+successful transaction. Otherwise it remains `RECONCILIATION_REQUIRED` and blocks another mutation.
+
+Production activation checklist: back up PostgreSQL; deploy with the flag off; run `alembic upgrade
+head`; verify existing Phase 4A/4B screens; review Shopify Flow, installed apps, and notification rules
+that might react to an order becoming paid; authorize and verify `write_orders`; use isolated mocked
+tests and a purpose-built low-value non-production order first; then enable the flag only with explicit
+approval. Roll back by disabling `SHOPIFY_PAYMENT_SYNC_ENABLED` and restarting the application. Retain
+the operation and audit tables. This feature never modifies Ledger payment verification, posts journals
+or receivables, moves inventory, changes fulfillment/customers, or intentionally sends notifications.
