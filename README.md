@@ -61,6 +61,28 @@ source of truth; the inbox performs no per-row Shopify requests and does not cre
 orders, take payments, confirm payments, modify inventory, post ledger entries, or send
 broadcasts.
 
+### Railway / Nixpacks PyAV runtime
+
+Python 3.12 deployments pin `av==16.1.0` and require its official manylinux wheel. That
+wheel bundles FFmpeg, Opus, x264, and the other codec libraries used by PyAV; the project
+must not compile PyAV against whatever FFmpeg happens to exist in the builder image.
+`nixpacks.toml` sets `PIP_ONLY_BINARY=av` to enforce the wheel and extends the generated
+Nixpacks setup with `gcc-unwrapped` in `nixLibs`, which exposes the standard C++ runtime
+needed by the wheel. No manual `LD_LIBRARY_PATH`, system x264 package, or application code
+change is required.
+
+After changing this dependency, trigger a **clean** Railway build so an older PyAV 14.x
+wheel is not restored from cache. Verify the deployed container before running tests:
+
+```bash
+python -c "import av; print(av.__version__); print('PyAV import successful')"
+```
+
+For PostgreSQL concurrency checks, set `TEST_POSTGRESQL_URL` only in the staging shell to
+the dedicated `pixiepinks_test` database. Never point it at the application `railway`
+database or production. Then run the two explicit test nodes documented in the Phase 4A
+staging checklist.
+
 ## Shopify bicycle collections
 
 Guided recommendations use Shopify collection membership as their authority.
