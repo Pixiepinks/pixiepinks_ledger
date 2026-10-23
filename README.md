@@ -443,3 +443,35 @@ Sales Orders and Shopify sync in staging, reauthorize the Shopify app, create on
 verify its totals and deterministic Ledger tag, test Refresh, and confirm repeated clicks do not create
 a second draft. For rollback, disable `SHOPIFY_ORDER_SYNC_ENABLED` and deploy the prior application;
 do not delete the additive columns, Shopify references, or audit history.
+
+## Commercial Sales Orders — Phase 4A Shopify order lifecycle
+
+Phase 4A provides one-way, read-only linkage when a merchant completes an existing Shopify Draft
+Order. It is disabled by default with `SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED=false` and does not alter
+Phase 3 draft creation. Configure `SHOPIFY_WEBHOOK_SECRET` from the Shopify app's webhook signing
+secret; never expose it to the browser. The existing `read_orders` scope is sufficient for the
+supported order read and webhook topic. No order, customer, inventory, payment, fulfillment, refund,
+or accounting write scope is introduced.
+
+After deploying migration `20261023_05`, manually register an Admin API `orders/create` JSON webhook
+for `https://<staging-host>/webhooks/shopify/orders`, using API version `2026-07`. Registration is not
+performed by the application. Webhooks are accepted only when the feature flag is enabled, the
+HMAC-SHA256 signature and configured shop domain match, and the delivery ID is new. Matching uses a
+previously linked Shopify Order GID or the deterministic Ledger order number stored by Phase 3; it
+never uses names, phone numbers, or totals. Ambiguous or conflicting references are retained as
+reconciliation warnings.
+
+Authorized administrators can run read-only reconciliation from a linked order's detail page. It
+queries the existing Draft Order and links its associated Order, but never completes a draft or
+changes Shopify. A confirmed remote Order advances only compatible Ledger draft states through
+audited transitions; payment and fulfillment remain unchanged. Conflicting local states require
+staff review.
+
+Safe rollout: back up PostgreSQL, restore to an isolated staging database, run `alembic upgrade head`,
+and keep the new flag off while verifying startup and Phase 3. Configure a staging webhook and secret,
+enable only the lifecycle flag in staging, complete a purpose-built Shopify development-store draft,
+then verify one webhook audit row, one linked Order, and unchanged payment, fulfillment, inventory,
+and accounting data. Test duplicate delivery and manual reconciliation before production approval.
+Rollback by disabling the lifecycle flag and deploying the prior application; retain migration
+columns and webhook audit history. Disable or remove the webhook subscription if rolling back for an
+extended period.

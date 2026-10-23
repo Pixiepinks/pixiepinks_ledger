@@ -86,7 +86,7 @@ def test_versioned_migration_is_idempotent_and_creates_phase_one_tables():
                   "sales_order_status_history", "shopify_sync_events", "accounting_posting_links"):
         assert inspector.has_table(table)
     with engine.connect() as connection:
-        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "20261021_04"
+        assert connection.exec_driver_sql("SELECT version_num FROM alembic_version").scalar() == "20261023_05"
 
 
 def test_decimal_calculation_handles_quantity_discounts_shipping_and_tax():

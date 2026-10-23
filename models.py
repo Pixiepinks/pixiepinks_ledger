@@ -113,6 +113,12 @@ class SalesOrder(Base):
     shopify_draft_order_name = Column(String(100), index=True)
     shopify_order_id = Column(String(255), unique=True)
     shopify_order_name = Column(String(100), index=True)
+    shopify_order_created_at = Column(DateTime)
+    shopify_order_linked_at = Column(DateTime)
+    shopify_source_draft_order_id = Column(String(255), index=True)
+    shopify_lifecycle_status = Column(String(40), nullable=False, default="NOT_LINKED", index=True)
+    shopify_lifecycle_synced_at = Column(DateTime)
+    shopify_lifecycle_error = Column(String(500))
     shopify_sync_updated_at = Column(DateTime)
     shopify_sync_error = Column(String(500))
     subtotal = Column(Numeric(14, 2), nullable=False, default=0)
@@ -195,6 +201,24 @@ class ShopifySyncEvent(Base):
     claim_token = Column(String(64), index=True)
     claim_expires_at = Column(DateTime, index=True)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    processed_at = Column(DateTime)
+
+
+class ShopifyWebhookEvent(Base):
+    __tablename__ = "shopify_webhook_events"
+    id = Column(Integer, primary_key=True)
+    webhook_id = Column(String(255), unique=True, nullable=False, index=True)
+    topic = Column(String(100), nullable=False, index=True)
+    shop_domain = Column(String(255), nullable=False, index=True)
+    payload_hash = Column(String(64), nullable=False)
+    shopify_order_id = Column(String(255), index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), index=True)
+    status = Column(String(40), nullable=False, index=True)
+    attempts = Column(Integer, nullable=False, default=1)
+    claim_token = Column(String(64), index=True)
+    claim_expires_at = Column(DateTime, index=True)
+    error_summary = Column(String(500))
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
     processed_at = Column(DateTime)
 

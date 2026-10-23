@@ -106,6 +106,10 @@ from shopify_draft_order_service import (
     ELIGIBLE_ORDER_STATUSES, ShopifyDraftSyncError, create_shopify_draft, refresh_shopify_draft,
     shopify_admin_draft_url,
 )
+from shopify_order_lifecycle_service import (
+    ShopifyLifecycleError, process_orders_create, reconcile_order,
+    shopify_admin_order_url, verify_shopify_webhook,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +123,7 @@ app.add_middleware(
     https_only=True,
 )
 
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["settings"] = settings
@@ -130,6 +135,37 @@ def get_db():
         yield db
     finally:
         db.close()
+
+@app.post("/webhooks/shopify/orders")
+async def receive_shopify_order_webhook(request: Request, db: Session = Depends(get_db)):
+    """Authenticate and idempotently ingest a bounded Shopify order lifecycle event."""
+    if not settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED:
+        raise HTTPException(status_code=404, detail="Shopify order lifecycle synchronization is disabled")
+    raw_body = await request.body()
+    if not verify_shopify_webhook(raw_body, request.headers.get("X-Shopify-Hmac-Sha256", ""),
+                                  settings.SHOPIFY_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid Shopify webhook signature")
+    topic = request.headers.get("X-Shopify-Topic", "")
+    webhook_id = request.headers.get("X-Shopify-Webhook-Id", "")
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "").casefold()
+    expected_domain = f"{settings.SHOPIFY_SHOP}.myshopify.com".casefold()
+    if not settings.SHOPIFY_SHOP or shop_domain != expected_domain:
+        raise HTTPException(status_code=403, detail="Shopify webhook store is not authorized")
+    if topic != "orders/create":
+        return Response(status_code=204)
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid Shopify webhook JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid Shopify webhook payload")
+    try:
+        result = process_orders_create(db, payload, webhook_id=webhook_id,
+                                       shop_domain=shop_domain, raw_body=raw_body)
+    except ShopifyLifecycleError as exc:
+        raise HTTPException(status_code=503 if exc.retryable else exc.status_code,
+                            detail=str(exc)) from None
+    return {"status": result}
 
 # ---------------------- Helpers ----------------------
 LOGIN_PATH = "/login"
@@ -1608,6 +1644,8 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
         "order_status": sales_order.order_status,
         "payment_status": sales_order.payment_status,
         "shopify_sync_status": sales_order.shopify_sync_status,
+        "shopify_order_name": sales_order.shopify_order_name,
+        "shopify_lifecycle_status": sales_order.shopify_lifecycle_status,
         "grand_total": float(sales_order.grand_total),
         "currency": sales_order.currency,
         "product_count": len(sales_order.lines),
@@ -1959,6 +1997,9 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
             order.shopify_sync_status, order.shopify_sync_status.replace("_", " ").title()),
         "csrf_token": _csrf_token(request),
         "shopify_admin_url": shopify_admin_draft_url(order, settings.SHOPIFY_SHOP),
+        "shopify_order_admin_url": shopify_admin_order_url(order, settings.SHOPIFY_SHOP),
+        "can_reconcile_lifecycle": (settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED
+                                    and can_sync and bool(order.shopify_draft_order_id)),
         "sync_events": sync_events, "user": user})
 
 
@@ -1977,6 +2018,10 @@ def _sales_order_payload(order: SalesOrder) -> dict:
         "shopify_draft_order_id": order.shopify_draft_order_id,
         "shopify_draft_order_name": order.shopify_draft_order_name,
         "shopify_order_id": order.shopify_order_id, "shopify_order_name": order.shopify_order_name,
+        "shopify_lifecycle_status": order.shopify_lifecycle_status,
+        "shopify_lifecycle_synced_at": (order.shopify_lifecycle_synced_at.isoformat()
+                                        if order.shopify_lifecycle_synced_at else None),
+        "shopify_lifecycle_error": order.shopify_lifecycle_error,
         "shopify_sync_updated_at": (order.shopify_sync_updated_at.isoformat()
                                     if order.shopify_sync_updated_at else None),
         "shopify_sync_error": order.shopify_sync_error,
@@ -2151,6 +2196,24 @@ def refresh_sales_order_shopify_draft(order_id: int, request: Request,
     if not order: raise HTTPException(404, "Sales order not found")
     try: order = refresh_shopify_draft(db, order, user.username)
     except ShopifyDraftSyncError as exc: raise HTTPException(exc.status_code, str(exc)) from None
+    return {"order": _sales_order_payload(order)}
+
+
+@app.post("/api/sales-orders/{order_id}/shopify-lifecycle-reconcile")
+def reconcile_sales_order_shopify_lifecycle(order_id: int, request: Request,
+                                             db: Session = Depends(get_db),
+                                             user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_shopify_order_sync_enabled()
+    if not settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED:
+        raise HTTPException(status_code=404, detail="Shopify order lifecycle synchronization is disabled")
+    _require_sales_permission(user, "sync_shopify"); _require_csrf(request)
+    order = db.get(SalesOrder, order_id)
+    if not order:
+        raise HTTPException(404, "Sales order not found")
+    try:
+        order = reconcile_order(db, order, user.username)
+    except ShopifyLifecycleError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
     return {"order": _sales_order_payload(order)}
 
 
