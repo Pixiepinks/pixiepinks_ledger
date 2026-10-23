@@ -1,5 +1,88 @@
 # PixiePinks Ledger (MVP)
 
+## CRM and customer-service workspace
+
+The authenticated `/crm` area is an operational workspace built into the existing
+FastAPI/Jinja application. Its responsive sidebar keeps CRM, customer, inventory,
+supplier, journal, chart-of-accounts, and financial-report routes in one application.
+The dashboard derives unread WhatsApp, human handover, payment-required, lead,
+follow-up, and sales-intent metrics from persisted records. Action-required cards link
+directly to the applicable inbox filters or CRM records. `/crm/orders` presents
+WhatsApp sales intents explicitly as intents rather than completed Shopify orders.
+
+### WhatsApp Inbox
+
+`/crm/whatsapp` is an authenticated, responsive three-panel staff inbox. It includes
+newest-first conversations, name/phone search, All/Unread/AI/Human/Payment Required
+filters, chronological message history, customer and delivery details, persisted
+product images and pricing, and order totals. The browser polls the lightweight list
+and selected-conversation APIs every seven and four seconds respectively; Redis,
+Celery, WebSockets, and a separate frontend are intentionally not used.
+
+Inbound customer messages increment the conversation's persisted unread count. AI and
+staff replies never clear it; only opening that individual conversation does. New
+conversations default to **AI**. **Take Over** changes the persisted mode to **HUMAN**
+and records the authenticated username. In HUMAN mode the webhook continues signature
+verification, idempotency, persistence, timestamps, and unread updates, but it does not
+invoke OpenAI, Shopify replies, or the guided sales flow. **Return to AI** resumes
+automation only for a future inbound message and does not replay history. A customer's
+handover request and `READY_FOR_PAYMENT_HANDOVER` both switch the conversation to HUMAN.
+
+Manual messages reuse the server-side Meta sender. A browser-generated idempotency key
+is uniquely persisted to prevent double sends; only a successful Meta result is written
+to conversation history with `response_kind=staff`, the Meta message ID when returned,
+send status, and authenticated username. Meta failures are shown to staff and are not
+represented as successfully sent messages. API responses never include Meta IDs,
+Shopify IDs, access tokens, or other credentials.
+
+Staff can also record real voice notes from the WhatsApp composer. The browser uses
+`MediaRecorder`, always presents a local playback preview, and sends only after explicit
+confirmation. The authenticated backend validates the recording, converts browser WebM,
+OGG, MP4, MP3, or WAV input in memory to mono 48 kHz OGG/Opus with PyAV, uploads it to
+the existing Meta Media API, and sends it as a WhatsApp voice message. No speech-to-text,
+AI voice, or audio binary is stored in PostgreSQL. Conversation history stores only the
+Meta media identifier, MIME type, duration, staff identity, outbound message identifier,
+and delivery status. Playback is provided through an authenticated server-side media
+proxy, so the Meta access token is never exposed to JavaScript. Recordings are limited
+to 16 MB and ten minutes; local previews remain available after a failed upload so staff
+can retry.
+
+Database startup continues to use `Base.metadata.create_all`. It adds
+`whatsapp_conversations` for mode/unread/timestamps and `whatsapp_manual_sends` for
+manual-send idempotency. The existing `whatsapp_conversation_messages` table gains
+nullable `send_status` and `sent_by` columns via the backward-compatible startup check.
+Voice support also adds nullable `media_id`, `media_mime_type`, and
+`media_duration_seconds` columns to that same table. Deployments must install the updated
+Python requirements so the binary PyAV wheel and bundled media libraries are available;
+no system `ffmpeg` command, new environment variable, or Railway service is required.
+Production customer names, phone numbers, addresses, messages, and order data remain
+behind the existing signed-session authentication. Shopify remains read-only and the
+source of truth; the inbox performs no per-row Shopify requests and does not create
+orders, take payments, confirm payments, modify inventory, post ledger entries, or send
+broadcasts.
+
+### Railway / Nixpacks PyAV runtime
+
+Python 3.12 deployments pin `av==16.1.0` and require its official manylinux wheel. That
+wheel bundles FFmpeg, Opus, x264, and the other codec libraries used by PyAV; the project
+must not compile PyAV against whatever FFmpeg happens to exist in the builder image.
+`nixpacks.toml` sets `PIP_ONLY_BINARY=av` to enforce the wheel and extends the generated
+Nixpacks setup with `gcc-unwrapped` in `nixLibs`, which exposes the standard C++ runtime
+needed by the wheel. No manual `LD_LIBRARY_PATH`, system x264 package, or application code
+change is required.
+
+After changing this dependency, trigger a **clean** Railway build so an older PyAV 14.x
+wheel is not restored from cache. Verify the deployed container before running tests:
+
+```bash
+python -c "import av; print(av.__version__); print('PyAV import successful')"
+```
+
+For PostgreSQL concurrency checks, set `TEST_POSTGRESQL_URL` only in the staging shell to
+the dedicated `pixiepinks_test` database. Never point it at the application `railway`
+database or production. Then run the two explicit test nodes documented in the Phase 4A
+staging checklist.
+
 ## Shopify bicycle collections
 
 Guided recommendations use Shopify collection membership as their authority.
@@ -122,9 +205,125 @@ Secret server-side. The backend obtains temporary access tokens automatically, c
 them in memory, and renews them before their approximately 24-hour expiry.
 
 The app requires only `read_products`, `read_inventory`, and `read_locations`; it does
-not write products or inventory. `SHOPIFY_API_VERSION` is optional and defaults to
+not write products or inventory and does not request Shopify write access.
+
+## AI Bot Management Center
+
+Authenticated staff manage the store-wide assistant at `/crm/bot-management`. The
+center uses a **Draft → Test → Publish → Live** lifecycle: ordinary saves only update
+the draft, the simulator can evaluate draft or live rules without sending WhatsApp
+messages or creating operational records, and an explicit `PUBLISH` confirmation
+creates an immutable version. Historical versions can only be restored **as a draft**,
+so rollback also requires testing and deliberate publication. Administrative saves,
+publishes, restores, and read-only Shopify discovery are audited with the signed-in
+staff username (the current application has one staff permission level).
+
+The database adds `bot_configurations` (live/draft pointers),
+`bot_configuration_versions` (immutable snapshots), `bot_knowledge_entries`
+(normalized extensibility for scoped content), and `bot_audit_events`. Startup retains
+the existing `Base.metadata.create_all()` convention. The initial published version
+preserves bicycle age-to-size rules (2–3/12, 4–5/16, 6–10/20, 11+/26), Decimal service
+fees (Rs. 2,000/2,000/2,500/2,500), free islandwide bicycle delivery, and the 3–4
+working-day estimate. New decisions use the currently published cached version;
+publishing invalidates the short-lived cache immediately. Existing selected products
+and order intents are not recomputed, so in-progress purchases remain stable.
+
+Configuration is structured into global response settings, policies, global /
+collection / product knowledge, FAQs, guided questions, generic recommendation rules,
+and specialized bicycle/service/delivery controls. Scoped retrieval is designed to
+apply global knowledge first, then collection, then product guidance; deterministic
+rules take precedence. No vector database or executable staff rule language is used.
+Collection refresh is read-only, and product-specific references are Shopify handles,
+not copied commercial data.
+
+**Authority and safety:** Shopify remains authoritative for titles, variants, SKU,
+price, inventory, images, URLs, options, and collection membership. OpenAI may
+understand and word responses but is never authoritative for those facts, fees,
+totals, order/payment state, or deterministic rules. Locked code guardrails preserve
+HUMAN-mode pausing, live Shopify checks, webhook idempotency, privacy, payment
+handover, and the ban on invented bank/payment data. Staff content is escaped by
+Jinja, inputs are bounded/validated, no staff code is executed, and secrets are never
+returned to the browser.
+
+Current limitations: roles are not finer-grained than the existing authenticated
+staff account; public holidays are stated but are not automatically calculated; the
+generic question/rule schema is versioned for expansion while the production guided
+executor currently specializes in bicycles. Railway deployment needs no new secret:
+deploy the commit normally, allow startup to create the four tables, sign in, review
+the seeded live version, test Draft and Live, then publish only intentional changes.
+`SHOPIFY_API_VERSION` is optional and defaults to
 `2026-07`. If Shopify configuration or the live service is unavailable, product requests
 degrade to a safe customer-facing response without disrupting webhook acknowledgement.
+
+### Phase 2 store-wide management
+
+Phase 2 extends—not replaces—the original configuration center. **Catalog Knowledge**
+now contains a searchable Shopify Collection Directory backed by a lightweight local
+reference cache. **Refresh Shopify Collections** performs one bounded, read-only
+GraphQL discovery, updates the observed title/handle/count and last-refresh time, and
+marks references no longer returned inactive. It never writes Shopify data. Each
+collection opens a workspace with Overview, Knowledge, Guided Selling, Recommendation
+Rules, FAQs, Products, and Test sections. The product browser fetches at most 20 live
+members only when opened; product selector search requires two characters and returns
+at most 10 results.
+
+Knowledge, policy, and FAQ forms hide irrelevant controls: global content has no
+Shopify binding, collection content uses cached titled collections, and product
+content uses live Shopify product search. The server independently verifies every
+binding. Content stays in the versioned draft until explicit publication, is escaped
+when rendered, and carries no authoritative price or stock. Runtime selection helpers
+apply enabled, non-archived global information before matching collection and product
+information and do not include unrelated scoped content.
+
+The generic guided-selling schema is collection-based. Staff can add ordered English
+questions, optional approved Sinhala wording, and `CHOICE`, `NUMBER`, `YES_NO`, or
+`TEXT` answers. Rules support only allow-listed conditions (`EQUALS`, `BETWEEN`, and
+`CONTAINS`) and actions (`SET_ATTRIBUTE`, `CHOOSE_COLLECTION`, `PRODUCT_FILTER`,
+`SET_VALUE`, `ASK_NEXT`, and `NO_MATCH`). There is no expression interpreter,
+`eval`, executable action, Shopify mutation, accounting action, payment action, or
+arbitrary external call. Target collections are selected from and validated against
+the refreshed directory. `bot_guided_flow_states` provides a persisted place to pin a
+live conversation to its starting configuration version; an active purchase and its
+selected Shopify product/variant remain governed by the existing order-intent record.
+The existing bicycle runtime remains the only live generic-flow specialization in this
+release, retaining gender isolation, approved age sizes, services, free delivery, and
+payment handover. Newly configured non-bicycle flows can be built, reviewed, and
+versioned, but require a later controlled runtime rollout before handling WhatsApp.
+
+The safe Test Bot continues to compare Live and Draft without Meta sends or production
+records. The current simulator reports mode, configuration version, detected category,
+normalized bicycle inputs, and matched age rule. Multi-turn generic test sessions,
+business-level arbitrary-version comparison, editing/archiving existing snapshot
+entries, and full generic live execution remain planned improvements rather than
+pretend controls. Authentication remains the existing staff login because this app has
+no trustworthy fine-grained permission model. Audit records cover refresh, draft save,
+publish, restore, and question/rule draft changes without credentials or customer data.
+
+#### Production verification checklist
+
+1. Sign in and open **AI Bot Management**.
+2. Open **Catalog Knowledge**, select **Refresh Shopify Collections**, and confirm the
+   last-refresh time and real collection titles appear.
+3. Search for a collection and open **Manage**.
+4. Inspect its Overview and read-only Products tab.
+5. Add collection knowledge to Draft; verify Live Test does not use it and Draft Test
+   does after the applicable simulator/runtime support is present.
+6. Edit the bicycle 6–10 age rule in Draft; test Live (still 20 inches), then Draft
+   (the edited size), and restore 20 inches if the change was only a test.
+7. Review validation, enter the exact `PUBLISH` confirmation, publish, and confirm a
+   new immutable version appears.
+8. Run a real WhatsApp bicycle enquiry for gender, age, products/images, service,
+   delivery details, and payment handover.
+9. Open CRM Inbox, confirm history/unread state, use **Take Over**, send a staff reply,
+   then **Return to AI** and verify automation only resumes on the next inbound message.
+10. Confirm leads, sales intents, accounting pages, Meta signature verification, and
+    Shopify live price/availability continue operating normally.
+
+Deployment requires no new secrets and no Shopify write scopes. Deploy the committed
+application normally; startup `Base.metadata.create_all()` creates
+`shopify_collection_references` and `bot_guided_flow_states`. Then sign in, refresh the
+directory, review Draft and Live, run the checklist above, and publish only approved
+changes. Existing Railway, Meta, OpenAI, database, and Shopify variables are unchanged.
 
 To safely check authentication, GraphQL access, and a five-product sample in the
 configured environment, run:
@@ -147,3 +346,218 @@ python -m shopify_catalog_service --bicycle-collections
 This read-only diagnostic lists only collection titles matching a boys/girls wheel-size
 category, their actual Shopify handles, and product counts. Compare that output with
 `BICYCLE_COLLECTIONS`; the menu label is not treated as proof of a collection handle.
+
+### Sending Shopify products from the WhatsApp Inbox
+
+Authenticated staff can open the **Product** picker beside the WhatsApp composer, search the live
+Shopify Admin catalogue by partial title, SKU, product type, vendor, or tag, select an available
+variant, and send its current image, price, and published PixiePinks storefront URL. Search and
+final variant verification happen server-side; Shopify credentials never reach the browser.
+
+Product sends use the same Meta Cloud API configuration, manual-send idempotency, provider message
+status tracking, and outbound product reply-context mapping as the existing Inbox. Free-form product
+messages are rejected when the customer's 24-hour service window has expired. The CRM stores only a
+historical product snapshot (references, title, variant, SKU, price/currency, image URL, and storefront
+URL), not a duplicate catalogue or image binary. Existing databases receive nullable snapshot columns
+through the application's additive startup compatibility check; no destructive migration is required.
+
+## Commercial Sales Orders — Phase 1 backend
+
+Phase 1 adds a local, commercial order foundation without changing the existing WhatsApp sales-intent
+flow. It includes versioned Alembic migrations, Decimal-only totals, idempotent draft creation,
+draft updates, audited order-state transitions, CSRF-protected JSON mutations, and server-side roles.
+It deliberately does **not** create Shopify orders, move inventory, verify payments, or post journals.
+
+All new capabilities default to disabled:
+
+```text
+SALES_ORDERS_ENABLED=false
+SHOPIFY_ORDER_SYNC_ENABLED=false
+SALES_ACCOUNTING_AUTO_POST_ENABLED=false
+```
+
+`SALES_ORDERS_ENABLED` gates local draft mutations. The other two flags are reserved for later reviewed
+phases and do not enable any behavior in Phase 1. Supported sales roles are `ADMIN`, `SALES_MANAGER`,
+`SALES_AGENT`, and least-privilege `STAFF`; existing accounts receive `STAFF`, while the conventional
+`admin` account is migrated to `ADMIN`. Browser clients obtain a signed-session CSRF token from
+`GET /api/sales-orders/csrf` and supply it as `X-CSRF-Token`; creates also require an
+`Idempotency-Key`.
+
+### Migration and staging verification
+
+Back up PostgreSQL first. Restore it to staging, install dependencies, and run:
+
+```bash
+alembic upgrade head
+alembic current
+```
+
+The initial revision is additive, baselines the legacy `create_all` schema, adds `users.role`, and
+creates `sales_orders`, `sales_order_lines`, `sales_payments`, `sales_order_status_history`,
+`shopify_sync_events`, and `accounting_posting_links`. Run `alembic upgrade head` a second time to
+verify it is a no-op. Keep all flags disabled while comparing existing trial balance, income statement,
+balance sheet, customers, CRM conversations, and sales intents with the pre-migration baseline. Then
+enable only `SALES_ORDERS_ENABLED` in staging and exercise the authenticated draft APIs. Downgrade is
+intentionally non-destructive: rollback means disabling flags and deploying the prior application;
+do not drop order or audit records.
+
+## Commercial Sales Orders — Phase 2 staff interface
+
+With `SALES_ORDERS_ENABLED=true`, authorized `ADMIN`, `SALES_MANAGER`, and `SALES_AGENT`
+staff can open **Create Order** from a selected WhatsApp conversation. The responsive drawer
+prefills the conversation name and phone, accepts delivery details, and reuses the authenticated,
+read-only Shopify product search to add multiple exact variants. The browser shows an immediate
+total preview, but the server retrieves every selected variant from Shopify again and replaces all
+client-submitted title, SKU, image, URL, availability, and price values before the existing Decimal
+service saves the draft. The existing CSRF, permission, discount-approval, and idempotency controls
+remain authoritative.
+
+**Sales Orders** at `/crm/sales-orders` provides authenticated search, status/date filters, sorting,
+pagination, and links to order detail and the originating WhatsApp conversation. Draft detail pages
+show customer/delivery snapshots, product images and variants, authoritative totals, separate order,
+payment, fulfillment and Shopify-sync states, and status history. Drafts can be reopened in the
+WhatsApp drawer after a refresh. Shopify order creation, inventory changes, payment verification and
+accounting posting remain intentionally unavailable; the other two Phase 1 flags should stay disabled.
+
+Phase 2 migration `20261021_02` only adds nullable `product_image_url` and `product_url` snapshot
+columns to `sales_order_lines`. Back up PostgreSQL and run `alembic upgrade head` in staging before
+enabling the feature. Verify WhatsApp text/product/voice operations and all accounting reports, then
+exercise desktop and mobile order creation. Roll back the application by disabling
+`SALES_ORDERS_ENABLED`; the migration deliberately does not delete saved drafts or audit data.
+
+## Commercial Sales Orders — Phase 3 Shopify Draft synchronization
+
+Phase 3 can create **one Shopify Draft Order** from an eligible Ledger sales order. It remains disabled
+unless both `SALES_ORDERS_ENABLED=true` and `SHOPIFY_ORDER_SYNC_ENABLED=true`; keep
+`SALES_ACCOUNTING_AUTO_POST_ENABLED=false`. Only an authenticated `ADMIN` currently has the
+`sync_shopify` permission. Creation and refresh actions are CSRF-protected, require explicit staff
+confirmation, and run only on the server.
+
+The integration uses the existing Shopify client-credentials token flow and Admin GraphQL API version
+`2026-07`. The Shopify app must be configured and reauthorized with the minimum Phase 3 scopes
+`write_draft_orders` and `read_draft_orders`; `read_orders` is required to read the associated Order
+reference if a merchant later completes a draft in Shopify. Preserve the verified catalogue scopes
+(`read_products`, `read_inventory`, and `read_locations`). Phase 3 does not request fulfillment,
+refund, inventory-write, or payment-write permissions. No new Railway secrets are required: retain
+`SHOPIFY_SHOP`, `SHOPIFY_CLIENT_ID`, `SHOPIFY_CLIENT_SECRET`, and `SHOPIFY_API_VERSION`.
+
+Draft creation revalidates every exact variant, availability, and price against Shopify, maps customer
+and delivery snapshots, whole-number quantities, discounts, shipping, and LKR currency, and verifies
+the stored Ledger line/subtotal/grand-total arithmetic before any remote request. Missing customer or
+delivery fields, malformed product/variant GIDs, non-LKR orders, and inconsistent totals are rejected
+without creating a synchronization event or calling Shopify. The integration compares
+the returned Shopify total **and Shopify-calculated tax** with Ledger. The live variant taxability and
+Shopify tax engine are authoritative for the remote draft; the Ledger-approved amounts are never
+rewritten. Missing taxable-order address data, inconsistent local taxability, and any total/tax or LKR
+rounding mismatch are retained as `RECONCILIATION_REQUIRED`. Staff must inspect the draft in Shopify,
+confirm the tax and shipping-tax setup, and resolve or remove the remote draft before an approved local
+draft can be synchronized again. A deterministic tag, durable `ShopifySyncEvent` operation key, and
+atomic expiring database claim are checked before every write. An expired claim is treated as an
+uncertain outcome—not automatically retried—until Shopify is reconciled. Status refresh records a
+remotely completed Order reference for staff review but never
+changes local payment, fulfillment, sales-order, inventory, or accounting state.
+
+Migration `20261021_03` additively adds the draft name, last-sync timestamp, safe error summary, and
+sync-event actor/timestamp. Migration `20261021_04` additively adds nullable worker claim and lease
+columns plus indexes; it does not alter historical orders or event outcomes. Before rollout, back up PostgreSQL, restore to staging, run `alembic upgrade
+head`, keep both feature flags off, and confirm existing accounting and WhatsApp behavior. Then enable
+Sales Orders and Shopify sync in staging, reauthorize the Shopify app, create one controlled draft,
+verify its totals and deterministic Ledger tag, test Refresh, and confirm repeated clicks do not create
+a second draft. For rollback, disable `SHOPIFY_ORDER_SYNC_ENABLED` and deploy the prior application;
+do not delete the additive columns, Shopify references, or audit history.
+
+## Commercial Sales Orders — Phase 4A Shopify order lifecycle
+
+Phase 4A provides one-way, read-only linkage when a merchant completes an existing Shopify Draft
+Order. It is disabled by default with `SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED=false` and does not alter
+Phase 3 draft creation. Configure `SHOPIFY_WEBHOOK_SECRET` from the Shopify app's webhook signing
+secret; never expose it to the browser. The existing `read_orders` scope is sufficient for the
+supported order read and webhook topic. No order, customer, inventory, payment, fulfillment, refund,
+or accounting write scope is introduced.
+
+After deploying migration `20261023_05`, manually register an Admin API `orders/create` JSON webhook
+for `https://<staging-host>/webhooks/shopify/orders`, using API version `2026-07`. Registration is not
+performed by the application. Webhooks are accepted only when the feature flag is enabled, the
+HMAC-SHA256 signature and configured shop domain match, and the delivery ID is new. Matching uses a
+previously linked Shopify Order GID or the deterministic Ledger order number stored by Phase 3; it
+never uses names, phone numbers, or totals. Ambiguous or conflicting references are retained as
+reconciliation warnings.
+
+Authorized administrators can run read-only reconciliation from a linked order's detail page. It
+queries the existing Draft Order and links its associated Order, but never completes a draft or
+changes Shopify. A confirmed remote Order advances only compatible Ledger draft states through
+audited transitions; payment and fulfillment remain unchanged. Conflicting local states require
+staff review.
+
+Safe rollout: back up PostgreSQL, restore to an isolated staging database, run `alembic upgrade head`,
+and keep the new flag off while verifying startup and Phase 3. Configure a staging webhook and secret,
+enable only the lifecycle flag in staging, complete a purpose-built Shopify development-store draft,
+then verify one webhook audit row, one linked Order, and unchanged payment, fulfillment, inventory,
+and accounting data. Test duplicate delivery and manual reconciliation before production approval.
+Rollback by disabling the lifecycle flag and deploying the prior application; retain migration
+columns and webhook audit history. Disable or remove the webhook subscription if rolling back for an
+extended period.
+
+## Commercial Sales Orders — Phase 4B payment tracking
+
+Phase 4B is disabled by default with `SALES_PAYMENT_TRACKING_ENABLED=false`. When enabled, authorized
+sales staff can record pending payment claims for `BANK_TRANSFER`, `CASH`, `COD`, `CARD_PAYMENT`, and
+`PAYMENT_LINK`. A claim, customer message, or screenshot is not proof of receipt: only an administrator
+with the `verify_payment` permission can verify or reject a pending claim after independently checking
+the bank, cash, collection, or provider record. COD remains pending until collection is confirmed.
+
+Verified claims alone contribute to `sales_orders.amount_paid`. The server derives `UNPAID`,
+`PAYMENT_VERIFICATION`, `PARTIALLY_PAID`, or `PAID`, rejects duplicate external references and
+overpayments, and retains immutable payment audit events. Customer advances, evidence uploads,
+refunds, reversals, gateway integrations, and automatic notifications are deliberately deferred.
+
+The order detail page can perform an authorized read-only Shopify financial-status refresh for a
+linked Shopify Order. Shopify `PAID` is stored as an observation and reconciliation warning; it never
+creates or verifies a Ledger payment. The existing `read_orders` scope is sufficient for recent
+orders. No Shopify transaction, capture, refund, fulfillment, or inventory mutation is used.
+
+Migration `20261024_06` additively extends the existing `sales_payments` table, creates
+`sales_payment_audit_events`, and adds Shopify financial observation fields. Deploy with payment
+tracking off, back up PostgreSQL, run `alembic upgrade head`, verify existing Sales Orders and Phase
+4A, then enable the flag only after approval. Keep `SALES_ACCOUNTING_AUTO_POST_ENABLED=false`:
+verified receipts are operational records and do not create journal entries, receivables, inventory
+movements, or cost-of-goods-sold postings. Roll back by disabling the flag and deploying the prior
+application; retain the additive columns and audit records.
+
+## Commercial Sales Orders — Phase 4C Shopify payment synchronization
+
+Phase 4C is disabled by default with `SHOPIFY_PAYMENT_SYNC_ENABLED=false`. It adds an explicit,
+ADMIN-only **Check Shopify Payment Sync** preflight followed by a separately confirmed **Approve and
+Mark Shopify Paid** action. It is never triggered by recording or verifying a Ledger receipt. Execution
+also requires Sales Orders, payment tracking, and Shopify lifecycle synchronization to be enabled; keep
+`SALES_ACCOUNTING_AUTO_POST_ENABLED=false`.
+
+The Shopify app must have the existing `read_orders` scope plus `write_orders`, and the installation
+must permit `mark_orders_as_paid`. The application checks `currentAppInstallation.accessScopes` before
+creating or executing an operation and does not request or install scopes automatically. Release and
+authorize the updated Shopify app configuration manually, then verify the installed scopes before
+enabling the feature. Phase 4C uses only `orderMarkAsPaid`; partial payments and
+`orderCreateManualPayment` are out of scope.
+
+Eligibility is fail-closed: the Ledger order must be confirmed, Phase 4A-linked, fully covered by
+verified Phase 4B receipts, have no pending claims, and exactly match Shopify currency, total, received,
+and outstanding values. The complete reported Shopify transaction set must be available. Successful or
+capturable authorizations, pending gateway activity, `AWAITING_RESPONSE`, successful prior payment
+transactions, and unknown transaction states block the action so this workflow cannot capture an
+existing card authorization. A five-minute preview expires whenever material Ledger or Shopify state
+changes.
+
+Migration `20261024_07` additively creates `shopify_payment_sync_operations` and its append-only audit
+table. A unique active Shopify Order key, durable database claim, request idempotency, and committed
+worker lease prevent normal double-click and concurrent execution. HTTP timeouts, worker interruption,
+or failed readback become `OUTCOME_UNCERTAIN`; they are never automatically retried. The read-only
+recovery action may mark an operation synchronized only when Shopify proves exactly one matching
+successful transaction. Otherwise it remains `RECONCILIATION_REQUIRED` and blocks another mutation.
+
+Production activation checklist: back up PostgreSQL; deploy with the flag off; run `alembic upgrade
+head`; verify existing Phase 4A/4B screens; review Shopify Flow, installed apps, and notification rules
+that might react to an order becoming paid; authorize and verify `write_orders`; use isolated mocked
+tests and a purpose-built low-value non-production order first; then enable the flag only with explicit
+approval. Roll back by disabling `SHOPIFY_PAYMENT_SYNC_ENABLED` and restarting the application. Retain
+the operation and audit tables. This feature never modifies Ledger payment verification, posts journals
+or receivables, moves inventory, changes fulfillment/customers, or intentionally sends notifications.
