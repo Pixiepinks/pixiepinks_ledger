@@ -51,7 +51,7 @@ from models import (
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
     BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
-    SalesOrder, SalesOrderStatusHistory, ShopifySyncEvent,
+    SalesOrder, SalesOrderStatusHistory, SalesPayment, SalesPaymentAuditEvent, ShopifySyncEvent,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -109,6 +109,10 @@ from shopify_draft_order_service import (
 from shopify_order_lifecycle_service import (
     ShopifyLifecycleError, process_orders_create, reconcile_order,
     shopify_admin_order_url, verify_shopify_webhook,
+)
+from sales_payment_service import (
+    PAYMENT_CATEGORIES, PAYMENT_METHODS, PaymentValidationError, decide_payment, record_payment_claim,
+    refresh_shopify_payment_status,
 )
 
 logger = logging.getLogger(__name__)
@@ -1153,9 +1157,10 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
 
 SALES_ORDER_PERMISSIONS = {
     "ADMIN": {"create", "edit", "transition", "approve_discount", "verify_payment",
-              "dispatch", "cancel", "refund", "post_accounting", "sync_shopify"},
-    "SALES_MANAGER": {"create", "edit", "transition", "approve_discount", "dispatch", "cancel"},
-    "SALES_AGENT": {"create", "edit"},
+              "record_payment_claim", "dispatch", "cancel", "refund", "post_accounting", "sync_shopify"},
+    "SALES_MANAGER": {"create", "edit", "transition", "approve_discount",
+                      "record_payment_claim", "dispatch", "cancel"},
+    "SALES_AGENT": {"create", "edit", "record_payment_claim"},
     "STAFF": set(),
 }
 SHOPIFY_SYNC_LABELS = {"NOT_SYNCED": "Not Synced", "SYNCING": "Syncing", "SYNCED": "Synced",
@@ -1989,6 +1994,12 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
                           and order.shopify_sync_status == "RECONCILIATION_REQUIRED")
     sync_events = db.query(ShopifySyncEvent).filter_by(sales_order_id=order.id).order_by(
         ShopifySyncEvent.created_at.desc(), ShopifySyncEvent.id.desc()).limit(20).all()
+    payments = db.query(SalesPayment).filter_by(sales_order_id=order.id).order_by(
+        SalesPayment.created_at.desc(), SalesPayment.id.desc()).all()
+    payment_audit = db.query(SalesPaymentAuditEvent).filter_by(sales_order_id=order.id).order_by(
+        SalesPaymentAuditEvent.created_at.desc(), SalesPaymentAuditEvent.id.desc()).limit(50).all()
+    payment_permissions = SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set())
+    payment_enabled = settings.SALES_PAYMENT_TRACKING_ENABLED
     return templates.TemplateResponse("sales_order_detail.html", {"request": request,
         "page_title": order.internal_order_number, "order": order, "history": history,
         "can_edit": can_edit, "can_sync": can_sync, "can_create_sync": can_create_sync,
@@ -2000,6 +2011,13 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
         "shopify_order_admin_url": shopify_admin_order_url(order, settings.SHOPIFY_SHOP),
         "can_reconcile_lifecycle": (settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED
                                     and can_sync and bool(order.shopify_draft_order_id)),
+        "payments": payments, "payment_audit": payment_audit,
+        "payment_methods": sorted(PAYMENT_METHODS),
+        "outstanding_balance": max(Decimal("0.00"), Decimal(str(order.grand_total)) -
+                                   Decimal(str(order.amount_paid))),
+        "can_record_payment": (payment_enabled and "record_payment_claim" in payment_permissions),
+        "can_verify_payment": (payment_enabled and "verify_payment" in payment_permissions),
+        "can_refresh_shopify_payment": (payment_enabled and can_sync and bool(order.shopify_order_id)),
         "sync_events": sync_events, "user": user})
 
 
@@ -2022,12 +2040,16 @@ def _sales_order_payload(order: SalesOrder) -> dict:
         "shopify_lifecycle_synced_at": (order.shopify_lifecycle_synced_at.isoformat()
                                         if order.shopify_lifecycle_synced_at else None),
         "shopify_lifecycle_error": order.shopify_lifecycle_error,
+        "shopify_financial_status": order.shopify_financial_status,
+        "shopify_payment_reconciliation_status": order.shopify_payment_reconciliation_status,
+        "shopify_payment_reconciliation_warning": order.shopify_payment_reconciliation_warning,
         "shopify_sync_updated_at": (order.shopify_sync_updated_at.isoformat()
                                     if order.shopify_sync_updated_at else None),
         "shopify_sync_error": order.shopify_sync_error,
         "subtotal": str(order.subtotal), "discount_total": str(order.discount_total),
         "shipping_total": str(order.shipping_total), "tax_total": str(order.tax_total),
-        "grand_total": str(order.grand_total), "currency": order.currency,
+        "grand_total": str(order.grand_total), "amount_paid": str(order.amount_paid),
+        "currency": order.currency,
         "created_by": order.created_by, "created_at": order.created_at.isoformat(),
         "crm_conversation_id": order.crm_conversation_id,
         "lines": [{"id": line.id, "shopify_product_id": line.shopify_product_id,
@@ -2091,6 +2113,7 @@ def list_sales_orders(conversation_id: int | None = None, q: str = Query("", max
 def sales_order_config(user: User = Depends(require_user)):
     return {"sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
             "shopify_order_sync_enabled": settings.SHOPIFY_ORDER_SYNC_ENABLED,
+            "sales_payment_tracking_enabled": settings.SALES_PAYMENT_TRACKING_ENABLED,
             "sales_accounting_auto_post_enabled": settings.SALES_ACCOUNTING_AUTO_POST_ENABLED,
             "role": user.role or "STAFF"}
 
@@ -2167,6 +2190,31 @@ def _require_shopify_order_sync_enabled() -> None:
         raise HTTPException(status_code=404, detail="Shopify order synchronization is disabled")
 
 
+def _require_payment_tracking_enabled() -> None:
+    if not settings.SALES_PAYMENT_TRACKING_ENABLED:
+        raise HTTPException(status_code=404, detail="Sales payment tracking is disabled")
+
+
+def _payment_payload(payment: SalesPayment) -> dict:
+    return {
+        "id": payment.id, "sales_order_id": payment.sales_order_id,
+        "payment_method": payment.payment_method, "payment_reference": payment.payment_reference,
+        "payment_category": PAYMENT_CATEGORIES.get(payment.payment_method),
+        "amount": str(payment.amount), "currency": payment.currency,
+        "payment_date": payment.payment_date.isoformat(),
+        "verification_status": payment.verification_status,
+        "claimed_by": payment.claimed_by,
+        "claimed_at": payment.claimed_at.isoformat() if payment.claimed_at else None,
+        "verified_by": payment.verified_by,
+        "verified_at": payment.verified_at.isoformat() if payment.verified_at else None,
+        "rejected_by": payment.rejected_by,
+        "rejected_at": payment.rejected_at.isoformat() if payment.rejected_at else None,
+        "rejection_reason": payment.rejection_reason,
+        "accounting_posted": payment.accounting_entry_id is not None,
+        "notes": payment.notes,
+    }
+
+
 @app.post("/api/sales-orders/{order_id}/shopify-draft")
 async def create_sales_order_shopify_draft(order_id: int, request: Request,
                                             db: Session = Depends(get_db),
@@ -2215,6 +2263,96 @@ def reconcile_sales_order_shopify_lifecycle(order_id: int, request: Request,
     except ShopifyLifecycleError as exc:
         raise HTTPException(exc.status_code, str(exc)) from None
     return {"order": _sales_order_payload(order)}
+
+
+@app.get("/api/sales-orders/{order_id}/payments")
+def list_sales_order_payments(order_id: int, db: Session = Depends(get_db),
+                              user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
+    order = db.get(SalesOrder, order_id)
+    if not order:
+        raise HTTPException(404, "Sales order not found")
+    payments = db.query(SalesPayment).filter_by(sales_order_id=order_id).order_by(
+        SalesPayment.created_at.desc(), SalesPayment.id.desc()).all()
+    return {"payments": [_payment_payload(payment) for payment in payments],
+            "amount_paid": str(order.amount_paid),
+            "outstanding_balance": str(max(Decimal("0.00"), Decimal(str(order.grand_total)) -
+                                           Decimal(str(order.amount_paid)))),
+            "payment_status": order.payment_status}
+
+
+@app.post("/api/sales-orders/{order_id}/payment-claims")
+async def create_sales_order_payment_claim(order_id: int, request: Request,
+                                           db: Session = Depends(get_db),
+                                           user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
+    _require_sales_permission(user, "record_payment_claim"); _require_csrf(request)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON") from None
+    try:
+        payment, created = record_payment_claim(
+            db, order_id, payload, user.username, request.headers.get("Idempotency-Key", ""))
+    except PaymentValidationError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
+    return JSONResponse({"created": created, "payment": _payment_payload(payment)},
+                        status_code=201 if created else 200)
+
+
+@app.post("/api/sales-orders/{order_id}/payments/{payment_id}/verify")
+def verify_sales_order_payment(order_id: int, payment_id: int, request: Request,
+                               db: Session = Depends(get_db),
+                               user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
+    _require_sales_permission(user, "verify_payment"); _require_csrf(request)
+    try:
+        payment, changed = decide_payment(
+            db, order_id, payment_id, approve=True, actor=user.username,
+            idempotency_key=request.headers.get("Idempotency-Key", ""))
+    except PaymentValidationError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
+    return {"changed": changed, "payment": _payment_payload(payment)}
+
+
+@app.post("/api/sales-orders/{order_id}/payments/{payment_id}/reject")
+async def reject_sales_order_payment(order_id: int, payment_id: int, request: Request,
+                                     db: Session = Depends(get_db),
+                                     user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
+    _require_sales_permission(user, "verify_payment"); _require_csrf(request)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON") from None
+    try:
+        payment, changed = decide_payment(
+            db, order_id, payment_id, approve=False, actor=user.username,
+            idempotency_key=request.headers.get("Idempotency-Key", ""),
+            reason=payload.get("reason") if isinstance(payload, dict) else None)
+    except PaymentValidationError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
+    return {"changed": changed, "payment": _payment_payload(payment)}
+
+
+@app.post("/api/sales-orders/{order_id}/shopify-payment-refresh")
+def refresh_sales_order_shopify_payment(order_id: int, request: Request,
+                                        db: Session = Depends(get_db),
+                                        user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
+    _require_shopify_order_sync_enabled(); _require_sales_permission(user, "sync_shopify")
+    _require_csrf(request)
+    order = db.get(SalesOrder, order_id)
+    if not order:
+        raise HTTPException(404, "Sales order not found")
+    try:
+        order = refresh_shopify_payment_status(db, order)
+    except PaymentValidationError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from None
+    return {"order": _sales_order_payload(order),
+            "shopify_financial_status": order.shopify_financial_status,
+            "reconciliation_status": order.shopify_payment_reconciliation_status,
+            "warning": order.shopify_payment_reconciliation_warning}
 
 
 @app.get("/crm/bot-management", response_class=HTMLResponse)

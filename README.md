@@ -497,3 +497,29 @@ and accounting data. Test duplicate delivery and manual reconciliation before pr
 Rollback by disabling the lifecycle flag and deploying the prior application; retain migration
 columns and webhook audit history. Disable or remove the webhook subscription if rolling back for an
 extended period.
+
+## Commercial Sales Orders — Phase 4B payment tracking
+
+Phase 4B is disabled by default with `SALES_PAYMENT_TRACKING_ENABLED=false`. When enabled, authorized
+sales staff can record pending payment claims for `BANK_TRANSFER`, `CASH`, `COD`, `CARD_PAYMENT`, and
+`PAYMENT_LINK`. A claim, customer message, or screenshot is not proof of receipt: only an administrator
+with the `verify_payment` permission can verify or reject a pending claim after independently checking
+the bank, cash, collection, or provider record. COD remains pending until collection is confirmed.
+
+Verified claims alone contribute to `sales_orders.amount_paid`. The server derives `UNPAID`,
+`PAYMENT_VERIFICATION`, `PARTIALLY_PAID`, or `PAID`, rejects duplicate external references and
+overpayments, and retains immutable payment audit events. Customer advances, evidence uploads,
+refunds, reversals, gateway integrations, and automatic notifications are deliberately deferred.
+
+The order detail page can perform an authorized read-only Shopify financial-status refresh for a
+linked Shopify Order. Shopify `PAID` is stored as an observation and reconciliation warning; it never
+creates or verifies a Ledger payment. The existing `read_orders` scope is sufficient for recent
+orders. No Shopify transaction, capture, refund, fulfillment, or inventory mutation is used.
+
+Migration `20261024_06` additively extends the existing `sales_payments` table, creates
+`sales_payment_audit_events`, and adds Shopify financial observation fields. Deploy with payment
+tracking off, back up PostgreSQL, run `alembic upgrade head`, verify existing Sales Orders and Phase
+4A, then enable the flag only after approval. Keep `SALES_ACCOUNTING_AUTO_POST_ENABLED=false`:
+verified receipts are operational records and do not create journal entries, receivables, inventory
+movements, or cost-of-goods-sold postings. Roll back by disabling the flag and deploying the prior
+application; retain the additive columns and audit records.

@@ -119,6 +119,15 @@ class SalesOrder(Base):
     shopify_lifecycle_status = Column(String(40), nullable=False, default="NOT_LINKED", index=True)
     shopify_lifecycle_synced_at = Column(DateTime)
     shopify_lifecycle_error = Column(String(500))
+    shopify_financial_status = Column(String(40), index=True)
+    shopify_payment_status_refreshed_at = Column(DateTime)
+    shopify_payment_reconciliation_status = Column(String(40), nullable=False,
+                                                    default="NOT_CHECKED", index=True)
+    shopify_payment_reconciliation_warning = Column(String(500))
+    shopify_total_received = Column(Numeric(14, 2))
+    shopify_total_outstanding = Column(Numeric(14, 2))
+    shopify_total_refunded = Column(Numeric(14, 2))
+    shopify_payment_currency = Column(String(8))
     shopify_sync_updated_at = Column(DateTime)
     shopify_sync_error = Column(String(500))
     subtotal = Column(Numeric(14, 2), nullable=False, default=0)
@@ -162,15 +171,42 @@ class SalesPayment(Base):
     id = Column(Integer, primary_key=True)
     sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), nullable=False, index=True)
     payment_reference = Column(String(255), index=True)
+    idempotency_key = Column(String(100), unique=True, index=True)
+    request_payload_hash = Column(String(64))
+    deduplication_key = Column(String(255), unique=True, index=True)
     payment_method = Column(String(40), nullable=False)
     amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(8), nullable=False, default="LKR")
     payment_date = Column(Date, nullable=False)
     verification_status = Column(String(40), nullable=False, default="PENDING", index=True)
+    source = Column(String(40), nullable=False, default="STAFF_RECORDED")
+    claimed_by = Column(String(100))
+    claimed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     verified_by = Column(String(100))
     verified_at = Column(DateTime)
+    rejected_by = Column(String(100))
+    rejected_at = Column(DateTime)
+    rejection_reason = Column(Text)
     accounting_entry_id = Column(Integer, ForeignKey("journal_entries.id"))
     notes = Column(Text)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SalesPaymentAuditEvent(Base):
+    __tablename__ = "sales_payment_audit_events"
+    id = Column(Integer, primary_key=True)
+    sales_payment_id = Column(Integer, ForeignKey("sales_payments.id", ondelete="RESTRICT"),
+                              nullable=False, index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"),
+                            nullable=False, index=True)
+    action = Column(String(40), nullable=False, index=True)
+    previous_status = Column(String(40))
+    new_status = Column(String(40), nullable=False)
+    actor = Column(String(100), nullable=False)
+    reason = Column(Text)
+    idempotency_key = Column(String(100), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
 class SalesOrderStatusHistory(Base):
