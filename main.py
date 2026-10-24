@@ -62,6 +62,8 @@ from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
+    AttachmentMediaError,
+    download_whatsapp_attachment,
     UNSUPPORTED_MESSAGE_REPLY,
     download_whatsapp_media,
     send_whatsapp_audio,
@@ -1729,6 +1731,20 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     messages = db.query(WhatsAppConversationMessage).filter(
         WhatsAppConversationMessage.phone_number == conversation.phone_number
     ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(min(max(limit, 1), 200)).all()
+    attachments_by_message = {}
+    if messages:
+        attachments = db.query(WhatsAppMessageAttachment).filter(
+            WhatsAppMessageAttachment.message_id.in_([message.id for message in messages])
+        ).order_by(WhatsAppMessageAttachment.id).all()
+        for attachment in attachments:
+            attachments_by_message.setdefault(attachment.message_id, []).append({
+                "id": attachment.id, "type": attachment.media_type,
+                "mime_type": attachment.mime_type, "filename": attachment.filename,
+                "caption": attachment.caption, "size_bytes": attachment.file_size_bytes,
+                "duration_seconds": attachment.duration_seconds,
+                "url": (f"/crm/whatsapp/api/conversations/{conversation.id}/messages/"
+                        f"{attachment.message_id}/attachments/{attachment.id}/media"),
+            })
     order = db.query(WhatsAppOrderIntent).filter(
         WhatsAppOrderIntent.customer_whatsapp_phone == conversation.phone_number
     ).order_by(WhatsAppOrderIntent.updated_at.desc(), WhatsAppOrderIntent.id.desc()).first()
@@ -1752,6 +1768,7 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
         "duration_seconds": item.media_duration_seconds,
         "media_url": (f"/crm/whatsapp/api/conversations/{conversation.id}/messages/{item.id}/media"
                       if item.media_id else None),
+        "attachments": attachments_by_message.get(item.id, []),
         "product": ({"title": item.product_title, "variant": item.variant_title,
                      "sku": item.product_sku, "price": float(item.product_price),
                      "currency": item.product_currency or "LKR", "image": item.product_image_url,
@@ -1788,6 +1805,56 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     }
     return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
             "order": order_data, "sales_order": sales_order_data}
+
+
+@app.get("/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/attachments/{attachment_id}/media")
+def whatsapp_attachment_media(conversation_id: int, message_id: int, attachment_id: int, request: Request,
+                              db: Session = Depends(get_db), user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    attachment = db.query(WhatsAppMessageAttachment).join(
+        WhatsAppConversationMessage, WhatsAppMessageAttachment.message_id == WhatsAppConversationMessage.id
+    ).filter(
+        WhatsAppMessageAttachment.id == attachment_id,
+        WhatsAppConversationMessage.id == message_id,
+        WhatsAppConversationMessage.phone_number == conversation.phone_number,
+    ).one_or_none()
+    if attachment is None:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+               "Content-Security-Policy": "sandbox; default-src 'none'", "Referrer-Policy": "no-referrer"}
+    try:
+        content, mime = download_whatsapp_attachment(attachment.media_id, attachment.media_type)
+    except AttachmentMediaError as exc:
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
+    filename = attachment.filename or f"whatsapp-{attachment.media_type}"
+    filename = filename.replace("\\", "/").split("/")[-1]
+    filename = "".join(c for c in filename if ord(c) >= 32 and ord(c) != 127)[:255] or "attachment"
+    disposition = "attachment" if attachment.media_type == "document" else "inline"
+    headers["Content-Disposition"] = f"{disposition}; filename*=UTF-8''{quote(filename, safe='')}"
+    size = len(content)
+    headers["Accept-Ranges"] = "bytes"
+    requested_range = request.headers.get("range")
+    if requested_range:
+        try:
+            if not requested_range.startswith("bytes=") or "," in requested_range:
+                raise ValueError
+            start_text, end_text = requested_range[6:].split("-", 1)
+            if start_text:
+                if not start_text.isdigit() or (end_text and not end_text.isdigit()):
+                    raise ValueError
+                start = int(start_text)
+                end = min(int(end_text), size - 1) if end_text else size - 1
+            else:
+                if not end_text.isdigit() or int(end_text) <= 0:
+                    raise ValueError
+                start, end = max(size - int(end_text), 0), size - 1
+            if start < 0 or start >= size or end < start:
+                raise ValueError
+        except ValueError:
+            return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        return Response(content[start:end + 1], status_code=206, media_type=mime, headers=headers)
+    return Response(content, media_type=mime, headers=headers)
 
 
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media")
