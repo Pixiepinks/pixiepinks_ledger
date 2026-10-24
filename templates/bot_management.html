@@ -12,7 +12,7 @@
 {% if active == 'overview' %}
 <div class="bot-grid">
  <div class="bot-card metric"><span class="badge">LIVE</span><strong>Version {{ version }}</strong><small>Published configuration</small></div>
- <div class="bot-card metric"><span class="badge draft">DRAFT</span><strong>{{ config.draft_revision }}</strong><small>Draft revisions</small></div>
+ <div class="bot-card metric"><span class="badge draft">DRAFT</span><strong>{{ 'Unpublished changes' if config.draft_snapshot != config.published_snapshot else 'No unpublished changes' }}</strong><small>{{ config.draft_revision }} total draft saves (includes published saves)</small></div>
  <div class="bot-card metric"><strong>{{ live.knowledge|length }}</strong><small>Knowledge entries</small></div>
  <div class="bot-card metric"><strong>{{ live.faqs|length }}</strong><small>Approved FAQs</small></div>
  <div class="bot-card metric"><strong>{{ collection_options|length }}</strong><small>Shopify collections</small></div>
