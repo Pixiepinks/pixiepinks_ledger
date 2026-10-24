@@ -12,12 +12,14 @@ from urllib.parse import quote, urlparse
 from fastapi import (
     BackgroundTasks,
     Depends,
+    File,
     FastAPI,
     Form,
     HTTPException,
     Query,
     Request,
     Response,
+    UploadFile,
     status,
 )
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
@@ -26,7 +28,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from sqlalchemy import func, inspect, text, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from settings import settings
 from database import SessionLocal, engine
@@ -57,9 +59,13 @@ from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
     UNSUPPORTED_MESSAGE_REPLY,
+    download_whatsapp_media,
+    send_whatsapp_audio,
     send_whatsapp_image,
     send_whatsapp_text,
+    upload_whatsapp_audio,
 )
+from audio_service import MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
@@ -107,6 +113,7 @@ app.add_middleware(
     https_only=True,
 )
 
+
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["settings"] = settings
@@ -118,6 +125,86 @@ def get_db():
         yield db
     finally:
         db.close()
+
+@app.post("/webhooks/shopify/orders")
+async def receive_shopify_order_webhook(request: Request, db: Session = Depends(get_db)):
+    """Authenticate and idempotently ingest a bounded Shopify order lifecycle event."""
+    if not settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED:
+        raise HTTPException(status_code=404, detail="Shopify order lifecycle synchronization is disabled")
+    raw_body = await request.body()
+    if not verify_shopify_webhook(raw_body, request.headers.get("X-Shopify-Hmac-Sha256", ""),
+                                  settings.SHOPIFY_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid Shopify webhook signature")
+    topic = request.headers.get("X-Shopify-Topic", "")
+    webhook_id = request.headers.get("X-Shopify-Webhook-Id", "")
+    shop_domain = request.headers.get("X-Shopify-Shop-Domain", "").casefold()
+    expected_domain = f"{settings.SHOPIFY_SHOP}.myshopify.com".casefold()
+    if not settings.SHOPIFY_SHOP or shop_domain != expected_domain:
+        raise HTTPException(status_code=403, detail="Shopify webhook store is not authorized")
+    if topic != "orders/create":
+        return Response(status_code=204)
+    try:
+        payload = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=400, detail="Invalid Shopify webhook JSON") from None
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Invalid Shopify webhook payload")
+    try:
+        result = process_orders_create(db, payload, webhook_id=webhook_id,
+                                       shop_domain=shop_domain, raw_body=raw_body)
+    except ShopifyLifecycleError as exc:
+        raise HTTPException(status_code=503 if exc.retryable else exc.status_code,
+                            detail=str(exc)) from None
+    return {"status": result}
+
+
+@app.post("/webhooks/shopify/fulfillments")
+async def receive_shopify_fulfillment_webhook(request: Request, db: Session = Depends(get_db)):
+    """Record authenticated external state without replacing internal delivery evidence."""
+    if not settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED:
+        raise HTTPException(404, "Shopify fulfillment synchronization is disabled")
+    raw=await request.body()
+    if not verify_shopify_webhook(raw,request.headers.get("X-Shopify-Hmac-Sha256",""),settings.SHOPIFY_WEBHOOK_SECRET):
+        raise HTTPException(401,"Invalid Shopify webhook signature")
+    topic=request.headers.get("X-Shopify-Topic","");webhook_id=request.headers.get("X-Shopify-Webhook-Id","")
+    shop=request.headers.get("X-Shopify-Shop-Domain","").casefold();expected=f"{settings.SHOPIFY_SHOP}.myshopify.com".casefold()
+    if not settings.SHOPIFY_SHOP or shop!=expected:raise HTTPException(403,"Shopify webhook store is not authorized")
+    if topic not in {"fulfillments/create","fulfillments/update"}:return Response(status_code=204)
+    try:payload=json.loads(raw)
+    except (ValueError,UnicodeDecodeError):raise HTTPException(400,"Invalid Shopify webhook JSON") from None
+    if not isinstance(payload,dict) or not webhook_id:raise HTTPException(400,"Invalid Shopify webhook payload")
+    prior=db.query(ShopifyFulfillmentWebhookEvent).filter_by(webhook_id=webhook_id).one_or_none()
+    if prior:return {"status":prior.status}
+    remote_id=str(payload.get("admin_graphql_api_id") or "")
+    fulfillment=db.query(SalesFulfillment).filter_by(shopify_fulfillment_id=remote_id).one_or_none()
+    remote_updated_at = None
+    if payload.get("updated_at"):
+        try:
+            remote_updated_at = datetime.fromisoformat(
+                str(payload["updated_at"]).replace("Z", "+00:00")
+            ).replace(tzinfo=None)
+        except ValueError:
+            raise HTTPException(400, "Invalid Shopify fulfillment timestamp") from None
+    is_stale = bool(
+        fulfillment and remote_updated_at and fulfillment.shopify_remote_updated_at
+        and remote_updated_at < fulfillment.shopify_remote_updated_at
+    )
+    event=ShopifyFulfillmentWebhookEvent(webhook_id=webhook_id,topic=topic,shop_domain=shop,
+        payload_hash=hashlib.sha256(raw).hexdigest(),shopify_fulfillment_id=remote_id or None,
+        fulfillment_id=fulfillment.id if fulfillment else None,
+        status="IGNORED" if is_stale or not fulfillment else "PROCESSED",
+        error_summary=("Out-of-order Shopify fulfillment event" if is_stale else
+                       None if fulfillment else "No linked Ledger fulfillment"),
+        processed_at=datetime.utcnow())
+    if fulfillment and not is_stale:
+        fulfillment.shopify_fulfillment_status=str(payload.get("status") or payload.get("shipment_status") or "UNKNOWN")[:40]
+        fulfillment.shopify_remote_updated_at=remote_updated_at
+        fulfillment.shopify_synced_at=datetime.utcnow()
+    db.add(event)
+    try:db.commit()
+    except IntegrityError:
+        db.rollback();prior=db.query(ShopifyFulfillmentWebhookEvent).filter_by(webhook_id=webhook_id).one();return {"status":prior.status}
+    return {"status":event.status}
 
 # ---------------------- Helpers ----------------------
 LOGIN_PATH = "/login"
@@ -189,6 +276,9 @@ def _store_conversation_message(
     customer_name: str | None = None,
     whatsapp_message_id: str | None = None,
     response_kind: str | None = None,
+    media_id: str | None = None,
+    media_mime_type: str | None = None,
+    media_duration_seconds: float | None = None,
     created_at: datetime | None = None,
     message_type: str = "text",
     referral: dict | None = None,
@@ -1100,6 +1190,19 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                 for contact in (contacts if isinstance(contacts, list) else [])
                 if isinstance(contact, dict) and isinstance(contact.get("profile"), dict)
             }
+            deliveries = value.get("statuses", [])
+            for delivery in deliveries if isinstance(deliveries, list) else []:
+                if not isinstance(delivery, dict):
+                    continue
+                outbound_id, delivery_status = delivery.get("id"), delivery.get("status")
+                if (not isinstance(outbound_id, str)
+                        or delivery_status not in {"sent", "delivered", "read", "failed"}):
+                    continue
+                with SessionLocal() as db:
+                    db.query(WhatsAppConversationMessage).filter_by(
+                        whatsapp_message_id=outbound_id
+                    ).update({"send_status": delivery_status})
+                    db.commit()
             messages = value.get("messages", [])
             if not isinstance(messages, list):
                 continue
@@ -1323,13 +1426,16 @@ def startup():
     else:
         Base.metadata.create_all(bind=engine)
 
+    upgrade_database()
+
     ensure_item_sku_column()
     ensure_whatsapp_inbox_columns()
     init_db()
 
     with SessionLocal() as db:
-        if not db.query(User).filter_by(username="admin").first():
-            db.add(User(username="admin", password_hash=hash_password("change-me")))
+        admin = db.query(User).filter_by(username="admin").first()
+        if not admin:
+            db.add(User(username="admin", password_hash=hash_password("change-me"), role="ADMIN"))
             db.commit()
 
 
@@ -1600,12 +1706,17 @@ def _conversation_payload(db: Session, conversation: WhatsAppConversation,
 
 
 @app.get("/crm/whatsapp", response_class=HTMLResponse)
-def whatsapp_inbox(request: Request, conversation: int | None = None,
+def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order: int | None = None,
                    db: Session = Depends(get_db), user: User = Depends(require_user)):
     unread = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
     return templates.TemplateResponse("whatsapp_inbox.html", {
         "request": request, "initial_conversation_id": conversation, "unread_whatsapp": unread,
-        "page_title": "WhatsApp Inbox", "user": user,
+        "page_title": "WhatsApp Inbox", "user": user, "edit_order_id": edit_order,
+        "sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
+        "can_create_sales_order": settings.SALES_ORDERS_ENABLED and
+            "create" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()),
+        "can_approve_sales_discount": "approve_discount" in
+            SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()),
     })
 
 
@@ -1671,7 +1782,18 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     order = db.query(WhatsAppOrderIntent).filter(
         WhatsAppOrderIntent.customer_whatsapp_phone == conversation.phone_number
     ).order_by(WhatsAppOrderIntent.updated_at.desc(), WhatsAppOrderIntent.id.desc()).first()
+    sales_order = None
+    sales_order_count = 0
+    if settings.SALES_ORDERS_ENABLED:
+        sales_order_query = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter(
+            SalesOrder.crm_conversation_id == conversation.id
+        )
+        sales_order_count = sales_order_query.count()
+        sales_order = sales_order_query.order_by(
+            SalesOrder.updated_at.desc(), SalesOrder.id.desc()
+        ).first()
     message_data = [{
+        "id": item.id,
         "direction": item.direction, "text": item.message_text,
         "message_type": item.message_type or "text",
         "referral": item.referral,
@@ -1702,8 +1824,64 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
         "delivery_address": order.delivery_address, "primary_phone": order.primary_phone,
         "alternative_phone": order.alternative_phone,
     }
+    sales_order_data = None if sales_order is None else {
+        "id": sales_order.id,
+        "internal_order_number": sales_order.internal_order_number,
+        "order_status": sales_order.order_status,
+        "payment_status": sales_order.payment_status,
+        "shopify_sync_status": sales_order.shopify_sync_status,
+        "shopify_order_name": sales_order.shopify_order_name,
+        "shopify_lifecycle_status": sales_order.shopify_lifecycle_status,
+        "grand_total": float(sales_order.grand_total),
+        "currency": sales_order.currency,
+        "product_count": len(sales_order.lines),
+        "conversation_order_count": sales_order_count,
+        "view_url": f"/crm/sales-orders/{sales_order.id}",
+        "edit_url": (f"/crm/whatsapp?conversation={conversation.id}&edit_order={sales_order.id}"
+                     if sales_order.order_status == "DRAFT"
+                     and "edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()) else None),
+    }
     return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
-            "order": order_data}
+            "order": order_data, "sales_order": sales_order_data}
+
+
+@app.get("/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/media")
+def whatsapp_message_media(conversation_id: int, message_id: int, request: Request,
+                           db: Session = Depends(get_db), user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    message = db.query(WhatsAppConversationMessage).filter_by(
+        id=message_id, phone_number=conversation.phone_number
+    ).one_or_none()
+    if message is None or not message.media_id:
+        raise HTTPException(status_code=404, detail="Audio message not found")
+    downloaded = download_whatsapp_media(message.media_id)
+    if downloaded is None:
+        raise HTTPException(status_code=502, detail="Audio is temporarily unavailable")
+    content, mime_type = downloaded
+    safe_mime = mime_type if mime_type.startswith("audio/") else "audio/ogg"
+    size = len(content)
+    headers = {"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=300",
+               "X-Content-Type-Options": "nosniff"}
+    requested_range = request.headers.get("range", "")
+    if requested_range.startswith("bytes=") and "," not in requested_range:
+        try:
+            start_text, end_text = requested_range[6:].split("-", 1)
+            if start_text:
+                start = int(start_text)
+                end = min(int(end_text), size - 1) if end_text else size - 1
+            else:
+                suffix = int(end_text)
+                start, end = max(size - suffix, 0), size - 1
+            if start < 0 or start >= size or end < start:
+                raise ValueError
+        except (ValueError, TypeError):
+            return Response(status_code=416, headers={**headers, "Content-Range": f"bytes */{size}"})
+        partial = content[start:end + 1]
+        headers.update({"Content-Range": f"bytes {start}-{end}/{size}",
+                        "Content-Length": str(len(partial))})
+        return Response(content=partial, status_code=206, media_type=safe_mime, headers=headers)
+    headers["Content-Length"] = str(size)
+    return Response(content=content, media_type=safe_mime, headers=headers)
 
 
 @app.get("/crm/whatsapp/api/attachments/{attachment_id}")
@@ -1839,6 +2017,159 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     conversation.last_message_at = datetime.utcnow()
     db.commit()
     return {"ok": True, "status": "SENT"}
+
+
+@app.get("/crm/whatsapp/api/products")
+def whatsapp_product_search(q: str = Query("", max_length=100),
+                            limit: int = Query(20, ge=1, le=25),
+                            cursor: str | None = Query(None, max_length=500,
+                                                       pattern=r"^[A-Za-z0-9_+=/.-]+$"),
+                            user: User = Depends(require_user)):
+    """Authenticated, paginated live Shopify catalogue search for support staff."""
+    try:
+        return search_products_for_inbox(q, limit, cursor)
+    except ShopifyCatalogError:
+        logger.warning("Shopify inbox product search unavailable")
+        raise HTTPException(503, "Shopify product search is temporarily unavailable") from None
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/send-product")
+async def whatsapp_manual_product_send(conversation_id: int, request: Request,
+                                       db: Session = Depends(get_db),
+                                       user: User = Depends(require_user)):
+    conversation = _get_conversation(db, conversation_id)
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid request")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid request")
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if not key or len(key) > 100:
+        raise HTTPException(400, "A valid Idempotency-Key is required")
+    existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
+    if existing:
+        return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
+                            status_code=200 if existing.status == "SENT" else 409)
+    if (not conversation.last_customer_message_at
+            or datetime.utcnow() - conversation.last_customer_message_at > timedelta(hours=24)):
+        raise HTTPException(409, "The 24-hour customer service window is closed. Ask the customer to message again before sending this product.")
+    try:
+        product = resolve_inbox_product(payload.get("product_id"), payload.get("variant_id"))
+    except ShopifyCatalogError:
+        raise HTTPException(503, "Shopify product verification is temporarily unavailable") from None
+    if product is None:
+        raise HTTPException(422, "This product or variant is unavailable. Refresh the catalogue and choose again.")
+    variant_line = (f"\n{product['variant_title']}" if product.get("variant_title")
+                    and product["variant_title"] != "Default Title" else "")
+    caption = (f"{product['title']}{variant_line}\n"
+               f"Price: Rs. {product['price']:,.2f}\nView Product: {product['url']}")
+    attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
+                                message_text=caption, sent_by=user.username)
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
+    try:
+        result = send_whatsapp_image(conversation.phone_number, product["image"], caption,
+                                     return_message_id=True)
+    except Exception as exc:
+        logger.warning("Staff product send failed error_type=%s", type(exc).__name__)
+        result = None
+    if not result:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not send this product image. Verify the image and customer service window."}, status_code=502)
+    message_id = result if isinstance(result, str) else None
+    attempt.status, attempt.whatsapp_message_id = "SENT", message_id
+    db.add(WhatsAppConversationMessage(
+        phone_number=conversation.phone_number, direction="outbound", message_text=caption,
+        whatsapp_message_id=message_id, response_kind="staff_product", send_status="sent",
+        sent_by=user.username, shopify_product_reference=product["id"],
+        shopify_variant_reference=product["variant_id"], product_handle=product["handle"],
+        product_title=product["title"], variant_title=product.get("variant_title"),
+        product_sku=product.get("sku"), product_price=product["price"],
+        product_currency=product["currency"], product_image_url=product["image"],
+        product_url=product["url"],
+    ))
+    if message_id and not db.query(WhatsAppOutboundProductMessage).filter_by(
+            whatsapp_message_id=message_id).first():
+        db.add(WhatsAppOutboundProductMessage(
+            whatsapp_message_id=message_id, customer_phone=conversation.phone_number,
+            shopify_product_handle=product["handle"], product_title=product["title"],
+        ))
+    conversation.last_message_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "SENT"}
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/send-audio")
+async def whatsapp_manual_audio_send(
+    conversation_id: int,
+    request: Request,
+    audio: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    conversation = _get_conversation(db, conversation_id)
+    key = request.headers.get("Idempotency-Key", "").strip()
+    if not key or len(key) > 100:
+        raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+    existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
+    if existing:
+        return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
+                            status_code=200 if existing.status == "SENT" else 409)
+
+    content_type = audio.content_type or ""
+    raw = await audio.read(MAX_AUDIO_BYTES + 1)
+    await audio.close()
+    try:
+        voice_note, duration = normalize_voice_audio(raw, content_type)
+    except VoiceAudioError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    attempt = WhatsAppManualSend(
+        idempotency_key=key, conversation_id=conversation.id,
+        message_text="Voice message", sent_by=user.username,
+    )
+    db.add(attempt)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
+
+    try:
+        media_id = upload_whatsapp_audio(voice_note)
+    except Exception:
+        media_id = None
+    if not media_id:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not upload this voice message."}, status_code=502)
+    try:
+        outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=True)
+    except Exception:
+        outbound_id = None
+    if not outbound_id:
+        attempt.status = "FAILED"
+        db.commit()
+        return JSONResponse({"ok": False, "error": "Meta could not send this voice message."}, status_code=502)
+
+    attempt.status = "SENT"
+    attempt.whatsapp_message_id = outbound_id
+    db.add(WhatsAppConversationMessage(
+        phone_number=conversation.phone_number, direction="outbound",
+        message_text="Voice message", whatsapp_message_id=outbound_id,
+        response_kind="staff_audio", send_status="sent", sent_by=user.username,
+        media_id=media_id, media_mime_type="audio/ogg",
+        media_duration_seconds=duration,
+    ))
+    conversation.last_message_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True, "status": "SENT", "duration_seconds": duration}
 
 
 @app.get("/crm/orders", response_class=HTMLResponse)

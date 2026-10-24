@@ -1,0 +1,10 @@
+# PyAV's official Linux wheel bundles FFmpeg/codecs but dynamically links the
+# standard C++ runtime. Extend (rather than replace) Nixpacks' Python plan and
+# expose that runtime through Nixpacks' supported nixLibs mechanism.
+[phases.setup]
+nixLibs = ["...", "gcc-unwrapped"]
+
+# Fail the build instead of silently compiling PyAV against an incomplete or
+# incompatible system FFmpeg installation.
+[variables]
+PIP_ONLY_BINARY = "av"
