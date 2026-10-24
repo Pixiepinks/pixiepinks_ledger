@@ -2554,7 +2554,10 @@ def fulfillment_shopify_preflight(fulfillment_id:int,request:Request,db:Session=
     _require_sales_permission(user,"fulfill_admin");_require_csrf(request)
     try:op=create_fulfillment_preflight(db,fulfillment_id,user.username,request.headers.get("Idempotency-Key",""))
     except ShopifyFulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
-    return {"operation_id":op.operation_id,"status":op.status,"preflight":json.loads(op.preflight_json)}
+    return {"operation_id":op.operation_id,"status":op.status,
+        "fulfillment_id":op.fulfillment_id,"shopify_order_id":op.shopify_order_id,
+        "preflight_expires_at":op.preflight_expires_at.isoformat()+"Z",
+        "preflight":json.loads(op.preflight_json)}
 
 
 @app.post("/api/fulfillments/{fulfillment_id}/shopify/{operation_id}/execute")

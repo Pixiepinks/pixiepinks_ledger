@@ -1,6 +1,8 @@
 from decimal import Decimal
 from datetime import datetime, timedelta
 import threading
+from pathlib import Path
+from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 import main
@@ -19,7 +21,7 @@ def setup_function():
   for username,role in (("fulfill-admin","ADMIN"),("fulfill-agent","SALES_AGENT")):
    user=db.query(User).filter_by(username=username).one_or_none()
    if not user:db.add(User(username=username,password_hash=hash_password("password"),role=role))
-   else:user.role=role
+   else:user.role=role;user.password_hash=hash_password("password")
   db.commit()
 
 def order(db,shopify=True):
@@ -144,3 +146,38 @@ def test_api_feature_flags_permissions_and_csrf(monkeypatch):
  assert client.post(f"/api/sales-orders/{oid}/fulfillments",headers={"Idempotency-Key":"x"}).status_code==403
  token=client.get("/api/sales-orders/csrf").json()["csrf_token"]
  assert client.post(f"/api/sales-orders/{oid}/fulfillments",headers={"Idempotency-Key":"x","X-CSRF-Token":token}).status_code==403
+
+def test_fulfillment_preflight_api_returns_identity_and_expiry(monkeypatch):
+ client=TestClient(main.app,base_url="https://testserver");client.post("/login",data={"username":"fulfill-admin","password":"password","next":"/"})
+ monkeypatch.setattr(main.settings,"SALES_ORDERS_ENABLED",True);monkeypatch.setattr(main.settings,"SALES_FULFILLMENT_ENABLED",True);monkeypatch.setattr(main.settings,"SHOPIFY_FULFILLMENT_SYNC_ENABLED",True)
+ expires=datetime(2026,10,24,10,5,0)
+ operation=SimpleNamespace(operation_id="fresh-operation",status="PREFLIGHT_READY",fulfillment_id=1,
+  shopify_order_id="gid://shopify/Order/1803",preflight_expires_at=expires,preflight_json='{"request":{"notifyCustomer":false}}')
+ monkeypatch.setattr(main,"create_fulfillment_preflight",lambda *args,**kwargs:operation)
+ token=client.get("/api/sales-orders/csrf").json()["csrf_token"]
+ response=client.post("/api/fulfillments/1/shopify/preflight",headers={"X-CSRF-Token":token,"Idempotency-Key":"fresh-key"})
+ assert response.status_code==200
+ assert response.json()=={"operation_id":"fresh-operation","status":"PREFLIGHT_READY","fulfillment_id":1,
+  "shopify_order_id":"gid://shopify/Order/1803","preflight_expires_at":"2026-10-24T10:05:00Z",
+  "preflight":{"request":{"notifyCustomer":False}}}
+
+def test_expired_execute_error_contract_is_safe_and_frontend_uses_fresh_preflight(monkeypatch):
+ client=TestClient(main.app,base_url="https://testserver");client.post("/login",data={"username":"fulfill-admin","password":"password","next":"/"})
+ monkeypatch.setattr(main.settings,"SALES_ORDERS_ENABLED",True);monkeypatch.setattr(main.settings,"SALES_FULFILLMENT_ENABLED",True);monkeypatch.setattr(main.settings,"SHOPIFY_FULFILLMENT_SYNC_ENABLED",True)
+ def expired(*args,**kwargs):raise ShopifyFulfillmentError("Fresh fulfillment preflight is required",409)
+ monkeypatch.setattr(main,"execute_shopify_fulfillment",expired)
+ token=client.get("/api/sales-orders/csrf").json()["csrf_token"]
+ response=client.post("/api/fulfillments/1/shopify/stale-operation/execute",headers={"X-CSRF-Token":token},json={"confirmation":"CREATE SHOPIFY FULFILLMENT"})
+ assert response.status_code==409 and response.json()=={"detail":"Fresh fulfillment preflight is required"}
+ template=Path("templates/sales_order_detail.html").read_text()
+ handler=template.split("document.querySelectorAll('.fulfillment-execute')",1)[1].split("document.querySelectorAll('.fulfillment-reconcile')",1)[0]
+ assert "/shopify/preflight" in handler and "preflight.operation_id" in handler
+ assert "button.dataset.operation" not in handler and "typeof data.detail==='string'" in template
+ assert "if(button.disabled)return" in handler and "confirmation===null" in handler
+
+def test_invalid_confirmation_never_calls_shopify_mutation():
+ api=API()
+ with SessionLocal() as db:
+  f=ready(db);op=create_preflight(db,f.id,"admin","invalid-confirmation",api)
+  with pytest.raises(ShopifyFulfillmentError,match="Exact confirmation"):execute(db,f.id,op.operation_id,"admin","WRONG",api)
+  assert api.mutations==0
