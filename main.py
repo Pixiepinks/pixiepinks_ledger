@@ -3,6 +3,8 @@ import hmac
 import json
 import logging
 import re
+import threading
+import weakref
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import quote, urlparse
@@ -18,7 +20,7 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -47,8 +49,10 @@ from models import (
     WhatsAppManualSend,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
+    WhatsAppMediaAttachment,
+    BotAuditEvent, BotConfiguration, BotConfigurationVersion,
 )
-from ai_service import FALLBACK_REPLY, generate_customer_reply
+from ai_service import FALLBACK_REPLY, analyze_product_image, generate_customer_reply
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
@@ -59,6 +63,7 @@ from whatsapp_service import (
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
+    diagnose_bicycle_collections, discover_collections,
 )
 from bicycle_recommendation import (
     asks_about_fit,
@@ -78,6 +83,16 @@ from bicycle_recommendation import (
 from order_intent_service import (
     OrderIntentStatus, calculate_total, delivery_window, extract_sri_lankan_phones,
     get_bicycle_initial_service_charge, is_cancellation, service_decision,
+)
+from bot_configuration_service import (
+    HARD_GUARDRAILS, ensure_configuration, get_snapshot, publish as publish_bot_config,
+    recommended_size as configured_bicycle_size, restore_as_draft, save_draft,
+    service_charge as configured_service_charge, validate_snapshot,
+)
+from whatsapp_media_service import (
+    MediaConfigurationError, MediaDownloadError, delete_private_object,
+    download_meta_media, get_private_object, put_private_object, sanitize_filename,
+    storage_configured, media_storage_mode,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,18 +190,23 @@ def _store_conversation_message(
     whatsapp_message_id: str | None = None,
     response_kind: str | None = None,
     created_at: datetime | None = None,
-) -> None:
+    message_type: str = "text",
+    referral: dict | None = None,
+) -> int | None:
     try:
         with SessionLocal() as db:
-            db.add(WhatsAppConversationMessage(
+            stored = WhatsAppConversationMessage(
                 phone_number=phone_number,
                 customer_name=customer_name,
                 direction=direction,
                 message_text=message_text,
                 whatsapp_message_id=whatsapp_message_id,
                 response_kind=response_kind,
+                message_type=message_type,
+                referral=referral,
                 created_at=created_at or datetime.utcnow(),
-            ))
+            )
+            db.add(stored)
             phone = _normalize_whatsapp_phone(phone_number)
             conversation = db.query(WhatsAppConversation).filter_by(phone_number=phone).one_or_none()
             when = created_at or datetime.utcnow()
@@ -201,8 +221,10 @@ def _store_conversation_message(
                 conversation.last_customer_message_at = when
                 conversation.unread_count = (conversation.unread_count or 0) + 1
             db.commit()
+            return stored.id
     except SQLAlchemyError:
         logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+        return None
 
 
 def _normalize_whatsapp_phone(value: str) -> str:
@@ -359,7 +381,8 @@ def _start_bicycle_intent(sender: str, product: dict) -> str | None:
         return None
     variant = available[0]
     size = _variant_size(variant)
-    charge = get_bicycle_initial_service_charge(size)
+    with SessionLocal() as config_db:
+        charge = configured_service_charge(config_db, size) if size else None
     if charge is None:
         return "Please select the bicycle size before I quote the optional service charge."
     price = Decimal(str(variant["price"]))
@@ -410,7 +433,7 @@ def _active_order_reply(sender: str, text_body: str) -> str | None:
             if choice is None:
                 return ("Please confirm whether you would like the optional initial "
                         "service/greasing: yes or no.")
-            charge = get_bicycle_initial_service_charge(intent.bicycle_size) if choice else Decimal("0")
+            charge = configured_service_charge(db, intent.bicycle_size) if choice else Decimal("0")
             intent.initial_service_requested = choice
             intent.initial_service_charge = charge
             intent.final_total = calculate_total(intent.product_price, charge, 0)
@@ -474,12 +497,16 @@ def _active_order_reply(sender: str, text_body: str) -> str | None:
                    f"Shopify: {intent.product_url or ''}"),
         ))
         db.commit()
-        today, earliest, latest = delivery_window()
+        delivery_config, _ = get_snapshot(db)
+        minimum_days = delivery_config["delivery"]["minimum_working_days"]
+        maximum_days = delivery_config["delivery"]["maximum_working_days"]
+        today, earliest, latest = delivery_window(
+            minimum_days=minimum_days, maximum_days=maximum_days)
         return (f"Thank you 😊 Your delivery details have been received.\n\n🚲 {intent.product_title}\n"
                 f"Variant: {intent.variant_title or 'Selected variant'}\nTotal: Rs. {intent.final_total:,.0f}\n"
                 "🚚 Islandwide Delivery: FREE\n\nOur PixiePinks team will send you the bank/payment details.\n\n"
                 f"If payment is arranged today, {today.strftime('%d %B %Y')}, delivery is normally "
-                f"expected within approximately 3–4 working days: {earliest.strftime('%d %B %Y')} "
+                f"expected within approximately {minimum_days}–{maximum_days} working days: {earliest.strftime('%d %B %Y')} "
                 f"to {latest.strftime('%d %B %Y')}. Weekends are skipped; public holidays are not "
                 "currently included. This is an estimate, not a guaranteed delivery date.")
 
@@ -543,7 +570,8 @@ def _reply_to_text_message(
                     logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_age_invalid gender=%s",
                                 persisted_state, persisted_gender)
                     raise StopIteration
-                size_answer = recommended_bicycle_size(age_answer)
+                with SessionLocal() as config_db:
+                    size_answer, _ = configured_bicycle_size(config_db, age_answer)
                 _set_bicycle_workflow(sender, SHOWING_PRODUCTS, gender=persisted_gender,
                                       age=age_answer, size=size_answer)
                 persisted_age, persisted_size = age_answer, size_answer
@@ -660,7 +688,11 @@ def _reply_to_text_message(
                 # Reconstruct the last result intent, then fetch Shopify again;
                 # assistant prose is never treated as current product data.
                 if bicycle_stage == "results" and preference and (age is not None or prior_result_size):
-                    size = prior_result_size or recommended_bicycle_size(age)
+                    if prior_result_size:
+                        size = prior_result_size
+                    else:
+                        with SessionLocal() as config_db:
+                            size, _ = configured_bicycle_size(config_db, age)
                     collection_config = bicycle_collection(preference, size)
                     try:
                         result = (search_bicycles_by_collection(preference, size, limit=10)
@@ -718,7 +750,11 @@ def _reply_to_text_message(
                 reply = f"Great. How old is {pronoun}?"
                 _set_bicycle_workflow(sender, AWAITING_BICYCLE_AGE, gender=preference)
             elif bicycle_related and preference and (age is not None or direct_size):
-                size = int(direct_size) if direct_size else recommended_bicycle_size(age)
+                if direct_size:
+                    size = int(direct_size)
+                else:
+                    with SessionLocal() as config_db:
+                        size, _ = configured_bicycle_size(config_db, age)
                 collection_config = bicycle_collection(preference, size)
                 if collection_config is None:
                     reply = (f"A {size}-inch bicycle is an age-based starting recommendation, "
@@ -859,6 +895,153 @@ def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
     )
 
 
+def _safe_referral(value: object) -> dict | None:
+    """Keep useful Click-to-WhatsApp attribution without trusting arbitrary payload keys."""
+    if not isinstance(value, dict):
+        return None
+    allowed = ("source_url", "source_id", "source_type", "headline", "body",
+               "media_type", "image_url", "video_url", "thumbnail_url")
+    cleaned = {key: str(value[key])[:1000] for key in allowed
+               if value.get(key) is not None and isinstance(value.get(key), (str, int))}
+    return cleaned or None
+
+
+_media_fetch_locks_guard = threading.Lock()
+_media_fetch_locks: weakref.WeakValueDictionary[int, threading.Lock] = weakref.WeakValueDictionary()
+_media_fetch_slots = threading.BoundedSemaphore(4)
+
+
+def _attachment_lock(attachment_id: int) -> threading.Lock:
+    with _media_fetch_locks_guard:
+        return _media_fetch_locks.setdefault(attachment_id, threading.Lock())
+
+
+def _fetch_meta_attachment(db: Session, attachment: WhatsAppMediaAttachment,
+                           attempts: int = 2) -> tuple[bytes, str] | None:
+    """Fetch a fresh Meta URL, recording stable states without storing the URL or bytes."""
+    if attachment.status in {"EXPIRED", "UNSUPPORTED", "DELETED"}:
+        return None
+    attachment.status = "FETCHING"
+    db.commit()
+    final_status = "TEMPORARILY_UNAVAILABLE"
+    with _media_fetch_slots:
+        for attempt in range(1, attempts + 1):
+            attachment.retry_count = (attachment.retry_count or 0) + 1
+            db.commit()
+            try:
+                content, mime_type, digest = download_meta_media(
+                    attachment.meta_media_id, attachment.media_type)
+                attachment.mime_type = mime_type
+                attachment.sha256 = digest
+                attachment.file_size = len(content)
+                attachment.status = "AVAILABLE"
+                attachment.error_code = None
+                db.commit()
+                return content, mime_type
+            except MediaDownloadError as exc:
+                final_status = exc.status
+                logger.warning("Meta media fetch failed attachment_id=%s attempt=%s state=%s",
+                               attachment.id, attempt, final_status)
+                if final_status in {"EXPIRED", "UNSUPPORTED"}:
+                    break
+            except MediaConfigurationError:
+                final_status = "TEMPORARILY_UNAVAILABLE"
+                logger.warning("Meta media configuration unavailable attachment_id=%s", attachment.id)
+                break
+    attachment.status = final_status
+    attachment.error_code = ("MEDIA_EXPIRED" if final_status == "EXPIRED" else
+                             "UNSUPPORTED_MEDIA" if final_status == "UNSUPPORTED" else
+                             "META_FETCH_FAILED")
+    db.commit()
+    return None
+
+
+def _process_inbound_media(attachment_id: int, sender: str, profile_name: str | None,
+                           caption: str, message_id: str) -> None:
+    """Analyze AI-mode images; Meta mode deliberately creates no permanent copy."""
+    with SessionLocal() as db:
+        attachment = db.get(WhatsAppMediaAttachment, attachment_id)
+        if not attachment or attachment.status in {"EXPIRED", "UNSUPPORTED", "DELETED"}:
+            return
+        media_type = attachment.media_type
+        conversation = _conversation_for_phone(db, sender)
+        human_owned = bool(conversation and conversation.mode == "HUMAN")
+        mode = media_storage_mode()
+        if mode == "meta" and media_type != "image":
+            return
+        if media_type == "image" and human_owned:
+            return
+        if mode == "meta":
+            with _attachment_lock(attachment_id):
+                fetched = _fetch_meta_attachment(db, attachment, attempts=3)
+            if not fetched:
+                reply = ("I couldn't retrieve that WhatsApp image. Please resend it or send the "
+                         "product name or link so I can check our live catalogue.")
+                send_whatsapp_text(sender, reply)
+                _store_conversation_message(sender, "outbound", reply, customer_name=profile_name,
+                                            response_kind="image_ai_unavailable")
+                return
+            content, mime_type = fetched
+        else:
+            if not storage_configured():
+                attachment.status = "TEMPORARILY_UNAVAILABLE"
+                attachment.error_code = "STORAGE_NOT_CONFIGURED"
+                db.commit()
+                return
+            fetched = _fetch_meta_attachment(db, attachment, attempts=3)
+            if not fetched:
+                return
+            content, mime_type = fetched
+            extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+                         "video/mp4": "mp4", "video/3gpp": "3gp", "application/pdf": "pdf",
+                         "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a"}.get(mime_type, "bin")
+            key = f"whatsapp/{datetime.utcnow():%Y/%m}/{attachment.sha256[:16]}-{attachment.id}.{extension}"
+            try:
+                put_private_object(key, content, mime_type)
+            except Exception as exc:
+                logger.warning("Persistent media write failed attachment_id=%s error_type=%s",
+                               attachment_id, type(exc).__name__)
+                attachment.status = "TEMPORARILY_UNAVAILABLE"
+                attachment.error_code = "STORAGE_WRITE_FAILED"
+                db.commit()
+                return
+            attachment.storage_key = key
+            attachment.status = "READY"  # legacy S3 status retained for compatibility
+            db.commit()
+            if media_type != "image":
+                if not human_owned:
+                    _send_unsupported_reply(sender, profile_name)
+                return
+        published_config, _ = get_snapshot(db)
+        product_limit = published_config.get("global", {}).get("maximum_products", 3)
+    analysis = analyze_product_image(content, mime_type, caption)
+    attributes = analysis.get("attributes") or []
+    if not analysis.get("product_related") or not attributes:
+        reply = "Thanks for the image. Please send the product name, link, or a few more details so I can check our live catalogue."
+    else:
+        try:
+            products = search_products(" ".join(attributes), limit=min(max(int(product_limit), 1), 5))
+        except ShopifyCatalogError:
+            products = None
+        if products is None:
+            reply = SHOPIFY_FALLBACK_REPLY
+        elif len(products) == 1 and analysis.get("confidence") == "high":
+            reply = generate_customer_reply(
+                caption or "Please identify this product image.", profile_name,
+                catalog_results=products,
+            )
+        elif products:
+            names = ", ".join(str(product.get("title")) for product in products[:3])
+            reply = ("I found a few possible live catalogue matches: " + names +
+                     ". Which one did you mean, or can you share the product link?")
+        else:
+            reply = "I couldn't reliably match that image in our live catalogue. Please send the product name, link, or another detail."
+    sent = send_whatsapp_text(sender, reply)
+    logger.info("WhatsApp image-understanding outbound result=%s message_id=%s", sent, message_id)
+    _store_conversation_message(sender, "outbound", reply, customer_name=profile_name,
+                                response_kind="image_ai")
+
+
 # ---------------------- Meta WhatsApp Webhook ----------------------
 @app.get("/webhook")
 def verify_meta_webhook(
@@ -949,6 +1132,20 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     except IntegrityError:
                         db.rollback()
                         logger.info("Ignored duplicate WhatsApp message message_id=%s", message_id)
+                        stored_message = db.query(WhatsAppConversationMessage).filter_by(
+                            whatsapp_message_id=message_id).one_or_none()
+                        attachment = (db.query(WhatsAppMediaAttachment).filter_by(
+                            conversation_message_id=stored_message.id).one_or_none()
+                            if stored_message else None)
+                        if (attachment and attachment.media_type == "image" and
+                                attachment.status in {"PENDING", "FAILED", "TEMPORARILY_UNAVAILABLE"}):
+                            attachment.status = ("AVAILABLE" if media_storage_mode() == "meta" else "PENDING")
+                            db.commit()
+                            background_tasks.add_task(
+                                _process_inbound_media, attachment.id, sender,
+                                profile_names.get(sender), stored_message.message_text,
+                                message_id,
+                            )
                         continue
                     except SQLAlchemyError:
                         db.rollback()
@@ -956,6 +1153,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         continue
 
                 profile_name = profile_names.get(sender)
+                referral = _safe_referral(message.get("referral"))
                 text_body = None
                 if message_type == "text" and isinstance(message.get("text"), dict):
                     text_body = message["text"].get("body")
@@ -983,6 +1181,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         customer_name=profile_name,
                         whatsapp_message_id=message_id,
                         created_at=received_at,
+                        referral=referral,
                     )
                     background_tasks.add_task(
                         _reply_to_text_message,
@@ -996,11 +1195,64 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     "image", "audio", "video", "document", "sticker", "location",
                     "contacts", "reaction", "interactive",
                 }:
-                    with SessionLocal() as db:
-                        conversation = _conversation_for_phone(db, sender)
-                        human_owned = bool(conversation and conversation.mode == "HUMAN")
-                    if not human_owned:
-                        background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
+                    if message_type in {"image", "audio", "video", "document", "sticker"}:
+                        media = message.get(message_type)
+                        if not isinstance(media, dict):
+                            logger.warning("Inbound media object missing message_id=%s type=%s",
+                                           message_id, message_type)
+                            with SessionLocal() as db:
+                                conversation = _conversation_for_phone(db, sender)
+                                human_owned = bool(conversation and conversation.mode == "HUMAN")
+                            if not human_owned:
+                                background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
+                            continue
+                        media_id = media.get("id")
+                        if not isinstance(media_id, str) or not media_id:
+                            logger.warning("Inbound media ID missing message_id=%s type=%s",
+                                           message_id, message_type)
+                            continue
+                        caption = str(media.get("caption") or "").strip()[:2_000]
+                        voice = message_type == "audio" and media.get("voice") is True
+                        display_type = "voice" if voice else message_type
+                        label = caption or {
+                            "image": "[Image]", "video": "[Video]", "document": "[Document]",
+                            "audio": "[Voice note]" if voice else "[Audio]", "sticker": "[Sticker]",
+                        }[message_type]
+                        stored_id = _store_conversation_message(
+                            sender, "inbound", label, customer_name=profile_name,
+                            whatsapp_message_id=message_id, created_at=received_at,
+                            message_type=display_type, referral=referral,
+                        )
+                        if stored_id is None:
+                            continue
+                        with SessionLocal() as db:
+                            attachment = WhatsAppMediaAttachment(
+                                conversation_message_id=stored_id, meta_media_id=media_id,
+                                media_type=message_type, mime_type=str(media.get("mime_type") or "")[:100],
+                                filename=sanitize_filename(media.get("filename")),
+                                sha256=str(media.get("sha256") or "")[:128] or None,
+                                status=("AVAILABLE" if media_storage_mode() == "meta" else "PENDING"),
+                            )
+                            db.add(attachment)
+                            try:
+                                db.commit()
+                                attachment_id = attachment.id
+                            except IntegrityError:
+                                db.rollback()
+                                logger.info("Ignored duplicate WhatsApp media media_id=%s", media_id[-12:])
+                                continue
+                        if message_type == "image" or media_storage_mode() == "s3":
+                            background_tasks.add_task(
+                                _process_inbound_media, attachment_id, sender, profile_name,
+                                caption, message_id,
+                            )
+                    else:
+                        # Retain non-file messages as visible metadata rather than silently dropping them.
+                        _store_conversation_message(
+                            sender, "inbound", f"[{message_type.title()}]",
+                            customer_name=profile_name, whatsapp_message_id=message_id,
+                            created_at=received_at, message_type=message_type, referral=referral,
+                        )
 
     return {"status": "ok"}
 
@@ -1043,6 +1295,24 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
         status_code=303,
         headers={"Location": f"{LOGIN_PATH}?next={quote(request.url.path)}"}
     )
+
+
+def _bot_page_context(request: Request, db: Session, active: str, **extra) -> dict:
+    config = ensure_configuration(db)
+    draft, _ = get_snapshot(db, draft=True)
+    live, version = get_snapshot(db)
+    errors, warnings = validate_snapshot(draft)
+    versions = db.query(BotConfigurationVersion).order_by(
+        BotConfigurationVersion.version.desc()).limit(20).all()
+    audits = db.query(BotAuditEvent).order_by(BotAuditEvent.created_at.desc()).limit(10).all()
+    context = {
+        "request": request, "page_title": "AI Bot Management", "active": active,
+        "config": config, "draft": draft, "live": live, "version": version,
+        "errors": errors, "warnings": warnings, "versions": versions, "audits": audits,
+        "guardrails": HARD_GUARDRAILS,
+    }
+    context.update(extra)
+    return context
 
 # ---------------------- Startup ----------------------
 @app.on_event("startup")
@@ -1111,6 +1381,10 @@ def ensure_whatsapp_inbox_columns():
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN send_status VARCHAR(20)")
     if "sent_by" not in columns:
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN sent_by VARCHAR(100)")
+    if "message_type" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN message_type VARCHAR(20) DEFAULT 'text' NOT NULL")
+    if "referral" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN referral JSON")
     conversation_columns = {
         column["name"] for column in inspector.get_columns("whatsapp_conversations")
     } if inspector.has_table("whatsapp_conversations") else set()
@@ -1382,14 +1656,40 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     messages = db.query(WhatsAppConversationMessage).filter(
         WhatsAppConversationMessage.phone_number == conversation.phone_number
     ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(min(max(limit, 1), 200)).all()
+    attachments = db.query(WhatsAppMediaAttachment).filter(
+        WhatsAppMediaAttachment.conversation_message_id.in_([item.id for item in messages] or {-1})
+    ).all()
+    stale_before = datetime.utcnow() - timedelta(minutes=2)
+    stale_fetches = [item for item in attachments
+                     if item.status == "FETCHING" and item.updated_at and item.updated_at < stale_before]
+    for item in stale_fetches:
+        item.status = "TEMPORARILY_UNAVAILABLE"
+        item.error_code = "STALE_FETCH"
+    if stale_fetches:
+        db.commit()
+    attachment_by_message = {item.conversation_message_id: item for item in attachments}
     order = db.query(WhatsAppOrderIntent).filter(
         WhatsAppOrderIntent.customer_whatsapp_phone == conversation.phone_number
     ).order_by(WhatsAppOrderIntent.updated_at.desc(), WhatsAppOrderIntent.id.desc()).first()
     message_data = [{
         "direction": item.direction, "text": item.message_text,
+        "message_type": item.message_type or "text",
+        "referral": item.referral,
         "source": item.response_kind or ("customer" if item.direction == "inbound" else "ai"),
         "status": item.send_status or ("received" if item.direction == "inbound" else "sent"),
         "timestamp": item.created_at.isoformat(),
+        "attachment": ({
+            "id": attachment_by_message[item.id].id,
+            "type": attachment_by_message[item.id].media_type,
+            "mime_type": attachment_by_message[item.id].mime_type,
+            "filename": attachment_by_message[item.id].filename,
+            "size": attachment_by_message[item.id].file_size,
+            "status": attachment_by_message[item.id].status,
+            "url": (f"/crm/whatsapp/api/attachments/{attachment_by_message[item.id].id}"
+                    if attachment_by_message[item.id].status in {
+                        "READY", "AVAILABLE", "TEMPORARILY_UNAVAILABLE", "PENDING", "FAILED"
+                    } else None),
+        } if item.id in attachment_by_message else None),
     } for item in reversed(messages)]
     order_data = None if order is None else {
         "product_title": order.product_title, "variant_title": order.variant_title,
@@ -1404,6 +1704,66 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     }
     return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
             "order": order_data}
+
+
+@app.get("/crm/whatsapp/api/attachments/{attachment_id}")
+def whatsapp_attachment(attachment_id: int, db: Session = Depends(get_db),
+                        user: User = Depends(require_user)):
+    attachment = db.get(WhatsAppMediaAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment is unavailable")
+    if attachment.status == "EXPIRED":
+        raise HTTPException(410, "This WhatsApp attachment is no longer available. Please ask the customer to resend it.")
+    if attachment.status in {"UNSUPPORTED", "DELETED"}:
+        raise HTTPException(404, "Attachment is unavailable")
+    if attachment.storage_key:
+        try:
+            content, stored_type = get_private_object(attachment.storage_key)
+        except Exception as exc:
+            logger.warning("Private media read failed attachment_id=%s error_type=%s",
+                           attachment_id, type(exc).__name__)
+            raise HTTPException(404, "Attachment is unavailable") from None
+        mime_type = attachment.mime_type or stored_type
+    else:
+        with _attachment_lock(attachment_id):
+            db.refresh(attachment)
+            fetched = _fetch_meta_attachment(db, attachment, attempts=2)
+        if not fetched:
+            if attachment.status == "EXPIRED":
+                raise HTTPException(410, "This WhatsApp attachment is no longer available. Please ask the customer to resend it.")
+            if attachment.status == "UNSUPPORTED":
+                raise HTTPException(415, "This attachment type is not supported")
+            raise HTTPException(503, "WhatsApp media is temporarily unavailable")
+        content, mime_type = fetched
+    if len(content) > settings.MEDIA_MAX_BYTES:
+        raise HTTPException(413, "Attachment exceeds the configured limit")
+    disposition = "attachment" if attachment.media_type == "document" else "inline"
+    filename = sanitize_filename(attachment.filename) or f"attachment-{attachment.id}"
+    return StreamingResponse(
+        iter([content]), media_type=mime_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"',
+                 "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.post("/crm/whatsapp/api/attachments/{attachment_id}/delete")
+def delete_whatsapp_attachment(attachment_id: int, db: Session = Depends(get_db),
+                               user: User = Depends(require_user)):
+    attachment = db.get(WhatsAppMediaAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment was not found")
+    if attachment.storage_key:
+        try:
+            delete_private_object(attachment.storage_key)
+        except Exception as exc:
+            logger.warning("Private media deletion failed attachment_id=%s error_type=%s",
+                           attachment_id, type(exc).__name__)
+            raise HTTPException(503, "Attachment deletion could not be completed") from None
+    attachment.storage_key = None
+    attachment.status = "DELETED"
+    attachment.deleted_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/read")
@@ -1492,6 +1852,148 @@ def crm_orders(request: Request, status_filter: str = "active", db: Session = De
     orders = query.order_by(WhatsAppOrderIntent.updated_at.desc()).limit(200).all()
     return templates.TemplateResponse("crm_orders.html", {"request": request, "orders": orders,
         "status_filter": status_filter, "page_title": "Orders / Sales Intents", "user": user})
+
+
+@app.get("/crm/bot-management", response_class=HTMLResponse)
+@app.get("/crm/bot-management/{section}", response_class=HTMLResponse)
+def bot_management(request: Request, section: str = "overview", db: Session = Depends(get_db),
+                   user: User = Depends(require_user)):
+    allowed = {"overview", "instructions", "policies", "catalog", "rules", "faqs", "test", "versions"}
+    if section not in allowed:
+        raise HTTPException(status_code=404)
+    collections, catalog_error = [], None
+    if section == "catalog":
+        try:
+            collections = discover_collections(str(request.query_params.get("q", "")))
+        except ShopifyCatalogError:
+            catalog_error = "Shopify collection discovery is currently unavailable."
+    return templates.TemplateResponse("bot_management.html", _bot_page_context(
+        request, db, section, collections=collections, catalog_error=catalog_error))
+
+
+@app.post("/crm/bot-management/settings")
+def bot_save_settings(
+    request: Request, instructions: str = Form(...), maximum_products: int = Form(...),
+    reply_in_customer_language: bool = Form(False), ask_one_question: bool = Form(False),
+    moderate_emojis: bool = Form(False), concise: bool = Form(False),
+    send_product_images: bool = Form(False), db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    snapshot, _ = get_snapshot(db, draft=True)
+    snapshot["global"].update({
+        "instructions": instructions.strip(), "maximum_products": maximum_products,
+        "reply_in_customer_language": reply_in_customer_language,
+        "ask_one_question": ask_one_question, "moderate_emojis": moderate_emojis,
+        "concise": concise, "send_product_images": send_product_images,
+    })
+    save_draft(db, snapshot, user.username, "Updated response settings and global instructions")
+    return RedirectResponse("/crm/bot-management/instructions", status_code=303)
+
+
+@app.post("/crm/bot-management/bicycle")
+async def bot_save_bicycle(request: Request, db: Session = Depends(get_db),
+                            user: User = Depends(require_user)):
+    form = await request.form()
+    snapshot, _ = get_snapshot(db, draft=True)
+    rules = []
+    for index in range(4):
+        end_value = str(form.get(f"age_to_{index}", "")).strip()
+        rules.append({"from": int(form[f"age_from_{index}"]),
+                      "to": int(end_value) if end_value else None,
+                      "size": int(form[f"size_{index}"]),
+                      "enabled": form.get(f"enabled_{index}") == "on"})
+    charges = {str(size): str(Decimal(str(form[f"charge_{size}"])).quantize(Decimal("0.01")))
+               for size in (12, 16, 20, 26)}
+    snapshot["bicycle"]["age_rules"] = rules
+    snapshot["bicycle"]["service_charges"] = charges
+    snapshot["bicycle"]["free_islandwide_delivery"] = form.get("free_delivery") == "on"
+    snapshot["delivery"]["minimum_working_days"] = int(form["delivery_min"])
+    snapshot["delivery"]["maximum_working_days"] = int(form["delivery_max"])
+    save_draft(db, snapshot, user.username, "Updated bicycle, service and delivery rules")
+    return RedirectResponse("/crm/bot-management/rules", status_code=303)
+
+
+@app.post("/crm/bot-management/entry")
+def bot_add_entry(
+    kind: str = Form(...), scope: str = Form(...), scope_reference: str = Form(""),
+    title: str = Form(...), topic: str = Form(""), content: str = Form(...),
+    tags: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user),
+):
+    kind = kind.upper()
+    scope = scope.upper()
+    if kind not in {"KNOWLEDGE", "POLICY", "FAQ"} or scope not in {"GLOBAL", "COLLECTION", "PRODUCT"}:
+        raise HTTPException(400, "Invalid entry type or scope")
+    if not title.strip() or not content.strip() or len(content) > 10000:
+        raise HTTPException(400, "Title and approved content are required")
+    snapshot, _ = get_snapshot(db, draft=True)
+    bucket = {"KNOWLEDGE": "knowledge", "POLICY": "policies", "FAQ": "faqs"}[kind]
+    entries = snapshot.setdefault(bucket, [])
+    entries.append({"id": max([int(item.get("id", 0)) for item in entries] + [0]) + 1,
+                    "title": title.strip(), "topic": topic.strip(), "content": content.strip(),
+                    "scope": scope, "scope_reference": scope_reference.strip(),
+                    "tags": tags.strip(), "enabled": True})
+    save_draft(db, snapshot, user.username, f"Added draft {kind.lower()}: {title.strip()}")
+    return RedirectResponse(f"/crm/bot-management/{'faqs' if kind == 'FAQ' else 'policies' if kind == 'POLICY' else 'catalog'}", status_code=303)
+
+
+@app.post("/crm/bot-management/publish")
+def bot_publish(confirm: str = Form(""), change_summary: str = Form(...),
+                db: Session = Depends(get_db), user: User = Depends(require_user)):
+    if confirm != "PUBLISH":
+        raise HTTPException(400, "Explicit publish confirmation is required")
+    try:
+        publish_bot_config(db, user.username, change_summary.strip() or "Published configuration changes")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return RedirectResponse("/crm/bot-management/versions", status_code=303)
+
+
+@app.post("/crm/bot-management/versions/{version}/restore")
+def bot_restore(version: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    try:
+        restore_as_draft(db, version, user.username)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+    return RedirectResponse("/crm/bot-management/versions", status_code=303)
+
+
+@app.post("/crm/bot-management/test", response_class=HTMLResponse)
+def bot_test(request: Request, message: str = Form(...), mode: str = Form("live"),
+             db: Session = Depends(get_db), user: User = Depends(require_user)):
+    draft = mode == "draft"
+    snapshot, version = get_snapshot(db, draft=draft)
+    preference = detect_bicycle_preference(message)
+    age = extract_child_age(message)
+    trace = {"category": "Bicycles" if is_bicycle_request(message) else "General",
+             "mode": "DRAFT" if draft else "LIVE", "version": version,
+             "gender": preference, "age": age, "size": None, "matched_rule": None}
+    if trace["category"] == "Bicycles" and age is not None:
+        try:
+            size, _ = configured_bicycle_size(db, age, draft=draft)
+            trace["size"] = size
+            trace["matched_rule"] = next((rule for rule in snapshot["bicycle"]["age_rules"]
+                                           if rule.get("enabled") and age >= rule["from"] and
+                                           (rule.get("to") is None or age <= rule["to"])), None)
+            response = f"For a {age}-year-old, a {size}-inch bicycle is an age-based starting point."
+        except ValueError:
+            response = "No approved bicycle recommendation rule covers that age."
+    else:
+        response = "Simulation identified a general enquiry. No external message or business record was created."
+    return templates.TemplateResponse("bot_management.html", _bot_page_context(
+        request, db, "test", simulation={"message": message, "response": response, "trace": trace}))
+
+
+@app.post("/crm/bot-management/catalog/refresh")
+def bot_refresh_catalog(db: Session = Depends(get_db), user: User = Depends(require_user)):
+    # Read-only Shopify discovery. The catalogue remains in Shopify and is not duplicated.
+    try:
+        collections = discover_collections()
+        summary = f"Read-only Shopify collection discovery found {len(collections)} collections"
+    except ShopifyCatalogError:
+        summary = "Shopify collection discovery was unavailable; no catalogue data changed"
+    db.add(BotAuditEvent(action="SHOPIFY_REFRESH", summary=summary, actor=user.username))
+    db.commit()
+    return RedirectResponse("/crm/bot-management/catalog", status_code=303)
 
 
 @app.get("/crm", response_class=HTMLResponse)
