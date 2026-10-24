@@ -17,6 +17,25 @@ Normal startup supports both new databases and existing installations; direct
 database before upgrading. Roll back application code while retaining the new
 table; destructive downgrade is deliberately blocked to preserve metadata.
 
+### Phase 2: incoming media metadata registration
+
+The existing signed Meta `/webhook` now registers incoming image, document, video,
+audio, and sticker messages in conversation history and links their metadata to
+`whatsapp_message_attachments`. An allowlist accepts media IDs, bounded MIME types,
+filenames and captions, SHA-256 values, and optional valid sizes/durations. Unknown
+fields (including download URLs, tokens, and binary payloads) are ignored. A media
+message with missing or malformed media data receives a history placeholder without
+an attachment record; malformed optional fields are ignored.
+
+Media registration commits the delivery receipt, message, attachment, and inbox
+update together. Repeated delivery IDs are ignored, including within a batch. A
+database registration failure returns HTTP 503 so Meta can retry without a committed
+receipt hiding the failure. HUMAN conversations retain their mode and receive no
+automated reply; AI conversations retain the existing unsupported-media reply.
+Audio keeps its existing voice-message history and legacy playback fields. Captions
+are metadata only and never enter the text AI or Shopify matching flow. No new
+migration, media download, file storage, vision analysis, or UI change is introduced.
+
 ## CRM and customer-service workspace
 
 The authenticated `/crm` area is an operational workspace built into the existing
