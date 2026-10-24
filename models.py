@@ -516,6 +516,32 @@ class WhatsAppConversationMessage(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
+class WhatsAppMessageAttachment(Base):
+    """Provider attachment metadata only; never stores bytes, tokens or media URLs.
+
+    Phase 1 deliberately leaves existing voice fields and message handling intact.
+    One message can have multiple attachments, identified by provider media ID.
+    """
+
+    __tablename__ = "whatsapp_message_attachments"
+    __table_args__ = (
+        UniqueConstraint("message_id", "media_id", name="uq_whatsapp_attachment_message_media"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(Integer, ForeignKey("whatsapp_conversation_messages.id", ondelete="RESTRICT"),
+                        nullable=False, index=True)
+    media_id = Column(String(255), nullable=False)
+    media_type = Column(String(30), nullable=False)
+    mime_type = Column(String(100), nullable=True)
+    filename = Column(String(255), nullable=True)
+    caption = Column(Text, nullable=True)
+    sha256 = Column(String(64), nullable=True)
+    file_size_bytes = Column(Integer, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class WhatsAppConversation(Base):
     """Operational inbox state, keyed by a normalized WhatsApp phone number."""
 
