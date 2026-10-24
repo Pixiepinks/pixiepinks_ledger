@@ -53,6 +53,9 @@ from models import (
     BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
     SalesOrder, SalesOrderStatusHistory, SalesPayment, SalesPaymentAuditEvent, ShopifySyncEvent,
     ShopifyPaymentSyncOperation, ShopifyPaymentSyncAuditEvent,
+    SalesFulfillment, SalesFulfillmentItem, SalesDeliveryDetail, SalesFulfillmentEvent,
+    ShopifyFulfillmentOperation,
+    ShopifyFulfillmentWebhookEvent,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from seed import init_db
@@ -118,6 +121,11 @@ from sales_payment_service import (
 from shopify_payment_sync_service import (
     ShopifyPaymentSyncError, create_preflight, execute_operation, recover_operation,
 )
+from sales_fulfillment_service import (FulfillmentError, create_full_fulfillment,
+    transition as transition_fulfillment, update_delivery)
+from shopify_fulfillment_service import (ShopifyFulfillmentError,
+    create_preflight as create_fulfillment_preflight, execute as execute_shopify_fulfillment,
+    reconcile as reconcile_shopify_fulfillment)
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +182,55 @@ async def receive_shopify_order_webhook(request: Request, db: Session = Depends(
         raise HTTPException(status_code=503 if exc.retryable else exc.status_code,
                             detail=str(exc)) from None
     return {"status": result}
+
+
+@app.post("/webhooks/shopify/fulfillments")
+async def receive_shopify_fulfillment_webhook(request: Request, db: Session = Depends(get_db)):
+    """Record authenticated external state without replacing internal delivery evidence."""
+    if not settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED:
+        raise HTTPException(404, "Shopify fulfillment synchronization is disabled")
+    raw=await request.body()
+    if not verify_shopify_webhook(raw,request.headers.get("X-Shopify-Hmac-Sha256",""),settings.SHOPIFY_WEBHOOK_SECRET):
+        raise HTTPException(401,"Invalid Shopify webhook signature")
+    topic=request.headers.get("X-Shopify-Topic","");webhook_id=request.headers.get("X-Shopify-Webhook-Id","")
+    shop=request.headers.get("X-Shopify-Shop-Domain","").casefold();expected=f"{settings.SHOPIFY_SHOP}.myshopify.com".casefold()
+    if not settings.SHOPIFY_SHOP or shop!=expected:raise HTTPException(403,"Shopify webhook store is not authorized")
+    if topic not in {"fulfillments/create","fulfillments/update"}:return Response(status_code=204)
+    try:payload=json.loads(raw)
+    except (ValueError,UnicodeDecodeError):raise HTTPException(400,"Invalid Shopify webhook JSON") from None
+    if not isinstance(payload,dict) or not webhook_id:raise HTTPException(400,"Invalid Shopify webhook payload")
+    prior=db.query(ShopifyFulfillmentWebhookEvent).filter_by(webhook_id=webhook_id).one_or_none()
+    if prior:return {"status":prior.status}
+    remote_id=str(payload.get("admin_graphql_api_id") or "")
+    fulfillment=db.query(SalesFulfillment).filter_by(shopify_fulfillment_id=remote_id).one_or_none()
+    remote_updated_at = None
+    if payload.get("updated_at"):
+        try:
+            remote_updated_at = datetime.fromisoformat(
+                str(payload["updated_at"]).replace("Z", "+00:00")
+            ).replace(tzinfo=None)
+        except ValueError:
+            raise HTTPException(400, "Invalid Shopify fulfillment timestamp") from None
+    is_stale = bool(
+        fulfillment and remote_updated_at and fulfillment.shopify_remote_updated_at
+        and remote_updated_at < fulfillment.shopify_remote_updated_at
+    )
+    event=ShopifyFulfillmentWebhookEvent(webhook_id=webhook_id,topic=topic,shop_domain=shop,
+        payload_hash=hashlib.sha256(raw).hexdigest(),shopify_fulfillment_id=remote_id or None,
+        fulfillment_id=fulfillment.id if fulfillment else None,
+        status="IGNORED" if is_stale or not fulfillment else "PROCESSED",
+        error_summary=("Out-of-order Shopify fulfillment event" if is_stale else
+                       None if fulfillment else "No linked Ledger fulfillment"),
+        processed_at=datetime.utcnow())
+    if fulfillment and not is_stale:
+        fulfillment.shopify_fulfillment_status=str(payload.get("status") or payload.get("shipment_status") or "UNKNOWN")[:40]
+        fulfillment.shopify_remote_updated_at=remote_updated_at
+        fulfillment.shopify_synced_at=datetime.utcnow()
+    db.add(event)
+    try:db.commit()
+    except IntegrityError:
+        db.rollback();prior=db.query(ShopifyFulfillmentWebhookEvent).filter_by(webhook_id=webhook_id).one();return {"status":prior.status}
+    return {"status":event.status}
 
 # ---------------------- Helpers ----------------------
 LOGIN_PATH = "/login"
@@ -1160,9 +1217,9 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
 
 
 SALES_ORDER_PERMISSIONS = {
-    "ADMIN": {"create", "edit", "transition", "approve_discount", "verify_payment", "sync_shopify_payment",
+    "ADMIN": {"create", "edit", "transition", "approve_discount", "verify_payment", "sync_shopify_payment", "fulfill_operate", "fulfill_admin",
               "record_payment_claim", "dispatch", "cancel", "refund", "post_accounting", "sync_shopify"},
-    "SALES_MANAGER": {"create", "edit", "transition", "approve_discount",
+    "SALES_MANAGER": {"create", "edit", "transition", "approve_discount", "fulfill_operate",
                       "record_payment_claim", "dispatch", "cancel"},
     "SALES_AGENT": {"create", "edit", "record_payment_claim"},
     "STAFF": set(),
@@ -2006,6 +2063,16 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
     payment_enabled = settings.SALES_PAYMENT_TRACKING_ENABLED
     payment_sync_operations = db.query(ShopifyPaymentSyncOperation).filter_by(
         sales_order_id=order.id).order_by(ShopifyPaymentSyncOperation.created_at.desc()).limit(10).all()
+    fulfillments = db.query(SalesFulfillment).filter_by(sales_order_id=order.id).order_by(
+        SalesFulfillment.created_at.desc()).all()
+    fulfillment_details = {row.fulfillment_id: row for row in db.query(SalesDeliveryDetail).filter(
+        SalesDeliveryDetail.fulfillment_id.in_([item.id for item in fulfillments] or [-1])).all()}
+    fulfillment_events = db.query(SalesFulfillmentEvent).filter(
+        SalesFulfillmentEvent.fulfillment_id.in_([item.id for item in fulfillments] or [-1])).order_by(
+        SalesFulfillmentEvent.created_at.desc()).limit(50).all()
+    fulfillment_operations = {row.fulfillment_id: row for row in db.query(ShopifyFulfillmentOperation).filter(
+        ShopifyFulfillmentOperation.fulfillment_id.in_([item.id for item in fulfillments] or [-1])).order_by(
+        ShopifyFulfillmentOperation.created_at).all()}
     return templates.TemplateResponse("sales_order_detail.html", {"request": request,
         "page_title": order.internal_order_number, "order": order, "history": history,
         "can_edit": can_edit, "can_sync": can_sync, "can_create_sync": can_create_sync,
@@ -2028,6 +2095,11 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
             and settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED and payment_enabled
             and "sync_shopify_payment" in payment_permissions and bool(order.shopify_order_id)),
         "payment_sync_operations": payment_sync_operations,
+        "fulfillments": fulfillments, "fulfillment_details": fulfillment_details,
+        "fulfillment_events": fulfillment_events, "fulfillment_operations": fulfillment_operations,
+        "can_operate_fulfillment": (settings.SALES_FULFILLMENT_ENABLED and "fulfill_operate" in payment_permissions),
+        "can_admin_fulfillment": (settings.SALES_FULFILLMENT_ENABLED and "fulfill_admin" in payment_permissions),
+        "can_sync_fulfillment": (settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED and "fulfill_admin" in payment_permissions),
         "sync_events": sync_events, "user": user})
 
 
@@ -2421,6 +2493,89 @@ def recover_shopify_payment_sync(order_id: int, operation_id: str, request: Requ
     try: operation = recover_operation(db, order_id, operation_id, user.username)
     except ShopifyPaymentSyncError as exc: raise HTTPException(exc.status_code, str(exc)) from None
     return {"operation": _payment_sync_payload(operation)}
+
+
+def _require_fulfillment_enabled():
+    if not settings.SALES_FULFILLMENT_ENABLED: raise HTTPException(404, "Sales fulfillment is disabled")
+
+
+@app.get("/crm/fulfillments", response_class=HTMLResponse)
+def fulfillment_dashboard(request: Request, status_filter: str = "", courier: str = "",
+                          q: str = "", db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _require_sales_orders_enabled(); _require_fulfillment_enabled()
+    query=db.query(SalesFulfillment,SalesOrder,SalesDeliveryDetail).join(
+        SalesOrder,SalesOrder.id==SalesFulfillment.sales_order_id).outerjoin(
+        SalesDeliveryDetail,SalesDeliveryDetail.fulfillment_id==SalesFulfillment.id)
+    if status_filter:query=query.filter(SalesFulfillment.status==status_filter)
+    if courier:query=query.filter(SalesDeliveryDetail.courier_name.ilike(f"%{courier[:100]}%"))
+    if q:query=query.filter(or_(SalesOrder.internal_order_number.ilike(f"%{q[:100]}%"),SalesOrder.customer_name.ilike(f"%{q[:100]}%")))
+    rows=query.order_by(SalesFulfillment.updated_at.desc()).limit(200).all()
+    return templates.TemplateResponse("fulfillments.html",{"request":request,"page_title":"Fulfillments",
+        "rows":rows,"status_filter":status_filter,"courier":courier,"q":q,"user":user})
+
+
+@app.post("/api/sales-orders/{order_id}/fulfillments")
+async def create_order_fulfillment(order_id:int,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_sales_orders_enabled();_require_fulfillment_enabled();_require_sales_permission(user,"fulfill_operate");_require_csrf(request)
+    try:payload=await request.json()
+    except ValueError:payload={}
+    try:result=create_full_fulfillment(db,order_id,user.username,request.headers.get("Idempotency-Key",""),(payload or {}).get("assigned_staff"))
+    except FulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
+    return {"id":result.id,"reference":result.fulfillment_reference,"status":result.status,"version":result.version}
+
+
+@app.post("/api/fulfillments/{fulfillment_id}/transition")
+async def fulfillment_transition(fulfillment_id:int,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_fulfillment_enabled();_require_sales_permission(user,"fulfill_operate");_require_csrf(request)
+    try:payload=await request.json()
+    except ValueError:raise HTTPException(400,"Invalid JSON") from None
+    try:result=transition_fulfillment(db,fulfillment_id,str(payload.get("status") or ""),user.username,
+        request.headers.get("Idempotency-Key",""),payload.get("reason"),payload.get("version"),user.role=="ADMIN")
+    except FulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
+    return {"id":result.id,"status":result.status,"version":result.version}
+
+
+@app.post("/api/fulfillments/{fulfillment_id}/delivery")
+async def fulfillment_delivery(fulfillment_id:int,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_fulfillment_enabled()
+    if not settings.SALES_DELIVERY_TRACKING_ENABLED:raise HTTPException(404,"Sales delivery tracking is disabled")
+    _require_sales_permission(user,"fulfill_operate");_require_csrf(request)
+    try:payload=await request.json()
+    except ValueError:raise HTTPException(400,"Invalid JSON") from None
+    try:detail=update_delivery(db,fulfillment_id,payload,user.username,request.headers.get("Idempotency-Key",""))
+    except FulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
+    return {"delivery_method":detail.delivery_method,"tracking_number":detail.tracking_number}
+
+
+@app.post("/api/fulfillments/{fulfillment_id}/shopify/preflight")
+def fulfillment_shopify_preflight(fulfillment_id:int,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_fulfillment_enabled()
+    if not settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED:raise HTTPException(404,"Shopify fulfillment synchronization is disabled")
+    _require_sales_permission(user,"fulfill_admin");_require_csrf(request)
+    try:op=create_fulfillment_preflight(db,fulfillment_id,user.username,request.headers.get("Idempotency-Key",""))
+    except ShopifyFulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
+    return {"operation_id":op.operation_id,"status":op.status,"preflight":json.loads(op.preflight_json)}
+
+
+@app.post("/api/fulfillments/{fulfillment_id}/shopify/{operation_id}/execute")
+async def fulfillment_shopify_execute(fulfillment_id:int,operation_id:str,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_fulfillment_enabled()
+    if not settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED:raise HTTPException(404,"Shopify fulfillment synchronization is disabled")
+    _require_sales_permission(user,"fulfill_admin");_require_csrf(request)
+    payload=await request.json()
+    try:op=execute_shopify_fulfillment(db,fulfillment_id,operation_id,user.username,payload.get("confirmation") or "")
+    except ShopifyFulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
+    return {"operation_id":op.operation_id,"status":op.status,"shopify_fulfillment_id":op.shopify_fulfillment_id}
+
+
+@app.post("/api/fulfillments/{fulfillment_id}/shopify/{operation_id}/reconcile")
+def fulfillment_shopify_reconcile(fulfillment_id:int,operation_id:str,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    _require_fulfillment_enabled()
+    if not settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED:raise HTTPException(404,"Shopify fulfillment synchronization is disabled")
+    _require_sales_permission(user,"fulfill_admin");_require_csrf(request)
+    try:op=reconcile_shopify_fulfillment(db,fulfillment_id,operation_id,user.username)
+    except ShopifyFulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
+    return {"operation_id":op.operation_id,"status":op.status,"shopify_fulfillment_id":op.shopify_fulfillment_id}
 
 
 @app.get("/crm/bot-management", response_class=HTMLResponse)

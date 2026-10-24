@@ -561,3 +561,35 @@ tests and a purpose-built low-value non-production order first; then enable the 
 approval. Roll back by disabling `SHOPIFY_PAYMENT_SYNC_ENABLED` and restarting the application. Retain
 the operation and audit tables. This feature never modifies Ledger payment verification, posts journals
 or receivables, moves inventory, changes fulfillment/customers, or intentionally sends notifications.
+
+## Commercial Sales Orders — Phase 4D fulfillment and delivery
+
+Phase 4D adds an internal, audited fulfillment state machine and delivery records behind
+`SALES_FULFILLMENT_ENABLED=false`. The operational dashboard is also protected by this flag;
+Shopify writes are independently protected by `SHOPIFY_FULFILLMENT_SYNC_ENABLED=false`, and delivery
+tracking remains default-off with `SALES_DELIVERY_TRACKING_ENABLED=false`. Internal dispatch never
+triggers a Shopify mutation.
+
+Migration `20261024_08` additively creates fulfillment, item, delivery, event, Shopify-operation, and
+webhook-audit tables. The first release creates full-order fulfillment records while retaining item-level
+quantities for future partial fulfillment. It never modifies the legacy Sales Order fulfillment summary,
+payments, accounting journals, receivables, inventory, or customer communication. Tracking links must
+be HTTPS.
+
+Shopify API `2026-07` integration uses the Fulfillment Order model and `fulfillmentCreate`, always with
+`notifyCustomer: false`. Install and verify the scope appropriate to each accessible location:
+`write_merchant_managed_fulfillment_orders`, `write_assigned_fulfillment_orders`, or
+`write_third_party_fulfillment_orders`; Shopify also requires `fulfill_and_ship_orders`. Preflight fails
+closed for cancelled Orders, inaccessible or ineligible Fulfillment Orders, missing supported actions,
+ambiguous line mapping, insufficient quantities, mixed locations, incomplete pagination, or existing
+active operations. Timeouts become `RECONCILIATION_REQUIRED` and are never blindly retried.
+
+Optional `fulfillments/create` and `fulfillments/update` JSON webhooks use
+`/webhooks/shopify/fulfillments`, the existing HMAC secret, store check, and delivery-ID deduplication.
+They update only the external Shopify status snapshot and never overwrite internal delivery evidence.
+Register webhooks manually only after approval.
+
+Rollout: back up PostgreSQL; deploy with all three Phase 4D flags false; run `alembic upgrade head`;
+exercise Phase 4A–4C regressions; enable internal fulfillment first; validate Shopify scopes and read-only
+preflight next; review Shopify Flow/email/app side effects; then authorize one controlled low-value
+fulfillment. Roll back by disabling the flags and deploying the prior release while retaining audit data.

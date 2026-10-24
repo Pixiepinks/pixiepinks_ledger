@@ -283,6 +283,115 @@ class ShopifyPaymentSyncAuditEvent(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
 
 
+class SalesFulfillment(Base):
+    __tablename__ = "sales_fulfillments"
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    fulfillment_reference = Column(String(50), unique=True, nullable=False, index=True)
+    status = Column(String(40), nullable=False, default="UNFULFILLED", index=True)
+    created_by = Column(String(100), nullable=False)
+    assigned_staff = Column(String(100), index=True)
+    packing_notes = Column(Text)
+    packing_started_at = Column(DateTime)
+    ready_at = Column(DateTime)
+    dispatched_at = Column(DateTime)
+    delivered_at = Column(DateTime)
+    version = Column(Integer, nullable=False, default=1)
+    shopify_sync_status = Column(String(40), nullable=False, default="NOT_SYNCED", index=True)
+    shopify_fulfillment_id = Column(String(255), unique=True)
+    shopify_fulfillment_status = Column(String(40))
+    shopify_synced_at = Column(DateTime)
+    shopify_remote_updated_at = Column(DateTime)
+    shopify_sync_error = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SalesFulfillmentItem(Base):
+    __tablename__ = "sales_fulfillment_items"
+    __table_args__ = (UniqueConstraint("fulfillment_id", "sales_order_line_id", name="uq_fulfillment_order_line"),)
+    id = Column(Integer, primary_key=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    sales_order_line_id = Column(Integer, ForeignKey("sales_order_lines.id", ondelete="RESTRICT"), nullable=False, index=True)
+    quantity = Column(Numeric(14, 3), nullable=False)
+    quantity_fulfilled = Column(Numeric(14, 3), nullable=False, default=0)
+    quantity_returned = Column(Numeric(14, 3), nullable=False, default=0)
+    shopify_fulfillment_order_id = Column(String(255), index=True)
+    shopify_fulfillment_order_line_item_id = Column(String(255), index=True)
+
+
+class SalesDeliveryDetail(Base):
+    __tablename__ = "sales_delivery_details"
+    id = Column(Integer, primary_key=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), unique=True, nullable=False)
+    delivery_method = Column(String(40), nullable=False)
+    courier_name = Column(String(120))
+    courier_reference = Column(String(255))
+    tracking_number = Column(String(255))
+    tracking_url = Column(Text)
+    contact_snapshot = Column(String(255))
+    address_snapshot = Column(Text)
+    expected_delivery_date = Column(Date)
+    dispatch_date = Column(Date)
+    delivery_date = Column(Date)
+    delivery_remarks = Column(Text)
+    proof_of_delivery_reference = Column(String(500))
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SalesFulfillmentEvent(Base):
+    __tablename__ = "sales_fulfillment_events"
+    id = Column(Integer, primary_key=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    previous_status = Column(String(40))
+    new_status = Column(String(40), nullable=False, index=True)
+    actor = Column(String(100), nullable=False)
+    reason = Column(Text)
+    metadata_json = Column(Text)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class ShopifyFulfillmentOperation(Base):
+    __tablename__ = "shopify_fulfillment_operations"
+    id = Column(Integer, primary_key=True)
+    operation_id = Column(String(36), unique=True, nullable=False, index=True)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    shopify_order_id = Column(String(255), nullable=False, index=True)
+    active_fulfillment_id = Column(Integer, unique=True, index=True)
+    request_fingerprint = Column(String(64), nullable=False)
+    preflight_json = Column(Text, nullable=False)
+    status = Column(String(40), nullable=False, index=True)
+    claim_token = Column(String(64), index=True)
+    claim_expires_at = Column(DateTime, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    approved_by = Column(String(100))
+    approved_at = Column(DateTime)
+    preflight_expires_at = Column(DateTime, nullable=False)
+    shopify_fulfillment_id = Column(String(255), index=True)
+    error_summary = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime)
+
+
+class ShopifyFulfillmentWebhookEvent(Base):
+    __tablename__ = "shopify_fulfillment_webhook_events"
+    id = Column(Integer, primary_key=True)
+    webhook_id = Column(String(255), unique=True, nullable=False, index=True)
+    topic = Column(String(100), nullable=False)
+    shop_domain = Column(String(255), nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    shopify_fulfillment_id = Column(String(255), index=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), index=True)
+    status = Column(String(40), nullable=False, index=True)
+    error_summary = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    processed_at = Column(DateTime)
+
+
 class ShopifyWebhookEvent(Base):
     __tablename__ = "shopify_webhook_events"
     id = Column(Integer, primary_key=True)
