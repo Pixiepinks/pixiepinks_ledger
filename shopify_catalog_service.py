@@ -121,11 +121,34 @@ query SearchProducts($first: Int!, $query: String!) {
   products(first: $first, query: $query, sortKey: RELEVANCE) {
     nodes { id title handle productType vendor tags status
       featuredImage { url }
-      variants(first: 50) { nodes { id title sku price availableForSale
+      variants(first: 50) { nodes { id title sku price taxable availableForSale
         inventoryQuantity inventoryItem { tracked }
         selectedOptions { name value }
       } }
     }
+  }
+}
+"""
+
+# The management picker intentionally requests no variants.  It needs identity and
+# presentation metadata only, and must remain cheap even for a large catalogue.
+PRODUCT_PICKER_QUERY = """
+query ProductPicker($first: Int!, $query: String!, $after: String) {
+  products(first: $first, query: $query, after: $after, sortKey: RELEVANCE) {
+    nodes { id title handle productType vendor status featuredImage { url } }
+    pageInfo { hasNextPage endCursor }
+  }
+}
+"""
+
+INBOX_PRODUCT_PICKER_QUERY = """
+query InboxProductPicker($first: Int!, $query: String!, $after: String) {
+  products(first: $first, query: $query, after: $after, sortKey: RELEVANCE) {
+    nodes { id title handle productType vendor tags status publishedAt featuredImage { url }
+      variants(first: 50) { nodes { id title sku price taxable availableForSale
+        image { url } inventoryQuantity inventoryItem { tracked } } }
+    }
+    pageInfo { hasNextPage endCursor }
   }
 }
 """

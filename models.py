@@ -87,6 +87,343 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     username = Column(String(100), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
+    role = Column(String(30), nullable=False, default="STAFF", server_default="STAFF", index=True)
+
+
+# ---------------------- Commercial sales orders ----------------------
+class SalesOrder(Base):
+    __tablename__ = "sales_orders"
+    id = Column(Integer, primary_key=True)
+    internal_order_number = Column(String(40), unique=True, nullable=False, index=True)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    crm_conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), index=True)
+    crm_lead_id = Column(Integer, ForeignKey("leads.id"), index=True)
+    customer_id = Column(Integer, ForeignKey("customers.id"), index=True)
+    customer_name = Column(String(255), nullable=False)
+    whatsapp_phone = Column(String(50), nullable=False, index=True)
+    alternative_phone = Column(String(50))
+    delivery_contact_person = Column(String(255))
+    delivery_address = Column(Text)
+    city = Column(String(120))
+    district = Column(String(120))
+    postal_code = Column(String(30))
+    customer_notes = Column(Text)
+    order_status = Column(String(40), nullable=False, default="DRAFT", index=True)
+    payment_status = Column(String(40), nullable=False, default="UNPAID", index=True)
+    fulfillment_status = Column(String(40), nullable=False, default="UNFULFILLED", index=True)
+    shopify_sync_status = Column(String(40), nullable=False, default="NOT_SYNCED", index=True)
+    shopify_draft_order_id = Column(String(255), unique=True)
+    shopify_draft_order_name = Column(String(100), index=True)
+    shopify_order_id = Column(String(255), unique=True)
+    shopify_order_name = Column(String(100), index=True)
+    shopify_order_created_at = Column(DateTime)
+    shopify_order_linked_at = Column(DateTime)
+    shopify_source_draft_order_id = Column(String(255), index=True)
+    shopify_lifecycle_status = Column(String(40), nullable=False, default="NOT_LINKED", index=True)
+    shopify_lifecycle_synced_at = Column(DateTime)
+    shopify_lifecycle_error = Column(String(500))
+    shopify_financial_status = Column(String(40), index=True)
+    shopify_payment_status_refreshed_at = Column(DateTime)
+    shopify_payment_reconciliation_status = Column(String(40), nullable=False,
+                                                    default="NOT_CHECKED", index=True)
+    shopify_payment_reconciliation_warning = Column(String(500))
+    shopify_total_received = Column(Numeric(14, 2))
+    shopify_total_outstanding = Column(Numeric(14, 2))
+    shopify_total_refunded = Column(Numeric(14, 2))
+    shopify_payment_currency = Column(String(8))
+    shopify_sync_updated_at = Column(DateTime)
+    shopify_sync_error = Column(String(500))
+    subtotal = Column(Numeric(14, 2), nullable=False, default=0)
+    discount_total = Column(Numeric(14, 2), nullable=False, default=0)
+    shipping_total = Column(Numeric(14, 2), nullable=False, default=0)
+    tax_total = Column(Numeric(14, 2), nullable=False, default=0)
+    grand_total = Column(Numeric(14, 2), nullable=False, default=0)
+    amount_paid = Column(Numeric(14, 2), nullable=False, default=0)
+    currency = Column(String(8), nullable=False, default="LKR")
+    notes = Column(Text)
+    created_by = Column(String(100), nullable=False, index=True)
+    confirmed_by = Column(String(100))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    lines = relationship("SalesOrderLine", cascade="all, delete-orphan", back_populates="order")
+
+
+class SalesOrderLine(Base):
+    __tablename__ = "sales_order_lines"
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    inventory_item_id = Column(Integer, ForeignKey("items.id"), index=True)
+    shopify_product_id = Column(String(255), nullable=False, index=True)
+    shopify_variant_id = Column(String(255), nullable=False, index=True)
+    sku = Column(String(255), index=True)
+    product_name_snapshot = Column(String(500), nullable=False)
+    variant_name_snapshot = Column(String(500))
+    product_image_url = Column(Text)
+    product_url = Column(Text)
+    quantity = Column(Numeric(14, 3), nullable=False)
+    unit_price = Column(Numeric(14, 2), nullable=False)
+    discount_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    tax_amount = Column(Numeric(14, 2), nullable=False, default=0)
+    line_total = Column(Numeric(14, 2), nullable=False)
+    unit_cost_snapshot = Column(Numeric(14, 2))
+    order = relationship("SalesOrder", back_populates="lines")
+
+
+class SalesPayment(Base):
+    __tablename__ = "sales_payments"
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    payment_reference = Column(String(255), index=True)
+    idempotency_key = Column(String(100), unique=True, index=True)
+    request_payload_hash = Column(String(64))
+    deduplication_key = Column(String(255), unique=True, index=True)
+    payment_method = Column(String(40), nullable=False)
+    amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(8), nullable=False, default="LKR")
+    payment_date = Column(Date, nullable=False)
+    verification_status = Column(String(40), nullable=False, default="PENDING", index=True)
+    source = Column(String(40), nullable=False, default="STAFF_RECORDED")
+    claimed_by = Column(String(100))
+    claimed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    verified_by = Column(String(100))
+    verified_at = Column(DateTime)
+    rejected_by = Column(String(100))
+    rejected_at = Column(DateTime)
+    rejection_reason = Column(Text)
+    accounting_entry_id = Column(Integer, ForeignKey("journal_entries.id"))
+    notes = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SalesPaymentAuditEvent(Base):
+    __tablename__ = "sales_payment_audit_events"
+    id = Column(Integer, primary_key=True)
+    sales_payment_id = Column(Integer, ForeignKey("sales_payments.id", ondelete="RESTRICT"),
+                              nullable=False, index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"),
+                            nullable=False, index=True)
+    action = Column(String(40), nullable=False, index=True)
+    previous_status = Column(String(40))
+    new_status = Column(String(40), nullable=False)
+    actor = Column(String(100), nullable=False)
+    reason = Column(Text)
+    idempotency_key = Column(String(100), unique=True, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class SalesOrderStatusHistory(Base):
+    __tablename__ = "sales_order_status_history"
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="CASCADE"), nullable=False, index=True)
+    previous_status = Column(String(40), nullable=False)
+    new_status = Column(String(40), nullable=False, index=True)
+    changed_by = Column(String(100), nullable=False)
+    reason = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class ShopifySyncEvent(Base):
+    __tablename__ = "shopify_sync_events"
+    id = Column(Integer, primary_key=True)
+    event_id = Column(String(255), unique=True, index=True)
+    event_type = Column(String(80), nullable=False, index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), index=True)
+    external_reference = Column(String(255), index=True)
+    direction = Column(String(20), nullable=False)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    status = Column(String(40), nullable=False, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    error_summary = Column(String(500))
+    actor = Column(String(100))
+    claim_token = Column(String(64), index=True)
+    claim_expires_at = Column(DateTime, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    processed_at = Column(DateTime)
+
+
+class ShopifyPaymentSyncOperation(Base):
+    __tablename__ = "shopify_payment_sync_operations"
+    id = Column(Integer, primary_key=True)
+    operation_id = Column(String(36), unique=True, nullable=False, index=True)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    shopify_order_id = Column(String(255), nullable=False, index=True)
+    # A nullable unique key is the portable equivalent of an active-operation partial index.
+    # It remains populated for successful and unresolved operations and is cleared only when
+    # read-only evidence proves a mutation was never issued.
+    active_shopify_order_id = Column(String(255), unique=True, index=True)
+    mutation_name = Column(String(80), nullable=False, default="orderMarkAsPaid")
+    intended_amount = Column(Numeric(14, 2), nullable=False)
+    currency = Column(String(8), nullable=False)
+    ledger_payment_fingerprint = Column(String(64), nullable=False)
+    preflight_financial_status = Column(String(40), nullable=False)
+    preflight_shopify_outstanding = Column(Numeric(14, 2), nullable=False)
+    preflight_transaction_fingerprint = Column(String(64), nullable=False)
+    status = Column(String(40), nullable=False, index=True)
+    claim_token = Column(String(64), index=True)
+    claim_expires_at = Column(DateTime, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    shopify_transaction_id = Column(String(255), index=True)
+    error_summary = Column(String(500))
+    approved_by = Column(String(100))
+    approved_at = Column(DateTime)
+    preflight_expires_at = Column(DateTime, nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime)
+
+
+class ShopifyPaymentSyncAuditEvent(Base):
+    __tablename__ = "shopify_payment_sync_audit_events"
+    id = Column(Integer, primary_key=True)
+    operation_id = Column(Integer, ForeignKey("shopify_payment_sync_operations.id", ondelete="RESTRICT"), nullable=False, index=True)
+    action = Column(String(50), nullable=False, index=True)
+    actor = Column(String(100), nullable=False)
+    detail = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class SalesFulfillment(Base):
+    __tablename__ = "sales_fulfillments"
+    id = Column(Integer, primary_key=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    fulfillment_reference = Column(String(50), unique=True, nullable=False, index=True)
+    status = Column(String(40), nullable=False, default="UNFULFILLED", index=True)
+    created_by = Column(String(100), nullable=False)
+    assigned_staff = Column(String(100), index=True)
+    packing_notes = Column(Text)
+    packing_started_at = Column(DateTime)
+    ready_at = Column(DateTime)
+    dispatched_at = Column(DateTime)
+    delivered_at = Column(DateTime)
+    version = Column(Integer, nullable=False, default=1)
+    shopify_sync_status = Column(String(40), nullable=False, default="NOT_SYNCED", index=True)
+    shopify_fulfillment_id = Column(String(255), unique=True)
+    shopify_fulfillment_status = Column(String(40))
+    shopify_synced_at = Column(DateTime)
+    shopify_remote_updated_at = Column(DateTime)
+    shopify_sync_error = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SalesFulfillmentItem(Base):
+    __tablename__ = "sales_fulfillment_items"
+    __table_args__ = (UniqueConstraint("fulfillment_id", "sales_order_line_id", name="uq_fulfillment_order_line"),)
+    id = Column(Integer, primary_key=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    sales_order_line_id = Column(Integer, ForeignKey("sales_order_lines.id", ondelete="RESTRICT"), nullable=False, index=True)
+    quantity = Column(Numeric(14, 3), nullable=False)
+    quantity_fulfilled = Column(Numeric(14, 3), nullable=False, default=0)
+    quantity_returned = Column(Numeric(14, 3), nullable=False, default=0)
+    shopify_fulfillment_order_id = Column(String(255), index=True)
+    shopify_fulfillment_order_line_item_id = Column(String(255), index=True)
+
+
+class SalesDeliveryDetail(Base):
+    __tablename__ = "sales_delivery_details"
+    id = Column(Integer, primary_key=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), unique=True, nullable=False)
+    delivery_method = Column(String(40), nullable=False)
+    courier_name = Column(String(120))
+    courier_reference = Column(String(255))
+    tracking_number = Column(String(255))
+    tracking_url = Column(Text)
+    contact_snapshot = Column(String(255))
+    address_snapshot = Column(Text)
+    expected_delivery_date = Column(Date)
+    dispatch_date = Column(Date)
+    delivery_date = Column(Date)
+    delivery_remarks = Column(Text)
+    proof_of_delivery_reference = Column(String(500))
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class SalesFulfillmentEvent(Base):
+    __tablename__ = "sales_fulfillment_events"
+    id = Column(Integer, primary_key=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    previous_status = Column(String(40))
+    new_status = Column(String(40), nullable=False, index=True)
+    actor = Column(String(100), nullable=False)
+    reason = Column(Text)
+    metadata_json = Column(Text)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class ShopifyFulfillmentOperation(Base):
+    __tablename__ = "shopify_fulfillment_operations"
+    id = Column(Integer, primary_key=True)
+    operation_id = Column(String(36), unique=True, nullable=False, index=True)
+    idempotency_key = Column(String(100), unique=True, nullable=False)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), nullable=False, index=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), nullable=False, index=True)
+    shopify_order_id = Column(String(255), nullable=False, index=True)
+    active_fulfillment_id = Column(Integer, unique=True, index=True)
+    request_fingerprint = Column(String(64), nullable=False)
+    preflight_json = Column(Text, nullable=False)
+    status = Column(String(40), nullable=False, index=True)
+    claim_token = Column(String(64), index=True)
+    claim_expires_at = Column(DateTime, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    approved_by = Column(String(100))
+    approved_at = Column(DateTime)
+    preflight_expires_at = Column(DateTime, nullable=False)
+    shopify_fulfillment_id = Column(String(255), index=True)
+    error_summary = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    completed_at = Column(DateTime)
+
+
+class ShopifyFulfillmentWebhookEvent(Base):
+    __tablename__ = "shopify_fulfillment_webhook_events"
+    id = Column(Integer, primary_key=True)
+    webhook_id = Column(String(255), unique=True, nullable=False, index=True)
+    topic = Column(String(100), nullable=False)
+    shop_domain = Column(String(255), nullable=False)
+    payload_hash = Column(String(64), nullable=False)
+    shopify_fulfillment_id = Column(String(255), index=True)
+    fulfillment_id = Column(Integer, ForeignKey("sales_fulfillments.id", ondelete="RESTRICT"), index=True)
+    status = Column(String(40), nullable=False, index=True)
+    error_summary = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    processed_at = Column(DateTime)
+
+
+class ShopifyWebhookEvent(Base):
+    __tablename__ = "shopify_webhook_events"
+    id = Column(Integer, primary_key=True)
+    webhook_id = Column(String(255), unique=True, nullable=False, index=True)
+    topic = Column(String(100), nullable=False, index=True)
+    shop_domain = Column(String(255), nullable=False, index=True)
+    payload_hash = Column(String(64), nullable=False)
+    shopify_order_id = Column(String(255), index=True)
+    sales_order_id = Column(Integer, ForeignKey("sales_orders.id", ondelete="RESTRICT"), index=True)
+    status = Column(String(40), nullable=False, index=True)
+    attempts = Column(Integer, nullable=False, default=1)
+    claim_token = Column(String(64), index=True)
+    claim_expires_at = Column(DateTime, index=True)
+    error_summary = Column(String(500))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    processed_at = Column(DateTime)
+
+
+class AccountingPostingLink(Base):
+    __tablename__ = "accounting_posting_links"
+    __table_args__ = (UniqueConstraint("source_document_type", "source_document_id", "posting_event_type",
+                                       name="uq_accounting_posting_source_event"),)
+    id = Column(Integer, primary_key=True)
+    source_document_type = Column(String(50), nullable=False)
+    source_document_id = Column(Integer, nullable=False)
+    posting_event_type = Column(String(50), nullable=False)
+    journal_entry_id = Column(Integer, ForeignKey("journal_entries.id", ondelete="RESTRICT"), nullable=False, unique=True)
+    reversal_reference = Column(Integer, ForeignKey("accounting_posting_links.id"))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 # ----------------------

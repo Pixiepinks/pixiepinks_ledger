@@ -6,9 +6,9 @@
   <title>{{ page_title or request.app.title }}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/crm.css">
+  <link rel="stylesheet" href="/static/crm.css?v=20261021-order-panel">
 </head>
-<body class="app-body">
+<body class="app-body{{ ' whatsapp-page' if request.url.path.startswith('/crm/whatsapp') else '' }}">
 {% if request.url.path != '/login' %}
   <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation" aria-expanded="false">☰</button>
   <div class="sidebar-scrim" id="sidebar-scrim"></div>
@@ -25,6 +25,8 @@
       <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>
       <p class="nav-label">Sales</p>
       <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>
+      {% if settings.SALES_ORDERS_ENABLED %}<a href="/crm/sales-orders" class="{{ 'active' if request.url.path.startswith('/crm/sales-orders') else '' }}"><span>▣</span> Sales Orders</a>{% endif %}
+      {% if settings.SALES_FULFILLMENT_ENABLED %}<a href="/crm/fulfillments" class="{{ 'active' if request.url.path.startswith('/crm/fulfillments') else '' }}"><span>▰</span> Fulfillments</a>{% endif %}
       <p class="nav-label">Inventory / business</p>
       <a href="/items" class="{{ 'active' if request.url.path == '/items' else '' }}"><span>□</span> Items</a>
       <a href="/suppliers" class="{{ 'active' if request.url.path == '/suppliers' else '' }}"><span>♢</span> Suppliers</a>

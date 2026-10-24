@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     SHOPIFY_SHOP: Optional[str] = None
     SHOPIFY_CLIENT_ID: Optional[str] = None
     SHOPIFY_CLIENT_SECRET: Optional[str] = None
+    SHOPIFY_WEBHOOK_SECRET: Optional[str] = None
     SHOPIFY_API_VERSION: str = "2026-07"
     WHATSAPP_MEDIA_STORAGE_MODE: str = "meta"
     MEDIA_STORAGE_BUCKET: Optional[str] = None
