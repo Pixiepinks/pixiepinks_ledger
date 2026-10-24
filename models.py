@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON
+from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
@@ -500,34 +500,20 @@ class WhatsAppConversationMessage(Base):
     response_kind = Column(String(20), nullable=True)
     send_status = Column(String(20), nullable=True)
     sent_by = Column(String(100), nullable=True)
-    message_type = Column(String(20), nullable=False, default="text")
-    referral = Column(JSON, nullable=True)
+    media_id = Column(String(255), nullable=True)
+    media_mime_type = Column(String(100), nullable=True)
+    media_duration_seconds = Column(Float, nullable=True)
+    shopify_product_reference = Column(String(255), nullable=True)
+    shopify_variant_reference = Column(String(255), nullable=True)
+    product_handle = Column(String(255), nullable=True)
+    product_title = Column(String(500), nullable=True)
+    variant_title = Column(String(500), nullable=True)
+    product_sku = Column(String(255), nullable=True)
+    product_price = Column(Numeric(14, 2), nullable=True)
+    product_currency = Column(String(8), nullable=True)
+    product_image_url = Column(Text, nullable=True)
+    product_url = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
-
-
-class WhatsAppMediaAttachment(Base):
-    """Private object-store reference for inbound Meta media; never a public URL."""
-
-    __tablename__ = "whatsapp_media_attachments"
-
-    id = Column(Integer, primary_key=True)
-    conversation_message_id = Column(
-        Integer, ForeignKey("whatsapp_conversation_messages.id", ondelete="CASCADE"),
-        nullable=False, unique=True, index=True,
-    )
-    meta_media_id = Column(String(255), nullable=False, unique=True, index=True)
-    media_type = Column(String(20), nullable=False)
-    mime_type = Column(String(100))
-    filename = Column(String(255))
-    sha256 = Column(String(128))
-    file_size = Column(Integer)
-    storage_key = Column(String(700))
-    status = Column(String(20), nullable=False, default="PENDING", index=True)
-    error_code = Column(String(50))
-    retry_count = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
-    deleted_at = Column(DateTime)
 
 
 class WhatsAppConversation(Base):
@@ -667,3 +653,34 @@ class BotAuditEvent(Base):
     summary = Column(Text, nullable=False)
     actor = Column(String(100))
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class ShopifyCollectionReference(Base):
+    """Lightweight, read-only directory metadata last observed in Shopify."""
+
+    __tablename__ = "shopify_collection_references"
+    id = Column(Integer, primary_key=True)
+    shopify_id = Column(String(255), unique=True, nullable=False, index=True)
+    handle = Column(String(255), unique=True, nullable=False, index=True)
+    title = Column(String(500), nullable=False, index=True)
+    product_count = Column(Integer)
+    active = Column(Boolean, nullable=False, default=True, index=True)
+    last_seen_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    refreshed_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+
+
+class BotGuidedFlowState(Base):
+    """Version-pinned structured state for a live generic guided flow."""
+
+    __tablename__ = "bot_guided_flow_states"
+    id = Column(Integer, primary_key=True)
+    conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"),
+                             unique=True, nullable=False, index=True)
+    configuration_version = Column(Integer, nullable=False, index=True)
+    collection_reference = Column(String(255), nullable=False, index=True)
+    current_question_key = Column(String(100))
+    normalized_answers = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="ACTIVE", index=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow,
+                        onupdate=datetime.utcnow)
