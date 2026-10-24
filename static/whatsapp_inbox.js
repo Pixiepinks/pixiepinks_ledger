@@ -58,6 +58,42 @@
     if (value.contact_person_name) order.append(detailRow("Contact", value.contact_person_name), detailRow("Primary phone", value.primary_phone), detailRow("Alternative phone", value.alternative_phone), detailRow("Delivery address", value.delivery_address));
     if (value.product_url?.startsWith("https://")) { const link = document.createElement("a"); link.href = value.product_url; link.target = "_blank"; link.rel = "noopener noreferrer"; text(link, "Open in Shopify ↗"); order.append(link); }
   }
+  function renderAttachment(attachment) {
+    const card = document.createElement("section"), heading = document.createElement("strong"), info = document.createElement("small");
+    card.className = "message-attachment";
+    text(heading, attachment.filename || ({image: "Image", sticker: "Sticker", video: "Video", document: "Document", audio: "Audio"})[attachment.type] || "Attachment");
+    const size = Number(attachment.size_bytes);
+    text(info, [attachment.mime_type, size > 0 ? `${(size / (1024 * 1024)).toFixed(2)} MB` : ""].filter(Boolean).join(" · "));
+    card.append(heading, info);
+    if (attachment.caption) { const caption = document.createElement("p"); text(caption, attachment.caption); card.append(caption); }
+    // Only application-owned authenticated routes may be used as media sources.
+    if (!/^\/crm\/whatsapp\/api\/conversations\/\d+\/messages\/\d+\/attachments\/\d+\/media$/.test(attachment.url || "")) return card;
+    const status = document.createElement("span"), retry = document.createElement("button"); status.className = "attachment-status"; status.setAttribute("role", "status"); retry.type = "button"; retry.className = "btn btn-secondary"; text(retry, "Retry"); retry.hidden = true;
+    const failed = () => { text(status, "Attachment unavailable, expired, or unsupported. You can retry."); retry.hidden = false; };
+    if (["image", "sticker", "video", "audio"].includes(attachment.type)) {
+      const media = document.createElement(["image", "sticker"].includes(attachment.type) ? "img" : attachment.type);
+      if (media.tagName === "IMG") { media.alt = attachment.caption || `${attachment.type} attachment`; media.loading = "lazy"; }
+      else { media.controls = true; media.preload = "none"; if (attachment.type === "video") media.playsInline = true; }
+      media.onerror = failed;
+      media.onload = media.onloadeddata = () => { text(status, ""); retry.hidden = true; };
+      retry.onclick = () => { text(status, "Retrying attachment…"); retry.hidden = true; media.src = attachment.url; if (media.load) media.load(); };
+      media.src = attachment.url; card.append(media);
+      if (media.tagName === "IMG") { const link = document.createElement("a"); link.href = attachment.url; link.target = "_blank"; link.rel = "noopener noreferrer"; text(link, "Open image ↗"); card.append(link); }
+    } else if (attachment.type === "document") {
+      const download = document.createElement("button"); download.type = "button"; download.className = "btn btn-secondary"; text(download, "Download document");
+      download.onclick = async () => {
+        download.disabled = true; text(status, "Loading document…");
+        try {
+          const response = await fetch(attachment.url, {credentials: "same-origin", redirect: "error"});
+          if (!response.ok) { let data = {}; try { data = await response.json(); } catch (_) {} throw new Error(data.detail || "Document is unavailable. Please retry."); }
+          const objectUrl = URL.createObjectURL(await response.blob()), link = document.createElement("a"); link.href = objectUrl; link.download = attachment.filename || "whatsapp-document"; document.body.append(link); link.click(); link.remove(); setTimeout(() => URL.revokeObjectURL(objectUrl), 60000); text(status, "Document downloaded.");
+        } catch (error) { text(status, error.message); }
+        finally { download.disabled = false; }
+      };
+      card.append(download);
+    }
+    card.append(status, retry); return card;
+  }
   function renderMessage(message) {
     const wrapper = document.createElement("div"), bubble = document.createElement("div"), metadata = document.createElement("small"); wrapper.className = `message ${message.direction}`; bubble.className = "bubble";
     if (message.product) {
@@ -66,11 +102,13 @@
       const copy = document.createElement("div"), title = document.createElement("strong"), variant = document.createElement("span"), price = document.createElement("span"), link = document.createElement("a"); copy.className = "product-copy"; text(title, message.product.title); text(variant, message.product.variant && message.product.variant !== "Default Title" ? message.product.variant : ""); text(price, money(message.product.price));
       if (message.product.url?.startsWith("https://")) { link.href = message.product.url; link.target = "_blank"; link.rel = "noopener noreferrer"; text(link, "View product ↗"); }
       copy.append(title); if (variant.textContent) copy.append(variant); copy.append(price); if (link.href) copy.append(link); bubble.append(copy);
-    } else if (message.message_type === "audio" && message.media_url) { bubble.classList.add("audio-bubble"); const label = document.createElement("span"), audio = document.createElement("audio"); text(label, `Voice message${message.duration_seconds ? ` · ${clock(message.duration_seconds)}` : ""}`); audio.controls = true; audio.preload = "metadata"; audio.src = message.media_url; bubble.append(label, audio); } else text(bubble, message.text);
+    } else if (message.message_type === "audio" && message.media_url) { bubble.classList.add("audio-bubble"); const label = document.createElement("span"), audio = document.createElement("audio"); text(label, `Voice message${message.duration_seconds ? ` · ${clock(message.duration_seconds)}` : ""}`); audio.controls = true; audio.preload = "metadata"; audio.src = message.media_url; bubble.append(label, audio); }
+    else if (message.attachments?.length) { bubble.classList.add("attachment-bubble"); bubble.append(...message.attachments.map(renderAttachment)); }
+    else text(bubble, message.text);
     wrapper.dataset.messageId = String(message.id); wrapper.dataset.contentKey = messageContentKey(message); metadata.className = "message-meta"; wrapper.dataset.status = message.status;
     text(metadata, messageMetadata(message)); wrapper.append(bubble, metadata); return wrapper;
   }
-  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product]);
+  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments]);
   const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${new Date(message.timestamp).toLocaleString()} · ${message.status}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;

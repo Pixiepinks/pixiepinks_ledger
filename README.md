@@ -36,6 +36,37 @@ Audio keeps its existing voice-message history and legacy playback fields. Capti
 are metadata only and never enter the text AI or Shopify matching flow. No new
 migration, media download, file storage, vision analysis, or UI change is introduced.
 
+### Phase 3: authenticated inbox media access
+
+Staff can view incoming images and stickers, play videos, and download documents
+from the existing inbox message bubbles. Attachment captions, filenames, MIME types,
+and available sizes appear alongside the controls. Audio retains its existing player
+and playback route. Messages without attachment metadata retain their placeholders.
+
+Attachment access requires the existing staff session and verifies that the
+attachment belongs to the requested message and conversation. The browser receives
+only an application URL, never a Meta media ID, access token, or temporary download
+URL. Each request resolves a fresh provider URL, accepts only HTTPS Meta media hosts
+on port 443, refuses redirects, and downloads at most 16 MB in bounded chunks into
+memory. Nothing is cached on disk or added to the database. Staff may need to ask
+the customer to resend media that Meta has expired or that exceeds this limit.
+
+JPEG, PNG and WebP images/stickers, MP4/3GPP videos, supported audio formats, and
+PDF, text/CSV, Word, Excel and PowerPoint documents are allowed. MIME types and
+image/video/document signatures are checked; HTML/SVG and unknown formats are
+rejected. Documents always download as attachments with sanitized filenames rather
+than rendering inside the application. New media responses use private/no-store,
+nosniff, and restrictive document headers. Expired, unavailable, oversized and
+unsupported media show a safe error and retry control. Video byte ranges are
+supported, and inbox polling preserves existing media elements and playback.
+
+No migration, AI vision, media interpretation, permanent server file storage,
+production database configuration change, or bot workflow change is introduced.
+Meta access still uses the existing `META_WHATSAPP_ACCESS_TOKEN` server binding.
+The runtime needs HTTPS access to `graph.facebook.com`, `lookaside.fbsbx.com`, and
+Meta's `*.fbcdn.net` media hosts. Unit/integration tests mock Meta; production
+credentials and customer media are never used for local validation.
+
 ## CRM and customer-service workspace
 
 The authenticated `/crm` area is an operational workspace built into the existing

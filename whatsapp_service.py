@@ -1,4 +1,6 @@
 import logging
+import json
+import re
 from urllib.parse import urlparse
 
 import httpx
@@ -219,3 +221,119 @@ def download_whatsapp_media(media_id: str) -> tuple[bytes, str] | None:
 
 
 MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024
+
+
+ATTACHMENT_MIME_TYPES = {
+    "image": {"image/jpeg", "image/png", "image/webp"},
+    "sticker": {"image/webp"},
+    "video": {"video/mp4", "video/3gpp"},
+    "audio": {"audio/ogg", "audio/mpeg", "audio/mp4", "audio/aac", "audio/amr", "audio/wav"},
+    "document": {
+        "application/pdf", "text/plain", "text/csv", "application/msword",
+        "application/vnd.ms-excel", "application/vnd.ms-powerpoint",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    },
+}
+
+
+class AttachmentMediaError(Exception):
+    """Only fixed, browser-safe errors; never expose upstream URLs or tokens."""
+
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail)
+
+
+def _bounded_media_body(response: httpx.Response, limit: int) -> bytes:
+    response.raise_for_status()
+    length = response.headers.get("content-length")
+    if length is not None:
+        try:
+            if int(length) < 0 or int(length) > limit:
+                raise AttachmentMediaError(413, "Attachment exceeds the viewing size limit")
+        except ValueError:
+            raise AttachmentMediaError(502, "Attachment is temporarily unavailable") from None
+    content = bytearray()
+    for chunk in response.iter_bytes(chunk_size=64 * 1024):
+        if len(content) + len(chunk) > limit:
+            raise AttachmentMediaError(413, "Attachment exceeds the viewing size limit")
+        content.extend(chunk)
+    return bytes(content)
+
+
+def _attachment_signature_matches(content: bytes, mime: str) -> bool:
+    if mime == "image/jpeg":
+        return content.startswith(b"\xff\xd8\xff")
+    if mime == "image/png":
+        return content.startswith(b"\x89PNG\r\n\x1a\n")
+    if mime == "image/webp":
+        return content.startswith(b"RIFF") and content[8:12] == b"WEBP"
+    if mime in {"video/mp4", "video/3gpp", "audio/mp4"}:
+        return content[4:8] == b"ftyp"
+    if mime == "application/pdf":
+        return content.startswith(b"%PDF-")
+    if mime.startswith("application/vnd.openxmlformats-officedocument."):
+        return content.startswith(b"PK\x03\x04")
+    if mime in {"application/msword", "application/vnd.ms-excel", "application/vnd.ms-powerpoint"}:
+        return content.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1")
+    if mime in {"text/plain", "text/csv"}:
+        try:
+            return bool(content) and "\x00" not in content.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+    # Audio continues to be decoded by the browser, never executed as a document.
+    return bool(content)
+
+
+def download_whatsapp_attachment(media_id: str, media_type: str) -> tuple[bytes, str]:
+    """Resolve fresh Meta metadata and fetch bounded media in memory on demand.
+
+    The legacy voice playback downloader remains unchanged. Neither the signed
+    download URL nor Authorization headers are returned, logged, or persisted.
+    """
+    if media_type not in ATTACHMENT_MIME_TYPES or not re.fullmatch(r"[A-Za-z0-9_-]{1,255}", media_id):
+        raise AttachmentMediaError(415, "Attachment type is not supported")
+    token = settings.META_WHATSAPP_ACCESS_TOKEN
+    if not token:
+        raise AttachmentMediaError(503, "Attachment access is not configured")
+    version = settings.META_GRAPH_API_VERSION.strip().lstrip("/") or "v26.0"
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False) as client:
+            with client.stream("GET", f"https://graph.facebook.com/{version}/{media_id}", headers=headers) as response:
+                metadata = json.loads(_bounded_media_body(response, 64 * 1024))
+            if not isinstance(metadata, dict):
+                raise ValueError("Invalid metadata")
+            mime = metadata.get("mime_type")
+            if mime not in ATTACHMENT_MIME_TYPES[media_type]:
+                raise AttachmentMediaError(415, "Attachment format is not supported")
+            declared_size = metadata.get("file_size")
+            if type(declared_size) is int and declared_size > MAX_DOWNLOAD_BYTES:
+                raise AttachmentMediaError(413, "Attachment exceeds the 16 MB viewing limit")
+            url = metadata.get("url")
+            parsed = urlparse(url) if isinstance(url, str) else None
+            host = (parsed.hostname or "").lower() if parsed else ""
+            if (not parsed or parsed.scheme != "https" or parsed.username or parsed.password
+                    or parsed.port not in (None, 443) or not parsed.path
+                    or not (host in {"lookaside.fbsbx.com", "graph.facebook.com"} or host.endswith(".fbcdn.net"))):
+                raise ValueError("Untrusted media destination")
+            with client.stream("GET", url, headers=headers) as response:
+                # Do not follow redirects with the provider's bearer credential.
+                if response.is_redirect:
+                    raise ValueError("Media redirect rejected")
+                response_mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+                if response_mime not in {mime, "application/octet-stream"}:
+                    raise AttachmentMediaError(415, "Attachment format does not match its metadata")
+                content = _bounded_media_body(response, MAX_DOWNLOAD_BYTES)
+            if not _attachment_signature_matches(content, mime):
+                raise AttachmentMediaError(415, "Attachment content does not match its format")
+            return content, mime
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code in {404, 410}:
+            raise AttachmentMediaError(410, "Attachment is no longer available from WhatsApp") from None
+        raise AttachmentMediaError(502, "Attachment is temporarily unavailable") from None
+    except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError):
+        raise AttachmentMediaError(502, "Attachment is temporarily unavailable") from None
