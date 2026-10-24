@@ -124,6 +124,62 @@ in-process background-task lifecycle is retained: a worker interruption can lose
 automatic reply, but not the committed incoming message/attachment. Duplicate Meta
 deliveries do not retry vision, and existing attachments are not reprocessed.
 
+### Phase 5A: private Meta advertisement referral capture
+
+Optional incoming `message.referral` metadata is stored in
+`whatsapp_message_referrals`, with one unique, restrictive foreign key to its local
+conversation-message row. Text and media messages are supported in AI and HUMAN
+mode. Each original message retains its own attribution, so a later advertisement
+does not overwrite an earlier referral in the same conversation. Meta source IDs,
+WhatsApp delivery IDs and Shopify IDs remain separate namespaces.
+
+The capture allowlist is `source_id`, `source_type`, `source_url`, `headline`, `body`,
+`media_type`, `image_url`, `video_url`, `thumbnail_url` and private `ctwa_clid`.
+`captured_at` is supplied by the database clock, never by the webhook payload.
+IDs are strings (255 characters for source ID, 1024 for click attribution); type
+fields are bounded to 32 characters. Headlines/body text are limited to 500/4000
+characters. Malformed fields are omitted independently; empty or unusable referral
+objects do not create empty rows. Unknown fields and whole webhook bodies are not
+stored. Identifier/URL overflow is rejected rather than truncated. Text controls
+and invalid Unicode are removed. Recognizable credential values are rejected.
+
+URL references must be HTTPS on port 443 with no user-info, whitespace, backslashes
+or credential/private-attribution query parameters. Source hosts are Facebook,
+Instagram, `fb.me` and `fb.watch`; creative hosts are Facebook, FBSBX, FBCDN and
+CDNInstagram domains/subdomains. Unknown hosts are omitted and require explicit
+review if Meta introduces another host. URLs are metadata references only: capture
+never follows links or downloads advertisement media. Signed CDN references may
+expire. No referral information is added to the inbox API/UI or AI prompts in this
+phase; `ctwa_clid` is attribution only. Existing signature verification remains in
+place; production should retain the configured `META_APP_SECRET` binding.
+
+For supported text/media and other referral-bearing messages, receipt, incoming
+history, referral, attachment (when applicable) and inbox updates commit together.
+Failed registration returns HTTP 503 without committing a processed receipt, so Meta
+can retry. The unique delivery-ID claim serializes concurrent duplicate deliveries,
+and the unique message foreign key prevents duplicate referrals. Successful duplicate
+deliveries do not alter attribution or repeat AI replies. Receipt-only behavior for
+unsupported/empty messages without usable referrals is retained. Referral-bearing
+messages without a usable text body get a history placeholder without introducing
+an AI request. No advertisement ID is passed as a product selection or reply context.
+Registration suppresses private SQL/exception details rather than logging referral
+values. AI, image understanding, voice, other media, Shopify and sales dispatch are
+unchanged after a successful commit.
+
+Migration `20261024_10` follows `20261024_09` and only creates the new table, unique
+constraint and foreign key. It supports both direct Alembic upgrades and existing
+create-all-before-migration startup. Back up and verify the target database before
+deployment; the application database role needs permission to create the table and
+constraints. No live database was changed during implementation. Historical data is
+not backfilled, and deliveries already marked processed before this release are not
+reprocessed. Destructive downgrade is blocked to retain attribution; any application
+rollback must keep revision `20261024_10` in its migration graph so startup can read
+the current version. Parent-message deletion is restricted while a referral exists.
+
+Tests use isolated SQLite databases and, when `TEST_POSTGRESQL_URL` points to a
+dedicated `pixiepinks_test` database, temporary PostgreSQL schemas that are removed
+after validation. Never supply a production database URL for tests.
+
 ## CRM and customer-service workspace
 
 The authenticated `/crm` area is an operational workspace built into the existing

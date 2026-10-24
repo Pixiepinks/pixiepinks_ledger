@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON, UniqueConstraint
+from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON, UniqueConstraint, func
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
@@ -514,6 +514,31 @@ class WhatsAppConversationMessage(Base):
     product_image_url = Column(Text, nullable=True)
     product_url = Column(Text, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    referral = relationship("WhatsAppMessageReferral", back_populates="message", uselist=False,
+                            passive_deletes="all")
+
+
+class WhatsAppMessageReferral(Base):
+    """Private, allowlisted advertisement attribution; never catalogue authority."""
+
+    __tablename__ = "whatsapp_message_referrals"
+    __table_args__ = (UniqueConstraint("message_id", name="uq_whatsapp_message_referrals_message_id"),)
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(Integer, ForeignKey("whatsapp_conversation_messages.id", ondelete="RESTRICT"), nullable=False)
+    source_id = Column(String(255), nullable=True)
+    source_type = Column(String(32), nullable=True)
+    source_url = Column(String(2048), nullable=True)
+    headline = Column(String(500), nullable=True)
+    body = Column(String(4000), nullable=True)
+    media_type = Column(String(32), nullable=True)
+    image_url = Column(String(2048), nullable=True)
+    video_url = Column(String(2048), nullable=True)
+    thumbnail_url = Column(String(2048), nullable=True)
+    ctwa_clid = Column(String(1024), nullable=True)
+    captured_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    message = relationship("WhatsAppConversationMessage", back_populates="referral")
 
 
 class WhatsAppMessageAttachment(Base):
