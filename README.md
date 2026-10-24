@@ -593,3 +593,9 @@ Rollout: back up PostgreSQL; deploy with all three Phase 4D flags false; run `al
 exercise Phase 4A–4C regressions; enable internal fulfillment first; validate Shopify scopes and read-only
 preflight next; review Shopify Flow/email/app side effects; then authorize one controlled low-value
 fulfillment. Roll back by disabling the flags and deploying the prior release while retaining audit data.
+
+Expired, unused Shopify fulfillment preflights are retired automatically only when an administrator
+requests a new preflight with a different idempotency key. Retirement uses a database row lock, retains
+the original request snapshot and fingerprint with status `EXPIRED`, and releases only its active-operation
+slot. Any operation that was approved, claimed, attempted, synchronized, or requires reconciliation is
+never retired or retried by this path. No schema migration is required for this recovery behavior.

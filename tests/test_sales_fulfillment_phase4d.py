@@ -1,4 +1,6 @@
 from decimal import Decimal
+from datetime import datetime, timedelta
+import threading
 import pytest
 from fastapi.testclient import TestClient
 import main
@@ -89,6 +91,49 @@ def test_timeout_requires_read_only_reconciliation_without_retry():
   assert api.mutations==1
   api.timeout=False;api.after=remote(existing=[{"id":"gid://shopify/Fulfillment/99","status":"SUCCESS"}])
   op=reconcile(db,f.id,op.operation_id,"admin",api);assert op.status=="SYNCED" and api.mutations==1
+
+def test_expired_unused_preflight_is_retired_and_fresh_state_is_checked():
+ api=API()
+ with SessionLocal() as db:
+  f=ready(db);old=create_preflight(db,f.id,"admin","expired",api)
+  fingerprint=old.request_fingerprint;snapshot=old.preflight_json
+  old.preflight_expires_at=datetime.utcnow()-timedelta(seconds=1);db.commit()
+  fresh=create_preflight(db,f.id,"admin","fresh",api)
+  db.refresh(old)
+  assert fresh.id!=old.id and fresh.status=="PREFLIGHT_READY" and fresh.preflight_expires_at>datetime.utcnow()
+  assert old.status=="EXPIRED" and old.active_fulfillment_id is None and old.attempts==0
+  assert old.request_fingerprint==fingerprint and old.preflight_json==snapshot
+  assert create_preflight(db,f.id,"admin","expired",api).id==old.id
+
+@pytest.mark.parametrize("status",["PROCESSING","SYNCED","RECONCILIATION_REQUIRED"])
+def test_expired_timestamp_never_retires_executed_or_uncertain_operations(status):
+ with SessionLocal() as db:
+  f=ready(db);op=create_preflight(db,f.id,"admin","protected",API())
+  op.status=status;op.preflight_expires_at=datetime.utcnow()-timedelta(minutes=1);op.attempts=1
+  if status=="PROCESSING":op.claim_token="claim"
+  db.commit()
+  returned=create_preflight(db,f.id,"admin","new-key",API())
+  db.refresh(op)
+  assert returned.id==op.id and op.status==status and op.active_fulfillment_id==f.id
+
+@pytest.mark.skipif(engine.dialect.name!="postgresql",reason="isolated PostgreSQL database not configured")
+def test_postgresql_concurrent_expired_preflight_replacement_creates_one_active_operation():
+ with SessionLocal() as db:
+  f=ready(db);old=create_preflight(db,f.id,"admin","old",API());fid=f.id
+  old.preflight_expires_at=datetime.utcnow()-timedelta(seconds=1);db.commit();old_id=old.id
+ barrier=threading.Barrier(2);results=[];errors=[]
+ def worker(key):
+  try:
+   with SessionLocal() as session:
+    barrier.wait();results.append(create_preflight(session,fid,"admin",key,API()).id)
+  except Exception as exc:errors.append(exc)
+ threads=[threading.Thread(target=worker,args=(key,)) for key in ("new-a","new-b")]
+ for thread in threads:thread.start()
+ for thread in threads:thread.join()
+ assert not errors and len(set(results))==1
+ with SessionLocal() as db:
+  assert db.query(ShopifyFulfillmentOperation).filter_by(active_fulfillment_id=fid).count()==1
+  assert db.query(ShopifyFulfillmentOperation).filter_by(id=old_id).one().status=="EXPIRED"
 
 def test_api_feature_flags_permissions_and_csrf(monkeypatch):
  with SessionLocal() as db:oid=order(db).id
