@@ -1,4 +1,7 @@
-from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON
+from sqlalchemy import (
+    Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text,
+    Float, Enum, JSON, UniqueConstraint,
+)
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base

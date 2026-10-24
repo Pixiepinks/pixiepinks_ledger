@@ -1944,6 +1944,66 @@ def delete_whatsapp_attachment(attachment_id: int, db: Session = Depends(get_db)
     return {"ok": True}
 
 
+@app.get("/crm/whatsapp/api/attachments/{attachment_id}")
+def whatsapp_attachment(attachment_id: int, db: Session = Depends(get_db),
+                        user: User = Depends(require_user)):
+    attachment = db.get(WhatsAppMediaAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment is unavailable")
+    if attachment.status == "EXPIRED":
+        raise HTTPException(410, "This WhatsApp attachment is no longer available. Please ask the customer to resend it.")
+    if attachment.status in {"UNSUPPORTED", "DELETED"}:
+        raise HTTPException(404, "Attachment is unavailable")
+    if attachment.storage_key:
+        try:
+            content, stored_type = get_private_object(attachment.storage_key)
+        except Exception as exc:
+            logger.warning("Private media read failed attachment_id=%s error_type=%s",
+                           attachment_id, type(exc).__name__)
+            raise HTTPException(404, "Attachment is unavailable") from None
+        mime_type = attachment.mime_type or stored_type
+    else:
+        with _attachment_lock(attachment_id):
+            db.refresh(attachment)
+            fetched = _fetch_meta_attachment(db, attachment, attempts=2)
+        if not fetched:
+            if attachment.status == "EXPIRED":
+                raise HTTPException(410, "This WhatsApp attachment is no longer available. Please ask the customer to resend it.")
+            if attachment.status == "UNSUPPORTED":
+                raise HTTPException(415, "This attachment type is not supported")
+            raise HTTPException(503, "WhatsApp media is temporarily unavailable")
+        content, mime_type = fetched
+    if len(content) > settings.MEDIA_MAX_BYTES:
+        raise HTTPException(413, "Attachment exceeds the configured limit")
+    disposition = "attachment" if attachment.media_type == "document" else "inline"
+    filename = sanitize_filename(attachment.filename) or f"attachment-{attachment.id}"
+    return StreamingResponse(
+        iter([content]), media_type=mime_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"',
+                 "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.post("/crm/whatsapp/api/attachments/{attachment_id}/delete")
+def delete_whatsapp_attachment(attachment_id: int, db: Session = Depends(get_db),
+                               user: User = Depends(require_user)):
+    attachment = db.get(WhatsAppMediaAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment was not found")
+    if attachment.storage_key:
+        try:
+            delete_private_object(attachment.storage_key)
+        except Exception as exc:
+            logger.warning("Private media deletion failed attachment_id=%s error_type=%s",
+                           attachment_id, type(exc).__name__)
+            raise HTTPException(503, "Attachment deletion could not be completed") from None
+    attachment.storage_key = None
+    attachment.status = "DELETED"
+    attachment.deleted_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
+
+
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/read")
 def whatsapp_mark_read(conversation_id: int, db: Session = Depends(get_db),
                        user: User = Depends(require_user)):
