@@ -3,7 +3,8 @@ import hmac
 import json
 import logging
 import re
-import secrets
+import threading
+import weakref
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import quote, urlparse
@@ -21,7 +22,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -50,14 +51,10 @@ from models import (
     WhatsAppManualSend,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
-    BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
-    SalesOrder, SalesOrderStatusHistory, SalesPayment, SalesPaymentAuditEvent, ShopifySyncEvent,
-    ShopifyPaymentSyncOperation, ShopifyPaymentSyncAuditEvent,
-    SalesFulfillment, SalesFulfillmentItem, SalesDeliveryDetail, SalesFulfillmentEvent,
-    ShopifyFulfillmentOperation,
-    ShopifyFulfillmentWebhookEvent,
+    WhatsAppMediaAttachment,
+    BotAuditEvent, BotConfiguration, BotConfigurationVersion,
 )
-from ai_service import FALLBACK_REPLY, generate_customer_reply
+from ai_service import FALLBACK_REPLY, analyze_product_image, generate_customer_reply
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
@@ -72,10 +69,7 @@ from audio_service import MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audi
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
-    diagnose_bicycle_collections, discover_collections, search_products_for_management,
-    search_products_for_inbox, resolve_inbox_product,
-    resolve_products_for_management,
-    products_for_collection,
+    diagnose_bicycle_collections, discover_collections,
 )
 from bicycle_recommendation import (
     asks_about_fit,
@@ -101,31 +95,11 @@ from bot_configuration_service import (
     recommended_size as configured_bicycle_size, restore_as_draft, save_draft,
     service_charge as configured_service_charge, validate_snapshot,
 )
-from sales_order_service import (
-    ORDER_STATUSES, InvalidOrderTransition, SalesOrderValidationError, create_draft,
-    transition_order, update_draft,
+from whatsapp_media_service import (
+    MediaConfigurationError, MediaDownloadError, delete_private_object,
+    download_meta_media, get_private_object, put_private_object, sanitize_filename,
+    storage_configured, media_storage_mode,
 )
-from migrations import upgrade_database
-from shopify_draft_order_service import (
-    ELIGIBLE_ORDER_STATUSES, ShopifyDraftSyncError, create_shopify_draft, refresh_shopify_draft,
-    shopify_admin_draft_url,
-)
-from shopify_order_lifecycle_service import (
-    ShopifyLifecycleError, process_orders_create, reconcile_order,
-    shopify_admin_order_url, verify_shopify_webhook,
-)
-from sales_payment_service import (
-    PAYMENT_CATEGORIES, PAYMENT_METHODS, PaymentValidationError, decide_payment, record_payment_claim,
-    refresh_shopify_payment_status,
-)
-from shopify_payment_sync_service import (
-    ShopifyPaymentSyncError, create_preflight, execute_operation, recover_operation,
-)
-from sales_fulfillment_service import (FulfillmentError, create_full_fulfillment,
-    transition as transition_fulfillment, update_delivery)
-from shopify_fulfillment_service import (ShopifyFulfillmentError,
-    create_preflight as create_fulfillment_preflight, execute as execute_shopify_fulfillment,
-    reconcile as reconcile_shopify_fulfillment)
 
 logger = logging.getLogger(__name__)
 
@@ -306,21 +280,23 @@ def _store_conversation_message(
     media_mime_type: str | None = None,
     media_duration_seconds: float | None = None,
     created_at: datetime | None = None,
-) -> None:
+    message_type: str = "text",
+    referral: dict | None = None,
+) -> int | None:
     try:
         with SessionLocal() as db:
-            db.add(WhatsAppConversationMessage(
+            stored = WhatsAppConversationMessage(
                 phone_number=phone_number,
                 customer_name=customer_name,
                 direction=direction,
                 message_text=message_text,
                 whatsapp_message_id=whatsapp_message_id,
                 response_kind=response_kind,
-                media_id=media_id,
-                media_mime_type=media_mime_type,
-                media_duration_seconds=media_duration_seconds,
+                message_type=message_type,
+                referral=referral,
                 created_at=created_at or datetime.utcnow(),
-            ))
+            )
+            db.add(stored)
             phone = _normalize_whatsapp_phone(phone_number)
             conversation = db.query(WhatsAppConversation).filter_by(phone_number=phone).one_or_none()
             when = created_at or datetime.utcnow()
@@ -335,8 +311,10 @@ def _store_conversation_message(
                 conversation.last_customer_message_at = when
                 conversation.unread_count = (conversation.unread_count or 0) + 1
             db.commit()
+            return stored.id
     except SQLAlchemyError:
         logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+        return None
 
 
 def _normalize_whatsapp_phone(value: str) -> str:
@@ -1007,6 +985,153 @@ def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
     )
 
 
+def _safe_referral(value: object) -> dict | None:
+    """Keep useful Click-to-WhatsApp attribution without trusting arbitrary payload keys."""
+    if not isinstance(value, dict):
+        return None
+    allowed = ("source_url", "source_id", "source_type", "headline", "body",
+               "media_type", "image_url", "video_url", "thumbnail_url")
+    cleaned = {key: str(value[key])[:1000] for key in allowed
+               if value.get(key) is not None and isinstance(value.get(key), (str, int))}
+    return cleaned or None
+
+
+_media_fetch_locks_guard = threading.Lock()
+_media_fetch_locks: weakref.WeakValueDictionary[int, threading.Lock] = weakref.WeakValueDictionary()
+_media_fetch_slots = threading.BoundedSemaphore(4)
+
+
+def _attachment_lock(attachment_id: int) -> threading.Lock:
+    with _media_fetch_locks_guard:
+        return _media_fetch_locks.setdefault(attachment_id, threading.Lock())
+
+
+def _fetch_meta_attachment(db: Session, attachment: WhatsAppMediaAttachment,
+                           attempts: int = 2) -> tuple[bytes, str] | None:
+    """Fetch a fresh Meta URL, recording stable states without storing the URL or bytes."""
+    if attachment.status in {"EXPIRED", "UNSUPPORTED", "DELETED"}:
+        return None
+    attachment.status = "FETCHING"
+    db.commit()
+    final_status = "TEMPORARILY_UNAVAILABLE"
+    with _media_fetch_slots:
+        for attempt in range(1, attempts + 1):
+            attachment.retry_count = (attachment.retry_count or 0) + 1
+            db.commit()
+            try:
+                content, mime_type, digest = download_meta_media(
+                    attachment.meta_media_id, attachment.media_type)
+                attachment.mime_type = mime_type
+                attachment.sha256 = digest
+                attachment.file_size = len(content)
+                attachment.status = "AVAILABLE"
+                attachment.error_code = None
+                db.commit()
+                return content, mime_type
+            except MediaDownloadError as exc:
+                final_status = exc.status
+                logger.warning("Meta media fetch failed attachment_id=%s attempt=%s state=%s",
+                               attachment.id, attempt, final_status)
+                if final_status in {"EXPIRED", "UNSUPPORTED"}:
+                    break
+            except MediaConfigurationError:
+                final_status = "TEMPORARILY_UNAVAILABLE"
+                logger.warning("Meta media configuration unavailable attachment_id=%s", attachment.id)
+                break
+    attachment.status = final_status
+    attachment.error_code = ("MEDIA_EXPIRED" if final_status == "EXPIRED" else
+                             "UNSUPPORTED_MEDIA" if final_status == "UNSUPPORTED" else
+                             "META_FETCH_FAILED")
+    db.commit()
+    return None
+
+
+def _process_inbound_media(attachment_id: int, sender: str, profile_name: str | None,
+                           caption: str, message_id: str) -> None:
+    """Analyze AI-mode images; Meta mode deliberately creates no permanent copy."""
+    with SessionLocal() as db:
+        attachment = db.get(WhatsAppMediaAttachment, attachment_id)
+        if not attachment or attachment.status in {"EXPIRED", "UNSUPPORTED", "DELETED"}:
+            return
+        media_type = attachment.media_type
+        conversation = _conversation_for_phone(db, sender)
+        human_owned = bool(conversation and conversation.mode == "HUMAN")
+        mode = media_storage_mode()
+        if mode == "meta" and media_type != "image":
+            return
+        if media_type == "image" and human_owned:
+            return
+        if mode == "meta":
+            with _attachment_lock(attachment_id):
+                fetched = _fetch_meta_attachment(db, attachment, attempts=3)
+            if not fetched:
+                reply = ("I couldn't retrieve that WhatsApp image. Please resend it or send the "
+                         "product name or link so I can check our live catalogue.")
+                send_whatsapp_text(sender, reply)
+                _store_conversation_message(sender, "outbound", reply, customer_name=profile_name,
+                                            response_kind="image_ai_unavailable")
+                return
+            content, mime_type = fetched
+        else:
+            if not storage_configured():
+                attachment.status = "TEMPORARILY_UNAVAILABLE"
+                attachment.error_code = "STORAGE_NOT_CONFIGURED"
+                db.commit()
+                return
+            fetched = _fetch_meta_attachment(db, attachment, attempts=3)
+            if not fetched:
+                return
+            content, mime_type = fetched
+            extension = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp",
+                         "video/mp4": "mp4", "video/3gpp": "3gp", "application/pdf": "pdf",
+                         "audio/ogg": "ogg", "audio/mpeg": "mp3", "audio/mp4": "m4a"}.get(mime_type, "bin")
+            key = f"whatsapp/{datetime.utcnow():%Y/%m}/{attachment.sha256[:16]}-{attachment.id}.{extension}"
+            try:
+                put_private_object(key, content, mime_type)
+            except Exception as exc:
+                logger.warning("Persistent media write failed attachment_id=%s error_type=%s",
+                               attachment_id, type(exc).__name__)
+                attachment.status = "TEMPORARILY_UNAVAILABLE"
+                attachment.error_code = "STORAGE_WRITE_FAILED"
+                db.commit()
+                return
+            attachment.storage_key = key
+            attachment.status = "READY"  # legacy S3 status retained for compatibility
+            db.commit()
+            if media_type != "image":
+                if not human_owned:
+                    _send_unsupported_reply(sender, profile_name)
+                return
+        published_config, _ = get_snapshot(db)
+        product_limit = published_config.get("global", {}).get("maximum_products", 3)
+    analysis = analyze_product_image(content, mime_type, caption)
+    attributes = analysis.get("attributes") or []
+    if not analysis.get("product_related") or not attributes:
+        reply = "Thanks for the image. Please send the product name, link, or a few more details so I can check our live catalogue."
+    else:
+        try:
+            products = search_products(" ".join(attributes), limit=min(max(int(product_limit), 1), 5))
+        except ShopifyCatalogError:
+            products = None
+        if products is None:
+            reply = SHOPIFY_FALLBACK_REPLY
+        elif len(products) == 1 and analysis.get("confidence") == "high":
+            reply = generate_customer_reply(
+                caption or "Please identify this product image.", profile_name,
+                catalog_results=products,
+            )
+        elif products:
+            names = ", ".join(str(product.get("title")) for product in products[:3])
+            reply = ("I found a few possible live catalogue matches: " + names +
+                     ". Which one did you mean, or can you share the product link?")
+        else:
+            reply = "I couldn't reliably match that image in our live catalogue. Please send the product name, link, or another detail."
+    sent = send_whatsapp_text(sender, reply)
+    logger.info("WhatsApp image-understanding outbound result=%s message_id=%s", sent, message_id)
+    _store_conversation_message(sender, "outbound", reply, customer_name=profile_name,
+                                response_kind="image_ai")
+
+
 # ---------------------- Meta WhatsApp Webhook ----------------------
 @app.get("/webhook")
 def verify_meta_webhook(
@@ -1110,6 +1235,20 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     except IntegrityError:
                         db.rollback()
                         logger.info("Ignored duplicate WhatsApp message message_id=%s", message_id)
+                        stored_message = db.query(WhatsAppConversationMessage).filter_by(
+                            whatsapp_message_id=message_id).one_or_none()
+                        attachment = (db.query(WhatsAppMediaAttachment).filter_by(
+                            conversation_message_id=stored_message.id).one_or_none()
+                            if stored_message else None)
+                        if (attachment and attachment.media_type == "image" and
+                                attachment.status in {"PENDING", "FAILED", "TEMPORARILY_UNAVAILABLE"}):
+                            attachment.status = ("AVAILABLE" if media_storage_mode() == "meta" else "PENDING")
+                            db.commit()
+                            background_tasks.add_task(
+                                _process_inbound_media, attachment.id, sender,
+                                profile_names.get(sender), stored_message.message_text,
+                                message_id,
+                            )
                         continue
                     except SQLAlchemyError:
                         db.rollback()
@@ -1117,6 +1256,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         continue
 
                 profile_name = profile_names.get(sender)
+                referral = _safe_referral(message.get("referral"))
                 text_body = None
                 if message_type == "text" and isinstance(message.get("text"), dict):
                     text_body = message["text"].get("body")
@@ -1144,6 +1284,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         customer_name=profile_name,
                         whatsapp_message_id=message_id,
                         created_at=received_at,
+                        referral=referral,
                     )
                     background_tasks.add_task(
                         _reply_to_text_message,
@@ -1157,21 +1298,64 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     "image", "audio", "video", "document", "sticker", "location",
                     "contacts", "reaction", "interactive",
                 }:
-                    if message_type == "audio" and isinstance(message.get("audio"), dict):
-                        audio = message["audio"]
-                        media_id = audio.get("id")
-                        if isinstance(media_id, str) and media_id:
-                            _store_conversation_message(
-                                sender, "inbound", "Voice message", customer_name=profile_name,
-                                whatsapp_message_id=message_id, response_kind="customer_audio",
-                                media_id=media_id, media_mime_type=audio.get("mime_type"),
-                                created_at=received_at,
+                    if message_type in {"image", "audio", "video", "document", "sticker"}:
+                        media = message.get(message_type)
+                        if not isinstance(media, dict):
+                            logger.warning("Inbound media object missing message_id=%s type=%s",
+                                           message_id, message_type)
+                            with SessionLocal() as db:
+                                conversation = _conversation_for_phone(db, sender)
+                                human_owned = bool(conversation and conversation.mode == "HUMAN")
+                            if not human_owned:
+                                background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
+                            continue
+                        media_id = media.get("id")
+                        if not isinstance(media_id, str) or not media_id:
+                            logger.warning("Inbound media ID missing message_id=%s type=%s",
+                                           message_id, message_type)
+                            continue
+                        caption = str(media.get("caption") or "").strip()[:2_000]
+                        voice = message_type == "audio" and media.get("voice") is True
+                        display_type = "voice" if voice else message_type
+                        label = caption or {
+                            "image": "[Image]", "video": "[Video]", "document": "[Document]",
+                            "audio": "[Voice note]" if voice else "[Audio]", "sticker": "[Sticker]",
+                        }[message_type]
+                        stored_id = _store_conversation_message(
+                            sender, "inbound", label, customer_name=profile_name,
+                            whatsapp_message_id=message_id, created_at=received_at,
+                            message_type=display_type, referral=referral,
+                        )
+                        if stored_id is None:
+                            continue
+                        with SessionLocal() as db:
+                            attachment = WhatsAppMediaAttachment(
+                                conversation_message_id=stored_id, meta_media_id=media_id,
+                                media_type=message_type, mime_type=str(media.get("mime_type") or "")[:100],
+                                filename=sanitize_filename(media.get("filename")),
+                                sha256=str(media.get("sha256") or "")[:128] or None,
+                                status=("AVAILABLE" if media_storage_mode() == "meta" else "PENDING"),
                             )
-                    with SessionLocal() as db:
-                        conversation = _conversation_for_phone(db, sender)
-                        human_owned = bool(conversation and conversation.mode == "HUMAN")
-                    if not human_owned:
-                        background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
+                            db.add(attachment)
+                            try:
+                                db.commit()
+                                attachment_id = attachment.id
+                            except IntegrityError:
+                                db.rollback()
+                                logger.info("Ignored duplicate WhatsApp media media_id=%s", media_id[-12:])
+                                continue
+                        if message_type == "image" or media_storage_mode() == "s3":
+                            background_tasks.add_task(
+                                _process_inbound_media, attachment_id, sender, profile_name,
+                                caption, message_id,
+                            )
+                    else:
+                        # Retain non-file messages as visible metadata rather than silently dropping them.
+                        _store_conversation_message(
+                            sender, "inbound", f"[{message_type.title()}]",
+                            customer_name=profile_name, whatsapp_message_id=message_id,
+                            created_at=received_at, message_type=message_type, referral=referral,
+                        )
 
     return {"status": "ok"}
 
@@ -1216,88 +1400,19 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
     )
 
 
-SALES_ORDER_PERMISSIONS = {
-    "ADMIN": {"create", "edit", "transition", "approve_discount", "verify_payment", "sync_shopify_payment", "fulfill_operate", "fulfill_admin",
-              "record_payment_claim", "dispatch", "cancel", "refund", "post_accounting", "sync_shopify"},
-    "SALES_MANAGER": {"create", "edit", "transition", "approve_discount", "fulfill_operate",
-                      "record_payment_claim", "dispatch", "cancel"},
-    "SALES_AGENT": {"create", "edit", "record_payment_claim"},
-    "STAFF": set(),
-}
-SHOPIFY_SYNC_LABELS = {"NOT_SYNCED": "Not Synced", "SYNCING": "Syncing", "SYNCED": "Synced",
-                       "SYNC_FAILED": "Failed", "RECONCILIATION_REQUIRED": "Needs Reconciliation"}
-
-
-def _require_sales_orders_enabled() -> None:
-    if not settings.SALES_ORDERS_ENABLED:
-        raise HTTPException(status_code=404, detail="Sales Orders is disabled")
-
-
-def _require_sales_permission(user: User, permission: str) -> None:
-    if permission not in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()):
-        raise HTTPException(status_code=403, detail="You are not authorized for this sales-order action")
-
-
-def _csrf_token(request: Request) -> str:
-    token = request.session.get("csrf_token")
-    if not isinstance(token, str) or len(token) < 32:
-        token = secrets.token_urlsafe(32)
-        request.session["csrf_token"] = token
-    return token
-
-
-def _require_csrf(request: Request) -> None:
-    supplied = request.headers.get("X-CSRF-Token", "")
-    expected = request.session.get("csrf_token", "")
-    if not supplied or not expected or not hmac.compare_digest(supplied, expected):
-        raise HTTPException(status_code=403, detail="Invalid CSRF token")
-
-
-def _sales_payload_has_discount(payload: object) -> bool:
-    if not isinstance(payload, dict):
-        return False
-    values = [payload.get("order_discount", 0)]
-    values.extend(line.get("discount_amount", 0) for line in payload.get("lines", [])
-                  if isinstance(line, dict))
-    try:
-        return any(Decimal(str(value or 0)) != 0 for value in values)
-    except Exception:
-        return True
-
-
 def _bot_page_context(request: Request, db: Session, active: str, **extra) -> dict:
     config = ensure_configuration(db)
     draft, _ = get_snapshot(db, draft=True)
     live, version = get_snapshot(db)
-    draft.setdefault("guided_flows", [])
-    live.setdefault("guided_flows", [])
-    if active in {"catalog", "policies", "faqs"}:
-        product_entries = [entry for bucket in ("knowledge", "policies", "faqs")
-                           for entry in draft.get(bucket, [])
-                           if entry.get("scope") == "PRODUCT" and entry.get("scope_reference")]
-        try:
-            current_products = resolve_products_for_management(
-                [str(entry["scope_reference"]) for entry in product_entries])
-        except ShopifyCatalogError:
-            logger.warning("Could not refresh saved product titles for Bot Management")
-            current_products = {}
-        for entry in product_entries:
-            current = current_products.get(str(entry["scope_reference"]))
-            if current and current.get("title"):
-                entry["scope_reference_title"] = current["title"]
     errors, warnings = validate_snapshot(draft)
     versions = db.query(BotConfigurationVersion).order_by(
         BotConfigurationVersion.version.desc()).limit(20).all()
     audits = db.query(BotAuditEvent).order_by(BotAuditEvent.created_at.desc()).limit(10).all()
-    cached_collections = db.query(ShopifyCollectionReference).filter_by(active=True).order_by(
-        ShopifyCollectionReference.title).all()
-    last_refresh = db.query(func.max(ShopifyCollectionReference.refreshed_at)).scalar()
     context = {
         "request": request, "page_title": "AI Bot Management", "active": active,
         "config": config, "draft": draft, "live": live, "version": version,
         "errors": errors, "warnings": warnings, "versions": versions, "audits": audits,
-        "guardrails": HARD_GUARDRAILS, "collection_options": cached_collections,
-        "last_shopify_refresh": last_refresh,
+        "guardrails": HARD_GUARDRAILS,
     }
     context.update(extra)
     return context
@@ -1372,22 +1487,10 @@ def ensure_whatsapp_inbox_columns():
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN send_status VARCHAR(20)")
     if "sent_by" not in columns:
         statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN sent_by VARCHAR(100)")
-    if "media_id" not in columns:
-        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_id VARCHAR(255)")
-    if "media_mime_type" not in columns:
-        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_mime_type VARCHAR(100)")
-    if "media_duration_seconds" not in columns:
-        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN media_duration_seconds FLOAT")
-    for name, sql_type in (
-        ("shopify_product_reference", "VARCHAR(255)"),
-        ("shopify_variant_reference", "VARCHAR(255)"),
-        ("product_handle", "VARCHAR(255)"), ("product_title", "VARCHAR(500)"),
-        ("variant_title", "VARCHAR(500)"), ("product_sku", "VARCHAR(255)"),
-        ("product_price", "NUMERIC(14, 2)"), ("product_currency", "VARCHAR(8)"),
-        ("product_image_url", "TEXT"), ("product_url", "TEXT"),
-    ):
-        if name not in columns:
-            statements.append(f"ALTER TABLE whatsapp_conversation_messages ADD COLUMN {name} {sql_type}")
+    if "message_type" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN message_type VARCHAR(20) DEFAULT 'text' NOT NULL")
+    if "referral" not in columns:
+        statements.append("ALTER TABLE whatsapp_conversation_messages ADD COLUMN referral JSON")
     conversation_columns = {
         column["name"] for column in inspector.get_columns("whatsapp_conversations")
     } if inspector.has_table("whatsapp_conversations") else set()
@@ -1664,6 +1767,18 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     messages = db.query(WhatsAppConversationMessage).filter(
         WhatsAppConversationMessage.phone_number == conversation.phone_number
     ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(min(max(limit, 1), 200)).all()
+    attachments = db.query(WhatsAppMediaAttachment).filter(
+        WhatsAppMediaAttachment.conversation_message_id.in_([item.id for item in messages] or {-1})
+    ).all()
+    stale_before = datetime.utcnow() - timedelta(minutes=2)
+    stale_fetches = [item for item in attachments
+                     if item.status == "FETCHING" and item.updated_at and item.updated_at < stale_before]
+    for item in stale_fetches:
+        item.status = "TEMPORARILY_UNAVAILABLE"
+        item.error_code = "STALE_FETCH"
+    if stale_fetches:
+        db.commit()
+    attachment_by_message = {item.conversation_message_id: item for item in attachments}
     order = db.query(WhatsAppOrderIntent).filter(
         WhatsAppOrderIntent.customer_whatsapp_phone == conversation.phone_number
     ).order_by(WhatsAppOrderIntent.updated_at.desc(), WhatsAppOrderIntent.id.desc()).first()
@@ -1680,18 +1795,23 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
     message_data = [{
         "id": item.id,
         "direction": item.direction, "text": item.message_text,
+        "message_type": item.message_type or "text",
+        "referral": item.referral,
         "source": item.response_kind or ("customer" if item.direction == "inbound" else "ai"),
         "status": item.send_status or ("received" if item.direction == "inbound" else "sent"),
         "timestamp": item.created_at.isoformat(),
-        "message_type": "audio" if item.media_id else "text",
-        "duration_seconds": item.media_duration_seconds,
-        "media_url": (f"/crm/whatsapp/api/conversations/{conversation.id}/messages/{item.id}/media"
-                      if item.media_id else None),
-        "product": ({"title": item.product_title, "variant": item.variant_title,
-                     "sku": item.product_sku, "price": float(item.product_price),
-                     "currency": item.product_currency or "LKR", "image": item.product_image_url,
-                     "url": item.product_url} if item.product_title and item.product_price is not None
-                    else None),
+        "attachment": ({
+            "id": attachment_by_message[item.id].id,
+            "type": attachment_by_message[item.id].media_type,
+            "mime_type": attachment_by_message[item.id].mime_type,
+            "filename": attachment_by_message[item.id].filename,
+            "size": attachment_by_message[item.id].file_size,
+            "status": attachment_by_message[item.id].status,
+            "url": (f"/crm/whatsapp/api/attachments/{attachment_by_message[item.id].id}"
+                    if attachment_by_message[item.id].status in {
+                        "READY", "AVAILABLE", "TEMPORARILY_UNAVAILABLE", "PENDING", "FAILED"
+                    } else None),
+        } if item.id in attachment_by_message else None),
     } for item in reversed(messages)]
     order_data = None if order is None else {
         "product_title": order.product_title, "variant_title": order.variant_title,
@@ -1762,6 +1882,66 @@ def whatsapp_message_media(conversation_id: int, message_id: int, request: Reque
         return Response(content=partial, status_code=206, media_type=safe_mime, headers=headers)
     headers["Content-Length"] = str(size)
     return Response(content=content, media_type=safe_mime, headers=headers)
+
+
+@app.get("/crm/whatsapp/api/attachments/{attachment_id}")
+def whatsapp_attachment(attachment_id: int, db: Session = Depends(get_db),
+                        user: User = Depends(require_user)):
+    attachment = db.get(WhatsAppMediaAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment is unavailable")
+    if attachment.status == "EXPIRED":
+        raise HTTPException(410, "This WhatsApp attachment is no longer available. Please ask the customer to resend it.")
+    if attachment.status in {"UNSUPPORTED", "DELETED"}:
+        raise HTTPException(404, "Attachment is unavailable")
+    if attachment.storage_key:
+        try:
+            content, stored_type = get_private_object(attachment.storage_key)
+        except Exception as exc:
+            logger.warning("Private media read failed attachment_id=%s error_type=%s",
+                           attachment_id, type(exc).__name__)
+            raise HTTPException(404, "Attachment is unavailable") from None
+        mime_type = attachment.mime_type or stored_type
+    else:
+        with _attachment_lock(attachment_id):
+            db.refresh(attachment)
+            fetched = _fetch_meta_attachment(db, attachment, attempts=2)
+        if not fetched:
+            if attachment.status == "EXPIRED":
+                raise HTTPException(410, "This WhatsApp attachment is no longer available. Please ask the customer to resend it.")
+            if attachment.status == "UNSUPPORTED":
+                raise HTTPException(415, "This attachment type is not supported")
+            raise HTTPException(503, "WhatsApp media is temporarily unavailable")
+        content, mime_type = fetched
+    if len(content) > settings.MEDIA_MAX_BYTES:
+        raise HTTPException(413, "Attachment exceeds the configured limit")
+    disposition = "attachment" if attachment.media_type == "document" else "inline"
+    filename = sanitize_filename(attachment.filename) or f"attachment-{attachment.id}"
+    return StreamingResponse(
+        iter([content]), media_type=mime_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"',
+                 "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.post("/crm/whatsapp/api/attachments/{attachment_id}/delete")
+def delete_whatsapp_attachment(attachment_id: int, db: Session = Depends(get_db),
+                               user: User = Depends(require_user)):
+    attachment = db.get(WhatsAppMediaAttachment, attachment_id)
+    if not attachment:
+        raise HTTPException(404, "Attachment was not found")
+    if attachment.storage_key:
+        try:
+            delete_private_object(attachment.storage_key)
+        except Exception as exc:
+            logger.warning("Private media deletion failed attachment_id=%s error_type=%s",
+                           attachment_id, type(exc).__name__)
+            raise HTTPException(503, "Attachment deletion could not be completed") from None
+    attachment.storage_key = None
+    attachment.status = "DELETED"
+    attachment.deleted_at = datetime.utcnow()
+    db.commit()
+    return {"ok": True}
 
 
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/read")
@@ -2005,582 +2185,6 @@ def crm_orders(request: Request, status_filter: str = "active", db: Session = De
         "status_filter": status_filter, "page_title": "Orders / Sales Intents", "user": user})
 
 
-@app.get("/crm/sales-orders", response_class=HTMLResponse)
-def sales_orders_page(request: Request, q: str = "", status_filter: str = "", sync_status: str = "",
-                      date_from: date | None = None,
-                      date_to: date | None = None, sort: str = "newest", page: int = 1,
-                      db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_sales_orders_enabled()
-    query = db.query(SalesOrder).options(selectinload(SalesOrder.lines))
-    if q.strip():
-        term = f"%{q.strip()}%"
-        query = query.filter(or_(SalesOrder.internal_order_number.ilike(term),
-                                 SalesOrder.customer_name.ilike(term), SalesOrder.whatsapp_phone.ilike(term),
-                                 SalesOrder.shopify_order_name.ilike(term)))
-    if status_filter: query = query.filter(SalesOrder.order_status == status_filter.upper())
-    if sync_status: query = query.filter(SalesOrder.shopify_sync_status == sync_status.upper())
-    if date_from: query = query.filter(SalesOrder.created_at >= datetime.combine(date_from, datetime.min.time()))
-    if date_to: query = query.filter(SalesOrder.created_at < datetime.combine(date_to + timedelta(days=1), datetime.min.time()))
-    total = query.count(); page_size = 25; page = max(page, 1)
-    order_by = SalesOrder.grand_total.desc() if sort == "total_desc" else (
-        SalesOrder.grand_total.asc() if sort == "total_asc" else (
-            SalesOrder.created_at.asc() if sort == "oldest" else SalesOrder.created_at.desc()))
-    orders = query.order_by(order_by, SalesOrder.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    return templates.TemplateResponse("sales_orders.html", {"request": request, "page_title": "Sales Orders",
-        "orders": orders, "q": q, "status_filter": status_filter, "sync_status": sync_status,
-        "date_from": date_from,
-        "date_to": date_to, "sort": sort, "page": page, "page_size": page_size, "total": total,
-        "statuses": sorted(ORDER_STATUSES),
-        "sync_statuses": ["NOT_SYNCED", "SYNCING", "SYNCED", "SYNC_FAILED", "RECONCILIATION_REQUIRED"],
-        "sync_labels": SHOPIFY_SYNC_LABELS,
-        "user": user})
-
-
-@app.get("/crm/sales-orders/{order_id}", response_class=HTMLResponse)
-def sales_order_detail_page(order_id: int, request: Request, db: Session = Depends(get_db),
-                            user: User = Depends(require_user)):
-    _require_sales_orders_enabled()
-    order = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter_by(id=order_id).one_or_none()
-    if not order: raise HTTPException(404, "Sales order not found")
-    history = db.query(SalesOrderStatusHistory).filter_by(sales_order_id=order.id).order_by(
-        SalesOrderStatusHistory.created_at.desc()).all()
-    can_edit = ("edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set())
-                and order.order_status == "DRAFT" and not order.shopify_draft_order_id)
-    can_sync = (settings.SHOPIFY_ORDER_SYNC_ENABLED
-                and "sync_shopify" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()))
-    can_create_sync = (can_sync and not order.shopify_draft_order_id
-                       and order.order_status in ELIGIBLE_ORDER_STATUSES
-                       and order.shopify_sync_status in {"NOT_SYNCED", "SYNC_FAILED"})
-    can_reconcile_sync = (can_sync and not order.shopify_draft_order_id
-                          and order.shopify_sync_status == "RECONCILIATION_REQUIRED")
-    sync_events = db.query(ShopifySyncEvent).filter_by(sales_order_id=order.id).order_by(
-        ShopifySyncEvent.created_at.desc(), ShopifySyncEvent.id.desc()).limit(20).all()
-    payments = db.query(SalesPayment).filter_by(sales_order_id=order.id).order_by(
-        SalesPayment.created_at.desc(), SalesPayment.id.desc()).all()
-    payment_audit = db.query(SalesPaymentAuditEvent).filter_by(sales_order_id=order.id).order_by(
-        SalesPaymentAuditEvent.created_at.desc(), SalesPaymentAuditEvent.id.desc()).limit(50).all()
-    payment_permissions = SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set())
-    payment_enabled = settings.SALES_PAYMENT_TRACKING_ENABLED
-    payment_sync_operations = db.query(ShopifyPaymentSyncOperation).filter_by(
-        sales_order_id=order.id).order_by(ShopifyPaymentSyncOperation.created_at.desc()).limit(10).all()
-    fulfillments = db.query(SalesFulfillment).filter_by(sales_order_id=order.id).order_by(
-        SalesFulfillment.created_at.desc()).all()
-    fulfillment_details = {row.fulfillment_id: row for row in db.query(SalesDeliveryDetail).filter(
-        SalesDeliveryDetail.fulfillment_id.in_([item.id for item in fulfillments] or [-1])).all()}
-    fulfillment_events = db.query(SalesFulfillmentEvent).filter(
-        SalesFulfillmentEvent.fulfillment_id.in_([item.id for item in fulfillments] or [-1])).order_by(
-        SalesFulfillmentEvent.created_at.desc()).limit(50).all()
-    fulfillment_operations = {row.fulfillment_id: row for row in db.query(ShopifyFulfillmentOperation).filter(
-        ShopifyFulfillmentOperation.fulfillment_id.in_([item.id for item in fulfillments] or [-1])).order_by(
-        ShopifyFulfillmentOperation.created_at).all()}
-    return templates.TemplateResponse("sales_order_detail.html", {"request": request,
-        "page_title": order.internal_order_number, "order": order, "history": history,
-        "can_edit": can_edit, "can_sync": can_sync, "can_create_sync": can_create_sync,
-        "can_reconcile_sync": can_reconcile_sync,
-        "sync_label": SHOPIFY_SYNC_LABELS.get(
-            order.shopify_sync_status, order.shopify_sync_status.replace("_", " ").title()),
-        "csrf_token": _csrf_token(request),
-        "shopify_admin_url": shopify_admin_draft_url(order, settings.SHOPIFY_SHOP),
-        "shopify_order_admin_url": shopify_admin_order_url(order, settings.SHOPIFY_SHOP),
-        "can_reconcile_lifecycle": (settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED
-                                    and can_sync and bool(order.shopify_draft_order_id)),
-        "payments": payments, "payment_audit": payment_audit,
-        "payment_methods": sorted(PAYMENT_METHODS),
-        "outstanding_balance": max(Decimal("0.00"), Decimal(str(order.grand_total)) -
-                                   Decimal(str(order.amount_paid))),
-        "can_record_payment": (payment_enabled and "record_payment_claim" in payment_permissions),
-        "can_verify_payment": (payment_enabled and "verify_payment" in payment_permissions),
-        "can_refresh_shopify_payment": (payment_enabled and can_sync and bool(order.shopify_order_id)),
-        "can_sync_shopify_payment": (settings.SHOPIFY_PAYMENT_SYNC_ENABLED
-            and settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED and payment_enabled
-            and "sync_shopify_payment" in payment_permissions and bool(order.shopify_order_id)),
-        "payment_sync_operations": payment_sync_operations,
-        "fulfillments": fulfillments, "fulfillment_details": fulfillment_details,
-        "fulfillment_events": fulfillment_events, "fulfillment_operations": fulfillment_operations,
-        "can_operate_fulfillment": (settings.SALES_FULFILLMENT_ENABLED and "fulfill_operate" in payment_permissions),
-        "can_admin_fulfillment": (settings.SALES_FULFILLMENT_ENABLED and "fulfill_admin" in payment_permissions),
-        "can_sync_fulfillment": (settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED and "fulfill_admin" in payment_permissions),
-        "sync_events": sync_events, "user": user})
-
-
-def _sales_order_payload(order: SalesOrder) -> dict:
-    return {
-        "id": order.id, "internal_order_number": order.internal_order_number,
-        "customer_name": order.customer_name, "whatsapp_phone": order.whatsapp_phone,
-        "alternative_phone": order.alternative_phone,
-        "delivery_contact_person": order.delivery_contact_person,
-        "delivery_address": order.delivery_address, "city": order.city,
-        "district": order.district, "postal_code": order.postal_code,
-        "customer_notes": order.customer_notes, "notes": order.notes,
-        "order_status": order.order_status, "payment_status": order.payment_status,
-        "fulfillment_status": order.fulfillment_status,
-        "shopify_sync_status": order.shopify_sync_status,
-        "shopify_draft_order_id": order.shopify_draft_order_id,
-        "shopify_draft_order_name": order.shopify_draft_order_name,
-        "shopify_order_id": order.shopify_order_id, "shopify_order_name": order.shopify_order_name,
-        "shopify_lifecycle_status": order.shopify_lifecycle_status,
-        "shopify_lifecycle_synced_at": (order.shopify_lifecycle_synced_at.isoformat()
-                                        if order.shopify_lifecycle_synced_at else None),
-        "shopify_lifecycle_error": order.shopify_lifecycle_error,
-        "shopify_financial_status": order.shopify_financial_status,
-        "shopify_payment_reconciliation_status": order.shopify_payment_reconciliation_status,
-        "shopify_payment_reconciliation_warning": order.shopify_payment_reconciliation_warning,
-        "shopify_sync_updated_at": (order.shopify_sync_updated_at.isoformat()
-                                    if order.shopify_sync_updated_at else None),
-        "shopify_sync_error": order.shopify_sync_error,
-        "subtotal": str(order.subtotal), "discount_total": str(order.discount_total),
-        "shipping_total": str(order.shipping_total), "tax_total": str(order.tax_total),
-        "grand_total": str(order.grand_total), "amount_paid": str(order.amount_paid),
-        "currency": order.currency,
-        "created_by": order.created_by, "created_at": order.created_at.isoformat(),
-        "crm_conversation_id": order.crm_conversation_id,
-        "lines": [{"id": line.id, "shopify_product_id": line.shopify_product_id,
-                   "shopify_variant_id": line.shopify_variant_id, "sku": line.sku,
-                   "product_name": line.product_name_snapshot,
-                   "variant_name": line.variant_name_snapshot, "quantity": str(line.quantity),
-                   "product_image_url": line.product_image_url, "product_url": line.product_url,
-                   "unit_price": str(line.unit_price), "discount_amount": str(line.discount_amount),
-                   "tax_amount": str(line.tax_amount), "line_total": str(line.line_total)}
-                  for line in order.lines],
-    }
-
-
-def _verify_sales_order_products(payload: object) -> dict:
-    """Replace all client product snapshots and prices with current Shopify values."""
-    if not isinstance(payload, dict) or not isinstance(payload.get("lines"), list):
-        raise SalesOrderValidationError("A valid order with line items is required")
-    verified = dict(payload)
-    verified_lines = []
-    for raw in payload["lines"]:
-        if not isinstance(raw, dict):
-            raise SalesOrderValidationError("Every order line must be valid")
-        try:
-            product = resolve_inbox_product(raw.get("shopify_product_id"), raw.get("shopify_variant_id"))
-        except ShopifyCatalogError:
-            raise HTTPException(503, "Shopify product verification is temporarily unavailable") from None
-        if product is None:
-            raise SalesOrderValidationError("A selected Shopify product or variant is no longer available")
-        verified_lines.append({
-            "shopify_product_id": product["id"], "shopify_variant_id": product["variant_id"],
-            "sku": product.get("sku"), "product_name": product["title"],
-            "variant_name": product.get("variant_title"), "unit_price": str(product["price"]),
-            "product_image_url": product.get("image"), "product_url": product.get("url"),
-            "quantity": raw.get("quantity"), "discount_amount": raw.get("discount_amount", 0),
-            "tax_amount": raw.get("tax_amount", 0), "inventory_item_id": raw.get("inventory_item_id"),
-        })
-    verified["lines"] = verified_lines
-    return verified
-
-
-@app.get("/api/sales-orders")
-def list_sales_orders(conversation_id: int | None = None, q: str = Query("", max_length=100),
-                      status_filter: str = Query("", max_length=40), limit: int = Query(25, ge=1, le=100),
-                      offset: int = Query(0, ge=0), db: Session = Depends(get_db),
-                      user: User = Depends(require_user)):
-    _require_sales_orders_enabled()
-    query = db.query(SalesOrder).options(selectinload(SalesOrder.lines))
-    if conversation_id is not None: query = query.filter(SalesOrder.crm_conversation_id == conversation_id)
-    if q.strip():
-        term = f"%{q.strip()}%"
-        query = query.filter(or_(SalesOrder.internal_order_number.ilike(term),
-                                 SalesOrder.customer_name.ilike(term), SalesOrder.whatsapp_phone.ilike(term)))
-    if status_filter: query = query.filter(SalesOrder.order_status == status_filter.upper())
-    total = query.count()
-    rows = query.order_by(SalesOrder.created_at.desc(), SalesOrder.id.desc()).offset(offset).limit(limit).all()
-    return {"orders": [_sales_order_payload(row) for row in rows], "total": total,
-            "limit": limit, "offset": offset}
-
-
-@app.get("/api/sales-orders/config")
-def sales_order_config(user: User = Depends(require_user)):
-    return {"sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
-            "shopify_order_sync_enabled": settings.SHOPIFY_ORDER_SYNC_ENABLED,
-            "sales_payment_tracking_enabled": settings.SALES_PAYMENT_TRACKING_ENABLED,
-            "sales_accounting_auto_post_enabled": settings.SALES_ACCOUNTING_AUTO_POST_ENABLED,
-            "role": user.role or "STAFF"}
-
-
-@app.get("/api/sales-orders/csrf")
-def sales_order_csrf(request: Request, user: User = Depends(require_user)):
-    _require_sales_orders_enabled()
-    return {"csrf_token": _csrf_token(request)}
-
-
-@app.get("/api/sales-orders/{order_id}")
-def get_sales_order(order_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_sales_orders_enabled()
-    order = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter_by(id=order_id).one_or_none()
-    if not order: raise HTTPException(404, "Sales order not found")
-    return {"order": _sales_order_payload(order)}
-
-
-@app.post("/api/sales-orders", status_code=201)
-async def create_sales_order(request: Request, db: Session = Depends(get_db),
-                             user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_sales_permission(user, "create"); _require_csrf(request)
-    key = request.headers.get("Idempotency-Key", "").strip()
-    try: payload = await request.json()
-    except ValueError: raise HTTPException(400, "Invalid JSON") from None
-    if _sales_payload_has_discount(payload):
-        _require_sales_permission(user, "approve_discount")
-    try:
-        existing = db.query(SalesOrder).filter_by(idempotency_key=key).one_or_none() if key else None
-        if existing:
-            order, created = existing, False
-        else:
-            payload = _verify_sales_order_products(payload)
-            order, created = create_draft(db, payload, user.username, key)
-    except SalesOrderValidationError as exc:
-        raise HTTPException(422, str(exc)) from None
-    return JSONResponse({"created": created, "order": _sales_order_payload(order)},
-                        status_code=201 if created else 200)
-
-
-@app.put("/api/sales-orders/{order_id}")
-async def update_sales_order(order_id: int, request: Request, db: Session = Depends(get_db),
-                             user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_sales_permission(user, "edit"); _require_csrf(request)
-    order = db.get(SalesOrder, order_id)
-    if not order: raise HTTPException(404, "Sales order not found")
-    try: payload = await request.json()
-    except ValueError: raise HTTPException(400, "Invalid JSON") from None
-    if _sales_payload_has_discount(payload):
-        _require_sales_permission(user, "approve_discount")
-    try:
-        payload = _verify_sales_order_products(payload)
-        order = update_draft(db, order, payload, user.username)
-    except SalesOrderValidationError as exc: raise HTTPException(422, str(exc)) from None
-    return {"order": _sales_order_payload(order)}
-
-
-@app.post("/api/sales-orders/{order_id}/transition")
-async def transition_sales_order(order_id: int, request: Request, db: Session = Depends(get_db),
-                                 user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_sales_permission(user, "transition"); _require_csrf(request)
-    order = db.get(SalesOrder, order_id)
-    if not order: raise HTTPException(404, "Sales order not found")
-    try: payload = await request.json()
-    except ValueError: raise HTTPException(400, "Invalid JSON") from None
-    if not isinstance(payload, dict): raise HTTPException(400, "Invalid request")
-    try: order = transition_order(db, order, payload.get("status"), user.username, payload.get("reason"))
-    except InvalidOrderTransition as exc: raise HTTPException(409, str(exc)) from None
-    return {"order": _sales_order_payload(order)}
-
-
-def _require_shopify_order_sync_enabled() -> None:
-    if not settings.SHOPIFY_ORDER_SYNC_ENABLED:
-        raise HTTPException(status_code=404, detail="Shopify order synchronization is disabled")
-
-
-def _require_payment_tracking_enabled() -> None:
-    if not settings.SALES_PAYMENT_TRACKING_ENABLED:
-        raise HTTPException(status_code=404, detail="Sales payment tracking is disabled")
-
-
-def _require_shopify_payment_sync_enabled() -> None:
-    if not (settings.SALES_PAYMENT_TRACKING_ENABLED
-            and settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED
-            and settings.SHOPIFY_PAYMENT_SYNC_ENABLED):
-        raise HTTPException(status_code=404, detail="Shopify payment synchronization is disabled")
-
-
-def _payment_payload(payment: SalesPayment) -> dict:
-    return {
-        "id": payment.id, "sales_order_id": payment.sales_order_id,
-        "payment_method": payment.payment_method, "payment_reference": payment.payment_reference,
-        "payment_category": PAYMENT_CATEGORIES.get(payment.payment_method),
-        "amount": str(payment.amount), "currency": payment.currency,
-        "payment_date": payment.payment_date.isoformat(),
-        "verification_status": payment.verification_status,
-        "claimed_by": payment.claimed_by,
-        "claimed_at": payment.claimed_at.isoformat() if payment.claimed_at else None,
-        "verified_by": payment.verified_by,
-        "verified_at": payment.verified_at.isoformat() if payment.verified_at else None,
-        "rejected_by": payment.rejected_by,
-        "rejected_at": payment.rejected_at.isoformat() if payment.rejected_at else None,
-        "rejection_reason": payment.rejection_reason,
-        "accounting_posted": payment.accounting_entry_id is not None,
-        "notes": payment.notes,
-    }
-
-
-@app.post("/api/sales-orders/{order_id}/shopify-draft")
-async def create_sales_order_shopify_draft(order_id: int, request: Request,
-                                            db: Session = Depends(get_db),
-                                            user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_shopify_order_sync_enabled()
-    _require_sales_permission(user, "sync_shopify"); _require_csrf(request)
-    try: payload = await request.json()
-    except ValueError: raise HTTPException(400, "Invalid JSON") from None
-    if not isinstance(payload, dict) or payload.get("confirmation") != "CREATE SHOPIFY DRAFT":
-        raise HTTPException(422, "Explicit Shopify Draft Order confirmation is required")
-    order = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter_by(id=order_id).one_or_none()
-    if not order: raise HTTPException(404, "Sales order not found")
-    try:
-        order, created = create_shopify_draft(db, order, user.username)
-    except ShopifyDraftSyncError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from None
-    return {"created": created, "order": _sales_order_payload(order)}
-
-
-@app.post("/api/sales-orders/{order_id}/shopify-refresh")
-def refresh_sales_order_shopify_draft(order_id: int, request: Request,
-                                       db: Session = Depends(get_db),
-                                       user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_shopify_order_sync_enabled()
-    _require_sales_permission(user, "sync_shopify"); _require_csrf(request)
-    order = db.query(SalesOrder).options(selectinload(SalesOrder.lines)).filter_by(id=order_id).one_or_none()
-    if not order: raise HTTPException(404, "Sales order not found")
-    try: order = refresh_shopify_draft(db, order, user.username)
-    except ShopifyDraftSyncError as exc: raise HTTPException(exc.status_code, str(exc)) from None
-    return {"order": _sales_order_payload(order)}
-
-
-@app.post("/api/sales-orders/{order_id}/shopify-lifecycle-reconcile")
-def reconcile_sales_order_shopify_lifecycle(order_id: int, request: Request,
-                                             db: Session = Depends(get_db),
-                                             user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_shopify_order_sync_enabled()
-    if not settings.SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED:
-        raise HTTPException(status_code=404, detail="Shopify order lifecycle synchronization is disabled")
-    _require_sales_permission(user, "sync_shopify"); _require_csrf(request)
-    order = db.get(SalesOrder, order_id)
-    if not order:
-        raise HTTPException(404, "Sales order not found")
-    try:
-        order = reconcile_order(db, order, user.username)
-    except ShopifyLifecycleError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from None
-    return {"order": _sales_order_payload(order)}
-
-
-@app.get("/api/sales-orders/{order_id}/payments")
-def list_sales_order_payments(order_id: int, db: Session = Depends(get_db),
-                              user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
-    order = db.get(SalesOrder, order_id)
-    if not order:
-        raise HTTPException(404, "Sales order not found")
-    payments = db.query(SalesPayment).filter_by(sales_order_id=order_id).order_by(
-        SalesPayment.created_at.desc(), SalesPayment.id.desc()).all()
-    return {"payments": [_payment_payload(payment) for payment in payments],
-            "amount_paid": str(order.amount_paid),
-            "outstanding_balance": str(max(Decimal("0.00"), Decimal(str(order.grand_total)) -
-                                           Decimal(str(order.amount_paid)))),
-            "payment_status": order.payment_status}
-
-
-@app.post("/api/sales-orders/{order_id}/payment-claims")
-async def create_sales_order_payment_claim(order_id: int, request: Request,
-                                           db: Session = Depends(get_db),
-                                           user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
-    _require_sales_permission(user, "record_payment_claim"); _require_csrf(request)
-    try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(400, "Invalid JSON") from None
-    try:
-        payment, created = record_payment_claim(
-            db, order_id, payload, user.username, request.headers.get("Idempotency-Key", ""))
-    except PaymentValidationError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from None
-    return JSONResponse({"created": created, "payment": _payment_payload(payment)},
-                        status_code=201 if created else 200)
-
-
-@app.post("/api/sales-orders/{order_id}/payments/{payment_id}/verify")
-def verify_sales_order_payment(order_id: int, payment_id: int, request: Request,
-                               db: Session = Depends(get_db),
-                               user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
-    _require_sales_permission(user, "verify_payment"); _require_csrf(request)
-    try:
-        payment, changed = decide_payment(
-            db, order_id, payment_id, approve=True, actor=user.username,
-            idempotency_key=request.headers.get("Idempotency-Key", ""))
-    except PaymentValidationError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from None
-    return {"changed": changed, "payment": _payment_payload(payment)}
-
-
-@app.post("/api/sales-orders/{order_id}/payments/{payment_id}/reject")
-async def reject_sales_order_payment(order_id: int, payment_id: int, request: Request,
-                                     db: Session = Depends(get_db),
-                                     user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
-    _require_sales_permission(user, "verify_payment"); _require_csrf(request)
-    try:
-        payload = await request.json()
-    except ValueError:
-        raise HTTPException(400, "Invalid JSON") from None
-    try:
-        payment, changed = decide_payment(
-            db, order_id, payment_id, approve=False, actor=user.username,
-            idempotency_key=request.headers.get("Idempotency-Key", ""),
-            reason=payload.get("reason") if isinstance(payload, dict) else None)
-    except PaymentValidationError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from None
-    return {"changed": changed, "payment": _payment_payload(payment)}
-
-
-@app.post("/api/sales-orders/{order_id}/shopify-payment-refresh")
-def refresh_sales_order_shopify_payment(order_id: int, request: Request,
-                                        db: Session = Depends(get_db),
-                                        user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_payment_tracking_enabled()
-    _require_shopify_order_sync_enabled(); _require_sales_permission(user, "sync_shopify")
-    _require_csrf(request)
-    order = db.get(SalesOrder, order_id)
-    if not order:
-        raise HTTPException(404, "Sales order not found")
-    try:
-        order = refresh_shopify_payment_status(db, order)
-    except PaymentValidationError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from None
-    return {"order": _sales_order_payload(order),
-            "shopify_financial_status": order.shopify_financial_status,
-            "reconciliation_status": order.shopify_payment_reconciliation_status,
-            "warning": order.shopify_payment_reconciliation_warning}
-
-
-def _payment_sync_payload(operation: ShopifyPaymentSyncOperation) -> dict:
-    return {"operation_id": operation.operation_id, "status": operation.status,
-            "mutation_name": operation.mutation_name, "intended_amount": str(operation.intended_amount),
-            "currency": operation.currency, "shopify_order_id": operation.shopify_order_id,
-            "preflight_financial_status": operation.preflight_financial_status,
-            "preflight_shopify_outstanding": str(operation.preflight_shopify_outstanding),
-            "preflight_expires_at": operation.preflight_expires_at.isoformat(),
-            "shopify_transaction_id": operation.shopify_transaction_id,
-            "error_summary": operation.error_summary,
-            "approved_by": operation.approved_by,
-            "completed_at": operation.completed_at.isoformat() if operation.completed_at else None}
-
-
-@app.post("/api/sales-orders/{order_id}/shopify-payment-sync/preflight")
-def preflight_shopify_payment_sync(order_id: int, request: Request, db: Session = Depends(get_db),
-                                   user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_shopify_payment_sync_enabled()
-    _require_sales_permission(user, "sync_shopify_payment"); _require_csrf(request)
-    try:
-        operation = create_preflight(db, order_id, user.username,
-                                     request.headers.get("Idempotency-Key", ""))
-    except ShopifyPaymentSyncError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from None
-    return {"operation": _payment_sync_payload(operation)}
-
-
-@app.post("/api/sales-orders/{order_id}/shopify-payment-sync/{operation_id}/execute")
-async def execute_shopify_payment_sync(order_id: int, operation_id: str, request: Request,
-                                       db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_shopify_payment_sync_enabled()
-    _require_sales_permission(user, "sync_shopify_payment"); _require_csrf(request)
-    try: payload = await request.json()
-    except ValueError: raise HTTPException(400, "Invalid JSON") from None
-    try:
-        operation = execute_operation(db, order_id, operation_id, user.username,
-                                      payload.get("confirmation") if isinstance(payload, dict) else "")
-    except ShopifyPaymentSyncError as exc:
-        raise HTTPException(exc.status_code, str(exc)) from None
-    return {"operation": _payment_sync_payload(operation)}
-
-
-@app.post("/api/sales-orders/{order_id}/shopify-payment-sync/{operation_id}/recover")
-def recover_shopify_payment_sync(order_id: int, operation_id: str, request: Request,
-                                 db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_shopify_payment_sync_enabled()
-    _require_sales_permission(user, "sync_shopify_payment"); _require_csrf(request)
-    try: operation = recover_operation(db, order_id, operation_id, user.username)
-    except ShopifyPaymentSyncError as exc: raise HTTPException(exc.status_code, str(exc)) from None
-    return {"operation": _payment_sync_payload(operation)}
-
-
-def _require_fulfillment_enabled():
-    if not settings.SALES_FULFILLMENT_ENABLED: raise HTTPException(404, "Sales fulfillment is disabled")
-
-
-@app.get("/crm/fulfillments", response_class=HTMLResponse)
-def fulfillment_dashboard(request: Request, status_filter: str = "", courier: str = "",
-                          q: str = "", db: Session = Depends(get_db), user: User = Depends(require_user)):
-    _require_sales_orders_enabled(); _require_fulfillment_enabled()
-    query=db.query(SalesFulfillment,SalesOrder,SalesDeliveryDetail).join(
-        SalesOrder,SalesOrder.id==SalesFulfillment.sales_order_id).outerjoin(
-        SalesDeliveryDetail,SalesDeliveryDetail.fulfillment_id==SalesFulfillment.id)
-    if status_filter:query=query.filter(SalesFulfillment.status==status_filter)
-    if courier:query=query.filter(SalesDeliveryDetail.courier_name.ilike(f"%{courier[:100]}%"))
-    if q:query=query.filter(or_(SalesOrder.internal_order_number.ilike(f"%{q[:100]}%"),SalesOrder.customer_name.ilike(f"%{q[:100]}%")))
-    rows=query.order_by(SalesFulfillment.updated_at.desc()).limit(200).all()
-    return templates.TemplateResponse("fulfillments.html",{"request":request,"page_title":"Fulfillments",
-        "rows":rows,"status_filter":status_filter,"courier":courier,"q":q,"user":user})
-
-
-@app.post("/api/sales-orders/{order_id}/fulfillments")
-async def create_order_fulfillment(order_id:int,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
-    _require_sales_orders_enabled();_require_fulfillment_enabled();_require_sales_permission(user,"fulfill_operate");_require_csrf(request)
-    try:payload=await request.json()
-    except ValueError:payload={}
-    try:result=create_full_fulfillment(db,order_id,user.username,request.headers.get("Idempotency-Key",""),(payload or {}).get("assigned_staff"))
-    except FulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
-    return {"id":result.id,"reference":result.fulfillment_reference,"status":result.status,"version":result.version}
-
-
-@app.post("/api/fulfillments/{fulfillment_id}/transition")
-async def fulfillment_transition(fulfillment_id:int,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
-    _require_fulfillment_enabled();_require_sales_permission(user,"fulfill_operate");_require_csrf(request)
-    try:payload=await request.json()
-    except ValueError:raise HTTPException(400,"Invalid JSON") from None
-    try:result=transition_fulfillment(db,fulfillment_id,str(payload.get("status") or ""),user.username,
-        request.headers.get("Idempotency-Key",""),payload.get("reason"),payload.get("version"),user.role=="ADMIN")
-    except FulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
-    return {"id":result.id,"status":result.status,"version":result.version}
-
-
-@app.post("/api/fulfillments/{fulfillment_id}/delivery")
-async def fulfillment_delivery(fulfillment_id:int,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
-    _require_fulfillment_enabled()
-    if not settings.SALES_DELIVERY_TRACKING_ENABLED:raise HTTPException(404,"Sales delivery tracking is disabled")
-    _require_sales_permission(user,"fulfill_operate");_require_csrf(request)
-    try:payload=await request.json()
-    except ValueError:raise HTTPException(400,"Invalid JSON") from None
-    try:detail=update_delivery(db,fulfillment_id,payload,user.username,request.headers.get("Idempotency-Key",""))
-    except FulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
-    return {"delivery_method":detail.delivery_method,"tracking_number":detail.tracking_number}
-
-
-@app.post("/api/fulfillments/{fulfillment_id}/shopify/preflight")
-def fulfillment_shopify_preflight(fulfillment_id:int,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
-    _require_fulfillment_enabled()
-    if not settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED:raise HTTPException(404,"Shopify fulfillment synchronization is disabled")
-    _require_sales_permission(user,"fulfill_admin");_require_csrf(request)
-    try:op=create_fulfillment_preflight(db,fulfillment_id,user.username,request.headers.get("Idempotency-Key",""))
-    except ShopifyFulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
-    return {"operation_id":op.operation_id,"status":op.status,
-        "fulfillment_id":op.fulfillment_id,"shopify_order_id":op.shopify_order_id,
-        "preflight_expires_at":op.preflight_expires_at.isoformat()+"Z",
-        "preflight":json.loads(op.preflight_json)}
-
-
-@app.post("/api/fulfillments/{fulfillment_id}/shopify/{operation_id}/execute")
-async def fulfillment_shopify_execute(fulfillment_id:int,operation_id:str,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
-    _require_fulfillment_enabled()
-    if not settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED:raise HTTPException(404,"Shopify fulfillment synchronization is disabled")
-    _require_sales_permission(user,"fulfill_admin");_require_csrf(request)
-    payload=await request.json()
-    try:op=execute_shopify_fulfillment(db,fulfillment_id,operation_id,user.username,payload.get("confirmation") or "")
-    except ShopifyFulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
-    return {"operation_id":op.operation_id,"status":op.status,"shopify_fulfillment_id":op.shopify_fulfillment_id}
-
-
-@app.post("/api/fulfillments/{fulfillment_id}/shopify/{operation_id}/reconcile")
-def fulfillment_shopify_reconcile(fulfillment_id:int,operation_id:str,request:Request,db:Session=Depends(get_db),user:User=Depends(require_user)):
-    _require_fulfillment_enabled()
-    if not settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED:raise HTTPException(404,"Shopify fulfillment synchronization is disabled")
-    _require_sales_permission(user,"fulfill_admin");_require_csrf(request)
-    try:op=reconcile_shopify_fulfillment(db,fulfillment_id,operation_id,user.username)
-    except ShopifyFulfillmentError as exc:raise HTTPException(exc.status_code,str(exc)) from None
-    return {"operation_id":op.operation_id,"status":op.status,"shopify_fulfillment_id":op.shopify_fulfillment_id}
-
-
 @app.get("/crm/bot-management", response_class=HTMLResponse)
 @app.get("/crm/bot-management/{section}", response_class=HTMLResponse)
 def bot_management(request: Request, section: str = "overview", db: Session = Depends(get_db),
@@ -2590,13 +2194,10 @@ def bot_management(request: Request, section: str = "overview", db: Session = De
         raise HTTPException(status_code=404)
     collections, catalog_error = [], None
     if section == "catalog":
-        query = str(request.query_params.get("q", "")).strip()
-        collection_query = db.query(ShopifyCollectionReference).filter_by(active=True)
-        if query:
-            collection_query = collection_query.filter(or_(
-                ShopifyCollectionReference.title.ilike(f"%{query}%"),
-                ShopifyCollectionReference.handle.ilike(f"%{query}%")))
-        collections = collection_query.order_by(ShopifyCollectionReference.title).limit(100).all()
+        try:
+            collections = discover_collections(str(request.query_params.get("q", "")))
+        except ShopifyCatalogError:
+            catalog_error = "Shopify collection discovery is currently unavailable."
     return templates.TemplateResponse("bot_management.html", _bot_page_context(
         request, db, section, collections=collections, catalog_error=catalog_error))
 
@@ -2655,29 +2256,13 @@ def bot_add_entry(
         raise HTTPException(400, "Invalid entry type or scope")
     if not title.strip() or not content.strip() or len(content) > 10000:
         raise HTTPException(400, "Title and approved content are required")
-    reference = scope_reference.strip()
-    if scope == "GLOBAL" and reference:
-        raise HTTPException(400, "Global content must not select a Shopify item")
-    if scope == "COLLECTION":
-        valid = db.query(ShopifyCollectionReference).filter_by(handle=reference, active=True).first()
-        if not valid: raise HTTPException(400, "Select a valid Shopify collection")
-    if scope == "PRODUCT":
-        try:
-            valid_product = get_product_by_handle(reference) if reference else None
-        except ShopifyCatalogError:
-            raise HTTPException(503, "Shopify product validation is temporarily unavailable") from None
-        if not valid_product:
-            raise HTTPException(400, "Select a valid Shopify product")
     snapshot, _ = get_snapshot(db, draft=True)
     bucket = {"KNOWLEDGE": "knowledge", "POLICY": "policies", "FAQ": "faqs"}[kind]
     entries = snapshot.setdefault(bucket, [])
     entries.append({"id": max([int(item.get("id", 0)) for item in entries] + [0]) + 1,
                     "title": title.strip(), "topic": topic.strip(), "content": content.strip(),
-                    "scope": scope, "scope_reference": reference,
-                    "scope_reference_title": (valid_product.get("title")
-                                              if scope == "PRODUCT" else None),
-                    "tags": tags.strip(), "enabled": True, "archived": False,
-                    "updated_at": datetime.utcnow().isoformat()})
+                    "scope": scope, "scope_reference": scope_reference.strip(),
+                    "tags": tags.strip(), "enabled": True})
     save_draft(db, snapshot, user.username, f"Added draft {kind.lower()}: {title.strip()}")
     return RedirectResponse(f"/crm/bot-management/{'faqs' if kind == 'FAQ' else 'policies' if kind == 'POLICY' else 'catalog'}", status_code=303)
 
@@ -2687,25 +2272,6 @@ def bot_publish(confirm: str = Form(""), change_summary: str = Form(...),
                 db: Session = Depends(get_db), user: User = Depends(require_user)):
     if confirm != "PUBLISH":
         raise HTTPException(400, "Explicit publish confirmation is required")
-    draft, _ = get_snapshot(db, draft=True)
-    active_collections = {row.handle for row in db.query(ShopifyCollectionReference).filter_by(
-        active=True).all()}
-    for bucket in ("knowledge", "policies", "faqs"):
-        for entry in draft.get(bucket, []):
-            if entry.get("scope") == "COLLECTION" and entry.get("scope_reference") not in active_collections:
-                raise HTTPException(400, f"{entry.get('title', 'Entry')} selects a Shopify collection that no longer exists")
-            if entry.get("scope") == "PRODUCT":
-                try: valid_product = get_product_by_handle(str(entry.get("scope_reference") or ""))
-                except ShopifyCatalogError: raise HTTPException(503, "Shopify validation is temporarily unavailable") from None
-                if not valid_product:
-                    raise HTTPException(400, f"{entry.get('title', 'Entry')} selects a Shopify product that no longer exists")
-    for flow in draft.get("guided_flows", []):
-        if flow.get("collection_reference") not in active_collections:
-            raise HTTPException(400, "A guided flow collection no longer exists in Shopify")
-        for rule in flow.get("rules", []):
-            action = rule.get("action", {})
-            if action.get("type") == "CHOOSE_COLLECTION" and action.get("collection_reference") not in active_collections:
-                raise HTTPException(400, f"Rule {rule.get('name', '')} has no valid Shopify target collection")
     try:
         publish_bot_config(db, user.username, change_summary.strip() or "Published configuration changes")
     except ValueError as exc:
@@ -2753,129 +2319,12 @@ def bot_refresh_catalog(db: Session = Depends(get_db), user: User = Depends(requ
     # Read-only Shopify discovery. The catalogue remains in Shopify and is not duplicated.
     try:
         collections = discover_collections()
-        now = datetime.utcnow()
-        seen = set()
-        for collection in collections:
-            if not collection.get("id") or not collection.get("handle"): continue
-            seen.add(collection["id"])
-            cached = db.query(ShopifyCollectionReference).filter_by(
-                shopify_id=collection["id"]).one_or_none()
-            if cached is None:
-                cached = ShopifyCollectionReference(shopify_id=collection["id"],
-                    handle=collection["handle"], title=collection["title"] or collection["handle"])
-                db.add(cached)
-            cached.handle = collection["handle"]
-            cached.title = collection.get("title") or collection["handle"]
-            cached.product_count, cached.active = collection.get("product_count"), True
-            cached.last_seen_at = cached.refreshed_at = now
-        if seen:
-            db.query(ShopifyCollectionReference).filter(
-                ShopifyCollectionReference.shopify_id.notin_(seen)).update(
-                    {ShopifyCollectionReference.active: False}, synchronize_session=False)
         summary = f"Read-only Shopify collection discovery found {len(collections)} collections"
     except ShopifyCatalogError:
         summary = "Shopify collection discovery was unavailable; no catalogue data changed"
     db.add(BotAuditEvent(action="SHOPIFY_REFRESH", summary=summary, actor=user.username))
     db.commit()
     return RedirectResponse("/crm/bot-management/catalog", status_code=303)
-
-
-@app.get("/crm/bot-management/api/products")
-def bot_product_search(q: str = Query("", max_length=100),
-                       limit: int = Query(20, ge=1, le=25),
-                       cursor: str | None = Query(None, max_length=500,
-                                                  pattern=r"^[A-Za-z0-9_+=/.-]+$"),
-                       user: User = Depends(require_user)):
-    """Authenticated, bounded proxy for the reusable Shopify product picker."""
-    try:
-        result = search_products_for_management(q, limit, cursor)
-    except ShopifyCatalogError:
-        logger.warning("Shopify management product search unavailable")
-        raise HTTPException(503, "Shopify product search is temporarily unavailable") from None
-    allowed = ("title", "handle", "vendor", "product_type", "featured_image", "status")
-    return {"products": [{key: product.get(key) for key in allowed}
-                         for product in result["products"]],
-            "next_cursor": result.get("next_cursor"),
-            "has_next_page": result.get("has_next_page", False)}
-
-
-@app.get("/crm/bot-management/catalog/collection/{handle}", response_class=HTMLResponse)
-def bot_collection_workspace(request: Request, handle: str, tab: str = "overview", q: str = "",
-                             db: Session = Depends(get_db), user: User = Depends(require_user)):
-    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).one_or_none()
-    if not collection: raise HTTPException(404, "Shopify collection was not found")
-    if tab not in {"overview", "knowledge", "guided", "rules", "faqs", "products", "test"}:
-        raise HTTPException(404)
-    products, error = [], None
-    if tab == "products":
-        try: products = products_for_collection(collection.shopify_id, q, 20)
-        except ShopifyCatalogError: error = "Shopify products are temporarily unavailable."
-    return templates.TemplateResponse("bot_collection.html", _bot_page_context(
-        request, db, "catalog", collection=collection, workspace_tab=tab,
-        products=products, catalog_error=error, user=user))
-
-
-@app.post("/crm/bot-management/catalog/collection/{handle}/question")
-async def bot_add_guided_question(handle: str, request: Request, db: Session = Depends(get_db),
-                                  user: User = Depends(require_user)):
-    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).first()
-    if not collection: raise HTTPException(404, "Shopify collection was not found")
-    form = await request.form()
-    key = str(form.get("key", "")).strip().lower()
-    answer_type = str(form.get("answer_type", "")).upper()
-    if not re.fullmatch(r"[a-z][a-z0-9_]{0,49}", key):
-        raise HTTPException(400, "Question key must use lowercase letters, numbers or underscores")
-    if answer_type not in {"CHOICE", "NUMBER", "YES_NO", "TEXT"}:
-        raise HTTPException(400, "Invalid answer type")
-    choices = [x.strip() for x in str(form.get("choices", "")).split(",") if x.strip()]
-    if answer_type == "CHOICE" and len(choices) < 2:
-        raise HTTPException(400, "Choice questions require at least two choices")
-    snapshot, _ = get_snapshot(db, draft=True)
-    flows = snapshot.setdefault("guided_flows", [])
-    flow = next((x for x in flows if x.get("collection_reference") == handle), None)
-    if flow is None:
-        flow = {"collection_reference": handle, "enabled": True, "questions": [], "rules": []}
-        flows.append(flow)
-    if any(q.get("key") == key for q in flow["questions"]):
-        raise HTTPException(400, "Question key already exists")
-    flow["questions"].append({"label": str(form.get("label", "")).strip()[:100], "key": key,
-        "text": str(form.get("text", "")).strip()[:1000],
-        "text_si": str(form.get("text_si", "")).strip()[:1000], "answer_type": answer_type,
-        "choices": choices, "required": form.get("required") == "on",
-        "display_order": int(form.get("display_order", len(flow["questions"]) + 1)), "enabled": True})
-    flow["questions"].sort(key=lambda q: q["display_order"])
-    save_draft(db, snapshot, user.username, f"Added guided question to {collection.title}")
-    return RedirectResponse(f"/crm/bot-management/catalog/collection/{handle}?tab=guided", 303)
-
-
-@app.post("/crm/bot-management/catalog/collection/{handle}/rule")
-async def bot_add_guided_rule(handle: str, request: Request, db: Session = Depends(get_db),
-                              user: User = Depends(require_user)):
-    collection = db.query(ShopifyCollectionReference).filter_by(handle=handle, active=True).first()
-    if not collection: raise HTTPException(404, "Shopify collection was not found")
-    form = await request.form()
-    operator, action_type = str(form.get("operator", "")).upper(), str(form.get("action_type", "")).upper()
-    if operator not in {"EQUALS", "BETWEEN", "CONTAINS"} or action_type not in {
-            "SET_ATTRIBUTE", "CHOOSE_COLLECTION", "PRODUCT_FILTER", "SET_VALUE", "ASK_NEXT", "NO_MATCH"}:
-        raise HTTPException(400, "Unsupported rule condition or action")
-    target = str(form.get("target_collection", "")).strip()
-    if action_type == "CHOOSE_COLLECTION" and not db.query(ShopifyCollectionReference).filter_by(
-            handle=target, active=True).first():
-        raise HTTPException(400, "Select a valid Shopify target collection")
-    snapshot, _ = get_snapshot(db, draft=True)
-    flow = next((x for x in snapshot.setdefault("guided_flows", [])
-                 if x.get("collection_reference") == handle), None)
-    if not flow: raise HTTPException(400, "Create a guided question before adding rules")
-    if str(form.get("key", "")) not in {q["key"] for q in flow["questions"]}:
-        raise HTTPException(400, "Select an existing guided question")
-    flow["rules"].append({"name": str(form.get("name", "Recommendation rule")).strip()[:150],
-        "conditions": [{"key": form["key"], "operator": operator, "value": str(form.get("value", ""))[:200],
-                        "value_to": str(form.get("value_to", ""))[:200]}],
-        "action": {"type": action_type, "key": str(form.get("action_key", ""))[:100],
-                   "value": str(form.get("action_value", ""))[:200], "collection_reference": target},
-        "enabled": True})
-    save_draft(db, snapshot, user.username, f"Added recommendation rule to {collection.title}")
-    return RedirectResponse(f"/crm/bot-management/catalog/collection/{handle}?tab=rules", 303)
 
 
 @app.get("/crm", response_class=HTMLResponse)

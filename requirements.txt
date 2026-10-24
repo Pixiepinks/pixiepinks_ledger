@@ -11,7 +11,4 @@ bcrypt==4.0.1
 itsdangerous==2.2.0
 httpx==0.27.2
 openai>=1.68.0,<3.0.0
-# Pin the CPython 3.12 manylinux wheel. It bundles FFmpeg and codec libraries,
-# including libx264, instead of relying on the Nix image's FFmpeg packages.
-av==16.1.0
-alembic>=1.14.0,<2.0.0
+boto3>=1.35.0,<2.0.0
