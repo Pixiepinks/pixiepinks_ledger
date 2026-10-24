@@ -47,6 +47,7 @@ from models import (
     User,
     WhatsAppConversation,
     WhatsAppConversationMessage,
+    WhatsAppMessageAttachment,
     WhatsAppManualSend,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
@@ -306,10 +307,16 @@ def _store_conversation_message(
     media_mime_type: str | None = None,
     media_duration_seconds: float | None = None,
     created_at: datetime | None = None,
-) -> None:
+    attachment_metadata: dict | None = None,
+    processed_record: ProcessedWhatsAppMessage | None = None,
+) -> str:
     try:
         with SessionLocal() as db:
-            db.add(WhatsAppConversationMessage(
+            if processed_record is not None:
+                db.add(processed_record)
+                # Claim the unique Meta delivery ID in this same transaction.
+                db.flush()
+            message = WhatsAppConversationMessage(
                 phone_number=phone_number,
                 customer_name=customer_name,
                 direction=direction,
@@ -320,7 +327,11 @@ def _store_conversation_message(
                 media_mime_type=media_mime_type,
                 media_duration_seconds=media_duration_seconds,
                 created_at=created_at or datetime.utcnow(),
-            ))
+            )
+            db.add(message)
+            if attachment_metadata is not None:
+                db.flush()
+                db.add(WhatsAppMessageAttachment(message_id=message.id, **attachment_metadata))
             phone = _normalize_whatsapp_phone(phone_number)
             conversation = db.query(WhatsAppConversation).filter_by(phone_number=phone).one_or_none()
             when = created_at or datetime.utcnow()
@@ -335,8 +346,48 @@ def _store_conversation_message(
                 conversation.last_customer_message_at = when
                 conversation.unread_count = (conversation.unread_count or 0) + 1
             db.commit()
+            return "stored"
+    except IntegrityError:
+        if processed_record is not None:
+            with SessionLocal() as db:
+                if db.query(ProcessedWhatsAppMessage).filter_by(
+                    message_id=processed_record.message_id
+                ).first() is not None:
+                    return "duplicate"
+        logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+        return "failed"
     except SQLAlchemyError:
         logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+        return "failed"
+
+
+INCOMING_MEDIA_TYPES = {"image", "document", "video", "audio", "sticker"}
+
+
+def _incoming_media_metadata(message: dict) -> dict | None:
+    """Allowlist provider metadata, ignoring malformed fields and unknown data."""
+    media_type = message["type"]
+    media = message.get(media_type)
+    if not isinstance(media, dict):
+        return None
+    media_id = media.get("id")
+    if not isinstance(media_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,255}", media_id):
+        return None
+    metadata = {"media_id": media_id, "media_type": media_type}
+    for key, limit in (("mime_type", 100), ("filename", 255), ("caption", 2000)):
+        value = media.get(key)
+        if isinstance(value, str) and value.strip() and "\x00" not in value:
+            metadata[key] = value[:limit]
+    checksum = media.get("sha256")
+    if isinstance(checksum, str) and re.fullmatch(r"[A-Za-z0-9+/=_-]{1,64}", checksum):
+        metadata["sha256"] = checksum
+    size = media.get("file_size")
+    if type(size) is int and 0 <= size <= 2_147_483_647:
+        metadata["file_size_bytes"] = size
+    duration = media.get("duration")
+    if type(duration) in (int, float) and 0 <= duration <= 86400:
+        metadata["duration_seconds"] = duration
+    return metadata
 
 
 def _normalize_whatsapp_phone(value: str) -> str:
@@ -1103,6 +1154,31 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     received_at=received_at,
                     processed_at=datetime.utcnow(),
                 )
+                if message_type in INCOMING_MEDIA_TYPES:
+                    metadata = _incoming_media_metadata(message)
+                    profile_name = profile_names.get(sender)
+                    profile_name = profile_name[:255] if isinstance(profile_name, str) else None
+                    # Keep audio's legacy fields for the existing authenticated
+                    # playback path; other media never enters that audio path.
+                    is_audio = message_type == "audio"
+                    result = _store_conversation_message(
+                        sender, "inbound", "Voice message" if is_audio else f"{message_type.title()} message",
+                        customer_name=profile_name, whatsapp_message_id=message_id,
+                        response_kind="customer_audio" if is_audio else "customer_media",
+                        media_id=metadata["media_id"] if is_audio and metadata else None,
+                        media_mime_type=metadata.get("mime_type") if is_audio and metadata else None,
+                        created_at=received_at, attachment_metadata=metadata, processed_record=record,
+                    )
+                    if result == "failed":
+                        raise HTTPException(status_code=503, detail="Media metadata registration unavailable")
+                    if result == "duplicate":
+                        continue
+                    with SessionLocal() as db:
+                        conversation = _conversation_for_phone(db, sender)
+                        human_owned = bool(conversation and conversation.mode == "HUMAN")
+                    if not human_owned:
+                        background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
+                    continue
                 with SessionLocal() as db:
                     try:
                         db.add(record)
@@ -1154,19 +1230,8 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         context_message_id,
                     )
                 elif message_type in {
-                    "image", "audio", "video", "document", "sticker", "location",
-                    "contacts", "reaction", "interactive",
+                    "location", "contacts", "reaction", "interactive",
                 }:
-                    if message_type == "audio" and isinstance(message.get("audio"), dict):
-                        audio = message["audio"]
-                        media_id = audio.get("id")
-                        if isinstance(media_id, str) and media_id:
-                            _store_conversation_message(
-                                sender, "inbound", "Voice message", customer_name=profile_name,
-                                whatsapp_message_id=message_id, response_kind="customer_audio",
-                                media_id=media_id, media_mime_type=audio.get("mime_type"),
-                                created_at=received_at,
-                            )
                     with SessionLocal() as db:
                         conversation = _conversation_for_phone(db, sender)
                         human_owned = bool(conversation and conversation.mode == "HUMAN")
