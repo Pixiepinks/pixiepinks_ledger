@@ -1,6 +1,7 @@
 import logging
 import json
 import re
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -247,7 +248,7 @@ class AttachmentMediaError(Exception):
         super().__init__(detail)
 
 
-def _bounded_media_body(response: httpx.Response, limit: int) -> bytes:
+def _bounded_media_body(response: httpx.Response, limit: int, deadline: float | None = None) -> bytes:
     response.raise_for_status()
     length = response.headers.get("content-length")
     if length is not None:
@@ -258,6 +259,8 @@ def _bounded_media_body(response: httpx.Response, limit: int) -> bytes:
             raise AttachmentMediaError(502, "Attachment is temporarily unavailable") from None
     content = bytearray()
     for chunk in response.iter_bytes(chunk_size=64 * 1024):
+        if deadline is not None and time.monotonic() > deadline:
+            raise AttachmentMediaError(504, "Attachment processing timed out")
         if len(content) + len(chunk) > limit:
             raise AttachmentMediaError(413, "Attachment exceeds the viewing size limit")
         content.extend(chunk)
@@ -288,7 +291,8 @@ def _attachment_signature_matches(content: bytes, mime: str) -> bool:
     return bool(content)
 
 
-def download_whatsapp_attachment(media_id: str, media_type: str) -> tuple[bytes, str]:
+def download_whatsapp_attachment(media_id: str, media_type: str, *,
+                                 max_bytes: int = MAX_DOWNLOAD_BYTES, timeout_seconds: int = 30) -> tuple[bytes, str]:
     """Resolve fresh Meta metadata and fetch bounded media in memory on demand.
 
     The legacy voice playback downloader remains unchanged. Neither the signed
@@ -301,18 +305,20 @@ def download_whatsapp_attachment(media_id: str, media_type: str) -> tuple[bytes,
         raise AttachmentMediaError(503, "Attachment access is not configured")
     version = settings.META_GRAPH_API_VERSION.strip().lstrip("/") or "v26.0"
     headers = {"Authorization": f"Bearer {token}"}
+    deadline = time.monotonic() + timeout_seconds
     try:
-        with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), follow_redirects=False) as client:
+        limit = min(max_bytes, MAX_DOWNLOAD_BYTES)
+        with httpx.Client(timeout=httpx.Timeout(timeout_seconds, connect=min(10, timeout_seconds)), follow_redirects=False) as client:
             with client.stream("GET", f"https://graph.facebook.com/{version}/{media_id}", headers=headers) as response:
-                metadata = json.loads(_bounded_media_body(response, 64 * 1024))
+                metadata = json.loads(_bounded_media_body(response, 64 * 1024, deadline))
             if not isinstance(metadata, dict):
                 raise ValueError("Invalid metadata")
             mime = metadata.get("mime_type")
             if mime not in ATTACHMENT_MIME_TYPES[media_type]:
                 raise AttachmentMediaError(415, "Attachment format is not supported")
             declared_size = metadata.get("file_size")
-            if type(declared_size) is int and declared_size > MAX_DOWNLOAD_BYTES:
-                raise AttachmentMediaError(413, "Attachment exceeds the 16 MB viewing limit")
+            if type(declared_size) is int and declared_size > limit:
+                raise AttachmentMediaError(413, "Attachment exceeds the processing size limit")
             url = metadata.get("url")
             parsed = urlparse(url) if isinstance(url, str) else None
             host = (parsed.hostname or "").lower() if parsed else ""
@@ -327,7 +333,7 @@ def download_whatsapp_attachment(media_id: str, media_type: str) -> tuple[bytes,
                 response_mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
                 if response_mime not in {mime, "application/octet-stream"}:
                     raise AttachmentMediaError(415, "Attachment format does not match its metadata")
-                content = _bounded_media_body(response, MAX_DOWNLOAD_BYTES)
+                content = _bounded_media_body(response, limit, deadline)
             if not _attachment_signature_matches(content, mime):
                 raise AttachmentMediaError(415, "Attachment content does not match its format")
             return content, mime

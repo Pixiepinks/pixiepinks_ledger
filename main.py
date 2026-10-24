@@ -4,6 +4,7 @@ import json
 import logging
 import re
 import secrets
+from contextlib import nullcontext
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from urllib.parse import quote, urlparse
@@ -59,6 +60,7 @@ from models import (
     ShopifyFulfillmentWebhookEvent,
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
+from image_understanding_service import inspect_customer_image, image_language, private_image_processing
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
@@ -101,7 +103,7 @@ from order_intent_service import (
 )
 from bot_configuration_service import (
     HARD_GUARDRAILS, ensure_configuration, get_snapshot, publish as publish_bot_config,
-    recommended_size as configured_bicycle_size, restore_as_draft, save_draft,
+    recommended_size as configured_bicycle_size, restore_as_draft, save_draft, vision_settings,
     service_charge as configured_service_charge, validate_snapshot,
 )
 from sales_order_service import (
@@ -273,6 +275,7 @@ FOLLOW_UP_TERMS = ("this", "that", "one", "second", "pink ones", "it", "මේ",
 
 AWAITING_BICYCLE_GENDER = "AWAITING_BICYCLE_GENDER"
 AWAITING_BICYCLE_AGE = "AWAITING_BICYCLE_AGE"
+AWAITING_IMAGE_BICYCLE_MATCH = "AWAITING_IMAGE_BICYCLE_MATCH"
 SHOWING_PRODUCTS = "SHOWING_PRODUCTS"
 
 
@@ -679,6 +682,7 @@ def _active_order_reply(sender: str, text_body: str) -> str | None:
 def _reply_to_text_message(
     sender: str, message_id: str, text_body: str, profile_name: str | None,
     context_message_id: str | None = None,
+    image_reply_language: str | None = None,
 ) -> None:
     """Generate and send after Meta has already received its HTTP 200 acknowledgement."""
     bicycle_delivery = None
@@ -693,6 +697,36 @@ def _reply_to_text_message(
         persisted_gender = conversation.bicycle_gender if conversation else None
         persisted_age = conversation.bicycle_age if conversation else None
         persisted_size = conversation.bicycle_size if conversation else None
+        previous = None
+        if image_reply_language is None and persisted_state in {AWAITING_IMAGE_BICYCLE_MATCH, AWAITING_BICYCLE_GENDER, AWAITING_BICYCLE_AGE, SHOWING_PRODUCTS}:
+            previous = db.query(WhatsAppConversationMessage).filter_by(
+                phone_number=sender, direction="outbound").order_by(WhatsAppConversationMessage.id.desc()).first()
+            if previous and previous.response_kind == "image_bicycle":
+                current_config, _ = get_snapshot(db)
+                if vision_settings(current_config)["enabled"]:
+                    image_reply_language = (image_language(previous.message_text) if len(text_body.split()) <= 2
+                                            else image_language(text_body, image_language(previous.message_text)))
+        if persisted_state == AWAITING_IMAGE_BICYCLE_MATCH:
+            current_config, _ = get_snapshot(db)
+            if not vision_settings(current_config)["enabled"]:
+                _set_bicycle_workflow(sender, None)
+                persisted_state = None
+        if (persisted_state == AWAITING_IMAGE_BICYCLE_MATCH and not requests_human_handover(text_body)
+                and not _is_explicit_category_switch(text_body)):
+            # This confirmation is discovery only. Age/gender are taken from
+            # customer text, never inferred from image appearance.
+            if _image_match_preference(text_body):
+                gender = detect_bicycle_preference(text_body) or persisted_gender
+                age = extract_child_age(text_body) or persisted_age
+                language = image_reply_language or image_language(text_body)
+                _set_bicycle_workflow(sender, None)
+                request_text = "bicycle" + (f" for a {gender}" if gender else "") + (f" {age} years old" if age else "")
+                with private_image_processing():
+                    _reply_to_text_message(sender, message_id, request_text, profile_name,
+                                           image_reply_language=language)
+            else:
+                _send_image_reply(sender, _image_copy("same", image_language(text_body)), profile_name)
+            return
         logger.info(
             "WhatsApp route mode=AI workflow_state=%s category=%s gender=%s age=%s size=%s",
             persisted_state, conversation.active_product_category if conversation else None,
@@ -719,14 +753,22 @@ def _reply_to_text_message(
                     logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_gender_invalid",
                                 persisted_state)
                     raise StopIteration
-                _set_bicycle_workflow(sender, AWAITING_BICYCLE_AGE, gender=gender_answer)
-                persisted_gender = gender_answer
-                persisted_state = AWAITING_BICYCLE_AGE
-                logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_gender gender=%s",
-                            persisted_state, gender_answer)
-                reply = f"Great. How old is {'he' if gender_answer == 'boy' else 'she'}?"
-                response_kind = "bicycle_state"
-                raise StopIteration
+                if image_reply_language and persisted_age is not None:
+                    with SessionLocal() as config_db:
+                        persisted_size, _ = configured_bicycle_size(config_db, persisted_age)
+                    persisted_gender, persisted_state = gender_answer, SHOWING_PRODUCTS
+                    _set_bicycle_workflow(sender, SHOWING_PRODUCTS, gender=gender_answer,
+                                          age=persisted_age, size=persisted_size)
+                    text_body = f"bicycle for a {gender_answer} {persisted_age} years old"
+                else:
+                    _set_bicycle_workflow(sender, AWAITING_BICYCLE_AGE, gender=gender_answer)
+                    persisted_gender = gender_answer
+                    persisted_state = AWAITING_BICYCLE_AGE
+                    logger.info("WhatsApp route mode=AI workflow_state=%s detected_route=bicycle_gender gender=%s",
+                                persisted_state, gender_answer)
+                    reply = f"Great. How old is {'he' if gender_answer == 'boy' else 'she'}?"
+                    response_kind = "bicycle_state"
+                    raise StopIteration
             elif persisted_state == AWAITING_BICYCLE_AGE:
                 age_answer = extract_child_age(text_body, standalone=True)
                 if age_answer is None:
@@ -807,6 +849,8 @@ def _reply_to_text_message(
             prior_result_size = infer_bicycle_result_size(state_context)
             explicit_preference = detect_bicycle_preference(text_body)
             explicit_age = extract_child_age(text_body, standalone=bicycle_stage == "age")
+            if image_reply_language and is_bicycle_request(text_body):
+                explicit_age = extract_child_age(text_body) or explicit_age
             intent = parse_search_intent(text_body)
             direct_size = intent["filters"]["size"]
             had_bicycle_context = bicycle_stage in {"gender", "age", "results"}
@@ -909,7 +953,7 @@ def _reply_to_text_message(
                          "the best size.")
             elif bicycle_related and not direct_size and preference is None:
                 reply = "Yes, we do 🚲 Is the bicycle for a boy or a girl?"
-                _set_bicycle_workflow(sender, AWAITING_BICYCLE_GENDER)
+                _set_bicycle_workflow(sender, AWAITING_BICYCLE_GENDER, age=age if image_reply_language else None)
             elif bicycle_related and not direct_size and age is None:
                 pronoun = "he" if preference == "boy" else "she"
                 reply = f"Great. How old is {pronoun}?"
@@ -1005,19 +1049,34 @@ def _reply_to_text_message(
         logger.info("WhatsApp reply path=%s message_id=%s sender=%s", response_kind, message_id, sender)
 
     if bicycle_delivery:
+        if image_reply_language and not _image_can_reply(sender):
+            return
         intro, products = bicycle_delivery
+        if image_reply_language:
+            with SessionLocal() as db:
+                snapshot, _ = get_snapshot(db)
+            products = products[:snapshot["global"]["maximum_products"]]
+        if image_reply_language in {"si", "mixed"}:
+            intro = _image_copy("bicycle_options", image_reply_language)
         sent = send_whatsapp_text(sender, intro)
         _store_conversation_message(sender, "outbound", intro, customer_name=profile_name,
-                                    response_kind="bicycle")
+                                    response_kind="image_bicycle" if image_reply_language else "bicycle")
         for product in products:
+            if image_reply_language and not _image_can_reply(sender):
+                return
             product_text = format_bicycle_product(product)
+            if image_reply_language and not snapshot["global"].get("send_product_images", True):
+                product = {**product, "featured_image_verified": False}
             _send_product_message(sender, product, product_text)
             _store_conversation_message(sender, "outbound", product_text,
                                         customer_name=profile_name, response_kind="bicycle_product")
-        follow_up = "Would you like more options, or to filter by colour, brand or budget?"
+        follow_up = (_image_copy("more", image_reply_language) if image_reply_language else
+                     "Would you like more options, or to filter by colour, brand or budget?")
+        if image_reply_language and not _image_can_reply(sender):
+            return
         send_whatsapp_text(sender, follow_up)
         _store_conversation_message(sender, "outbound", follow_up,
-                                    customer_name=profile_name, response_kind="bicycle")
+                                    customer_name=profile_name, response_kind="image_bicycle" if image_reply_language else "bicycle")
         logger.info("WhatsApp bicycle results sent count=%s message_id=%s sender=%s",
                     len(products), message_id, sender)
         return
@@ -1034,10 +1093,18 @@ def _reply_to_text_message(
         logger.info("WhatsApp product images sent count=%s message_id=%s sender=%s",
                     len(product_image_delivery), message_id, sender)
         return
+    if image_reply_language and response_kind != "handover" and not _image_can_reply(sender):
+        return
+    if image_reply_language in {"si", "mixed"}:
+        if "boy or a girl" in reply:
+            reply = _image_copy("gender", image_reply_language)
+        elif "How old is" in reply or "child's age" in reply:
+            reply = _image_copy("age", image_reply_language)
     sent = send_whatsapp_text(sender, reply)
     logger.info("WhatsApp outbound result=%s message_id=%s sender=%s", sent, message_id, sender)
     _store_conversation_message(
-        sender, "outbound", reply, customer_name=profile_name, response_kind=response_kind
+        sender, "outbound", reply, customer_name=profile_name,
+        response_kind="image_bicycle" if image_reply_language and response_kind != "handover" else response_kind
     )
     with SessionLocal() as db:
         payment_ready = db.query(WhatsAppOrderIntent.id).filter(
@@ -1046,6 +1113,163 @@ def _reply_to_text_message(
         ).first()
     if payment_ready:
         _set_conversation_mode(sender, "HUMAN")
+
+
+def _image_copy(key: str, language: str) -> str:
+    english = {
+        "same": "This appears to be a bicycle. Are you looking for this same bicycle or a similar option?",
+        "gender": "Is the bicycle for a boy or a girl?",
+        "age": "How old is the child?",
+        "options": "I couldn't confirm an exact match from the image. Here are related options verified in our live Shopify catalogue:",
+        "none": "I couldn't confirm an exact match or available alternatives in our live catalogue. Could you share the product name or a clearer image?",
+        "bicycle_options": "Here are verified options from the requested Shopify bicycle collection. Age is only a starting point for fit.",
+        "more": "Would you like more options, or to filter by colour, brand or budget?",
+        "handover": "Thank you. I'll hand this request to our team for assistance.",
+    }
+    sinhala = {
+        "same": "මෙය බයිසිකලයක් වගේ පෙනෙනවා. ඔබට මේ බයිසිකලයමද, නැත්නම් මේ වගේ එකක්ද අවශ්‍ය?",
+        "gender": "බයිසිකලය පිරිමි දරුවෙකුටද ගැහැණු දරුවෙකුටද?",
+        "age": "දරුවාගේ වයස කීයද?",
+        "options": "පින්තූරයේ භාණ්ඩයම බව තහවුරු කළ නොහැකියි. අපගේ Shopify නාමාවලියෙන් තහවුරු කළ සමාන විකල්ප මෙන්න:",
+        "none": "පින්තූරයේ භාණ්ඩයට නිශ්චිත ගැළපීමක් හෝ ලබාගත හැකි විකල්පයක් තහවුරු කරගන්න බැරි වුණා. භාණ්ඩයේ නම හෝ පැහැදිලි පින්තූරයක් එවන්න පුළුවන්ද?",
+        "bicycle_options": "මෙන්න අපගේ Shopify එකතුවෙන් තහවුරු කළ, ඉල්ලා ඇති ප්‍රමාණයේ බයිසිකල් විකල්ප. වයස අනුව ප්‍රමාණය ආරම්භක යෝජනාවක් පමණයි.",
+        "more": "තවත් විකල්ප හෝ පාට, වෙළඳ නාමය, මිල අනුව සෙවීමක් අවශ්‍යද?",
+        "handover": "ස්තුතියි. ඔබට සහාය වීමට අපගේ කණ්ඩායමට මෙම ඉල්ලීම භාර දෙන්නම්.",
+    }
+    return (sinhala if language in {"si", "mixed"} else english)[key]
+
+
+def _image_match_preference(text: str) -> bool:
+    return bool(re.search(r"\b(same|similar|wage|meka)\b|මේකම|මේ වගේ|එකම|සමාන", text, re.I))
+
+
+def _image_can_reply(sender: str) -> bool:
+    with SessionLocal() as db:
+        conversation = _conversation_for_phone(db, sender)
+        snapshot, _ = get_snapshot(db)
+        return bool(conversation and conversation.mode == "AI" and vision_settings(snapshot)["enabled"])
+
+
+def _send_image_reply(sender: str, reply: str, profile_name: str | None, kind: str = "image_ai") -> None:
+    try:
+        if not _image_can_reply(sender):
+            return
+        if send_whatsapp_text(sender, reply[:1200]):
+            _store_conversation_message(sender, "outbound", reply[:1200], customer_name=profile_name, response_kind=kind)
+    except Exception:
+        logger.warning("Image reply delivery unavailable")
+
+
+@private_image_processing()
+def _reply_to_image_message(sender: str, message_id: str, profile_name: str | None) -> None:
+    """At most one background task per committed Meta delivery; no vision retries."""
+    language = "en"
+    options = None
+    responded = False
+    try:
+        with SessionLocal() as db:
+            conversation = _conversation_for_phone(db, sender)
+            if not conversation or conversation.mode == "HUMAN":
+                return
+            snapshot, _ = get_snapshot(db)
+            options = vision_settings(snapshot)
+            message = db.query(WhatsAppConversationMessage).filter_by(
+                phone_number=sender, whatsapp_message_id=message_id, direction="inbound").first()
+            attachment = (db.query(WhatsAppMessageAttachment).filter_by(message_id=message.id, media_type="image").first()
+                          if message else None)
+            caption = (attachment.caption or "") if attachment else ""
+            language = image_language(caption)
+            if not snapshot["global"].get("reply_in_customer_language", True):
+                language = "en"
+            media_id = attachment.media_id if attachment else None
+            known_size = attachment.file_size_bytes if attachment else None
+            known_mime = attachment.mime_type if attachment else None
+            history = db.query(WhatsAppConversationMessage).filter(
+                WhatsAppConversationMessage.phone_number == sender,
+                WhatsAppConversationMessage.id < message.id if message else False,
+            ).order_by(WhatsAppConversationMessage.id.desc()).limit(4).all()
+            context = [{"direction": item.direction, "message_text": item.message_text} for item in reversed(history)]
+            if snapshot["global"].get("reply_in_customer_language", True) and not caption.strip():
+                language = image_language(" ".join(item["message_text"] for item in context if item["direction"] == "inbound"))
+            active_checkout = db.query(WhatsAppOrderIntent.id).filter(
+                WhatsAppOrderIntent.customer_whatsapp_phone == sender,
+                WhatsAppOrderIntent.status.in_([OrderIntentStatus.AWAITING_SERVICE_DECISION.value,
+                                               OrderIntentStatus.COLLECTING_DELIVERY_DETAILS.value])).first()
+            gender = detect_bicycle_preference(caption) or conversation.bicycle_gender
+            age = extract_child_age(caption) or conversation.bicycle_age
+        if not options["enabled"]:
+            _send_unsupported_reply(sender, profile_name)
+            return
+        fallback = options["fallback_si" if language in {"si", "mixed"} else "fallback_en"]
+        if requests_human_handover(caption):
+            _send_image_reply(sender, _image_copy("handover", language), profile_name, "handover")
+            if _image_can_reply(sender):
+                _set_conversation_mode(sender, "HUMAN")
+            return
+        if (not media_id or active_checkout or not settings.OPENAI_API_KEY or not settings.META_APP_SECRET
+                or (known_size is not None and known_size > options["max_image_bytes"])
+                or (known_mime and known_mime not in {"image/jpeg", "image/png", "image/webp"})):
+            _send_image_reply(sender, fallback, profile_name, "image_fallback")
+            return
+        if not _image_can_reply(sender):
+            return
+        content, mime = download_whatsapp_attachment(media_id, "image", max_bytes=options["max_image_bytes"],
+                                                     timeout_seconds=options["timeout_seconds"])
+        if not _image_can_reply(sender):
+            return
+        observation = inspect_customer_image(content, mime, caption, context, snapshot, options)
+        del content
+        if not _image_can_reply(sender):
+            return
+        if observation:
+            language = image_language(caption, observation["language"]) if snapshot["global"].get("reply_in_customer_language", True) else "en"
+        fallback = options["fallback_si" if language in {"si", "mixed"} else "fallback_en"]
+        if not observation or observation["confidence"] == "low" or observation["intent"] == "unclear":
+            _send_image_reply(sender, fallback, profile_name, "image_fallback")
+            return
+        if observation["intent"] in {"human", "sensitive"}:
+            _send_image_reply(sender, _image_copy("handover", language), profile_name, "handover")
+            if _image_can_reply(sender):
+                _set_conversation_mode(sender, "HUMAN")
+            return
+        if observation["category"] == "bicycle":
+            if not _image_match_preference(caption):
+                _set_bicycle_workflow(sender, AWAITING_IMAGE_BICYCLE_MATCH, gender=gender, age=age)
+                _send_image_reply(sender, _image_copy("same", language), profile_name, "image_bicycle")
+            else:
+                _set_bicycle_workflow(sender, None)
+                request_text = "bicycle" + (f" for a {gender}" if gender else "") + (f" {age} years old" if age else "")
+                responded = True
+                _reply_to_text_message(sender, message_id, request_text, profile_name, image_reply_language=language)
+            return
+        query = " ".join(observation["search_terms"]) or observation["category"]
+        if observation["category"] in {"other", "unclear"} and not observation["search_terms"]:
+            _send_image_reply(sender, fallback, profile_name, "image_fallback")
+            return
+        maximum = min(max(snapshot["global"]["maximum_products"], 1), 5)
+        products = search_products(query, limit=maximum)
+        products = [p for p in products if not _product_is_bicycle(p) and has_available_variant([p])][:maximum]
+        if not products and query != observation["category"] and observation["category"] not in {"other", "unclear"}:
+            products = [p for p in search_products(observation["category"], limit=maximum)
+                        if not _product_is_bicycle(p) and has_available_variant([p])][:maximum]
+        products = [{**p, "variants": [v for v in p["variants"] if v.get("available")]} for p in products]
+        responded = True
+        _send_image_reply(sender, _image_copy("options" if products else "none", language), profile_name)
+        for product in products:
+            if not _image_can_reply(sender):
+                return
+            product_text = format_product(product)
+            if snapshot["global"].get("send_product_images", True):
+                _send_product_message(sender, product, product_text)
+                _store_conversation_message(sender, "outbound", product_text, customer_name=profile_name, response_kind="image_product")
+            else:
+                _send_image_reply(sender, product_text, profile_name, "image_product")
+    except Exception:
+        # Never include SDK exceptions, URLs, image bytes, caption, phone or OCR.
+        logger.warning("Image request could not be completed")
+        if options and options["enabled"] and not responded:
+            _send_image_reply(sender, options["fallback_si" if language in {"si", "mixed"} else "fallback_en"],
+                              profile_name, "image_fallback")
 
 
 def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
@@ -1163,14 +1387,15 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     # Keep audio's legacy fields for the existing authenticated
                     # playback path; other media never enters that audio path.
                     is_audio = message_type == "audio"
-                    result = _store_conversation_message(
-                        sender, "inbound", "Voice message" if is_audio else f"{message_type.title()} message",
-                        customer_name=profile_name, whatsapp_message_id=message_id,
-                        response_kind="customer_audio" if is_audio else "customer_media",
-                        media_id=metadata["media_id"] if is_audio and metadata else None,
-                        media_mime_type=metadata.get("mime_type") if is_audio and metadata else None,
-                        created_at=received_at, attachment_metadata=metadata, processed_record=record,
-                    )
+                    with private_image_processing() if message_type == "image" else nullcontext():
+                        result = _store_conversation_message(
+                            sender, "inbound", "Voice message" if is_audio else f"{message_type.title()} message",
+                            customer_name=profile_name, whatsapp_message_id=message_id,
+                            response_kind="customer_audio" if is_audio else "customer_media",
+                            media_id=metadata["media_id"] if is_audio and metadata else None,
+                            media_mime_type=metadata.get("mime_type") if is_audio and metadata else None,
+                            created_at=received_at, attachment_metadata=metadata, processed_record=record,
+                        )
                     if result == "failed":
                         raise HTTPException(status_code=503, detail="Media metadata registration unavailable")
                     if result == "duplicate":
@@ -1179,7 +1404,10 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         conversation = _conversation_for_phone(db, sender)
                         human_owned = bool(conversation and conversation.mode == "HUMAN")
                     if not human_owned:
-                        background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
+                        if message_type == "image":
+                            background_tasks.add_task(_reply_to_image_message, sender, message_id, profile_name)
+                        else:
+                            background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
                     continue
                 with SessionLocal() as db:
                     try:
@@ -1336,6 +1564,8 @@ def _bot_page_context(request: Request, db: Session, active: str, **extra) -> di
     config = ensure_configuration(db)
     draft, _ = get_snapshot(db, draft=True)
     live, version = get_snapshot(db)
+    draft["vision"] = vision_settings(draft)
+    live["vision"] = vision_settings(live)
     draft.setdefault("guided_flows", [])
     live.setdefault("guided_flows", [])
     if active in {"catalog", "policies", "faqs"}:
@@ -2749,6 +2979,23 @@ def bot_save_settings(
         "concise": concise, "send_product_images": send_product_images,
     })
     save_draft(db, snapshot, user.username, "Updated response settings and global instructions")
+    return RedirectResponse("/crm/bot-management/instructions", status_code=303)
+
+
+@app.post("/crm/bot-management/vision")
+def bot_save_vision(
+    enabled: bool = Form(False), model: str = Form("gpt-4.1-mini"),
+    max_image_bytes: int = Form(4 * 1024 * 1024), timeout_seconds: int = Form(12),
+    fallback_en: str = Form(...), fallback_si: str = Form(...),
+    db: Session = Depends(get_db), user: User = Depends(require_user),
+):
+    snapshot, _ = get_snapshot(db, draft=True)
+    snapshot["vision"] = {"enabled": enabled, "model": model, "max_image_bytes": max_image_bytes,
+                          "timeout_seconds": timeout_seconds, "fallback_en": fallback_en.strip(), "fallback_si": fallback_si.strip()}
+    errors, _ = validate_snapshot(snapshot)
+    if errors:
+        raise HTTPException(status_code=422, detail=" ".join(errors))
+    save_draft(db, snapshot, user.username, "Updated draft image understanding settings")
     return RedirectResponse("/crm/bot-management/instructions", status_code=303)
 
 

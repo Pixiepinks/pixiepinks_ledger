@@ -67,6 +67,63 @@ The runtime needs HTTPS access to `graph.facebook.com`, `lookaside.fbsbx.com`, a
 Meta's `*.fbcdn.net` media hosts. Unit/integration tests mock Meta; production
 credentials and customer media are never used for local validation.
 
+### Phase 4: default-off AI image understanding
+
+In **Bot Management → Global Instructions**, image understanding has its own Draft
+settings: enable flag, vision model, byte limit, request timeout, and English/Sinhala
+fallbacks. Existing published snapshots without these settings remain **disabled**;
+there is no migration or automatic activation. Saving a draft does not change live
+WhatsApp. Review/test the draft and explicitly Publish only after staging verification.
+Defaults: `gpt-4.1-mini`, 4 MB, 12-second request timeout. Allowed models are
+`gpt-4.1-mini`, `gpt-4.1`, `gpt-4o-mini`, and `gpt-4o`; administrators can choose
+1024 bytes–8 MB and 5–30 seconds. The independent safety ceiling is 20 megapixels.
+
+Eligible AI-mode image messages use the Phase 3 trusted-host downloader with the
+configured tighter byte/deadline limits, then one low-detail OpenAI Responses request.
+The image is an in-memory data URL, never a Meta URL. Caption and bounded recent
+context form one request; obvious phone/email/address fields are redacted from that
+context. Prompt instructions include the published Bot Management guidance and
+explicitly treat image/OCR/caption text as untrusted data. Only validated category,
+confidence, language, intent and short search hints leave the vision service; raw
+OCR and visual observations are not stored or copied into customer replies.
+SDK/request logging is suppressed within the image task so signed URLs, images,
+captions and credentials cannot appear in request/exception logs.
+
+The existing read-only Shopify search verifies all product facts. Replies explicitly
+avoid claiming an exact visual match; up to the published maximum (at most five)
+available products are formatted from Shopify. At most two bounded catalogue
+searches run: specific hints, then a broad-category alternative if needed. No
+free-form AI catalogue claims, prices, stock, links or specifications are accepted.
+The existing send-product-images setting also applies. Missing/unavailable media,
+provider failures and ambiguous observations produce one short configurable fallback.
+
+Bicycle images first confirm same versus similar when the caption has not done so.
+The existing persistent bicycle discovery flow then asks for missing gender/age and
+uses the published size rules; age supplied in the caption is retained. Existing
+collection resolution, product reply mappings, optional service, delivery-detail
+collection and payment handover remain in use. Neither image appearance nor OCR
+selects a bicycle size or starts an order. New category requests can exit discovery.
+Images received during active checkout skip vision; human requests and sensitive
+receipt/document interpretations are handed to the team. HUMAN mode never runs
+vision or sends an image reply, including a takeover during processing. Turning the
+feature off preserves the existing unsupported-media response and inbox metadata.
+
+Use the existing Meta, OpenAI and Shopify credential bindings; no new secret or
+database configuration is needed. OpenAI requires HTTPS access to `api.openai.com`
+in addition to the Phase 3 Meta and existing Shopify destinations. No permanent
+image storage, vision backfill, new migration, live-data mutation, or changes to
+document/video/sticker/audio viewing are introduced.
+Vision additionally requires the existing `META_APP_SECRET` webhook-signature binding;
+an unsigned local webhook never triggers a paid vision call even if the feature is on.
+
+Cost budget: one vision API call per eligible, unique Meta image delivery, at most
+500 output tokens, low image detail and four context messages capped at 500 characters
+each. Input token usage depends on image/model/configuration; exact cost and live
+accuracy have not been measured. Vision SDK retries are disabled. The existing
+in-process background-task lifecycle is retained: a worker interruption can lose an
+automatic reply, but not the committed incoming message/attachment. Duplicate Meta
+deliveries do not retry vision, and existing attachments are not reprocessed.
+
 ## CRM and customer-service workspace
 
 The authenticated `/crm` area is an operational workspace built into the existing

@@ -22,6 +22,19 @@ HARD_GUARDRAILS = (
     "Customer data remains private and webhook idempotency remains enforced.",
 )
 
+VISION_MODELS = {"gpt-4.1-mini", "gpt-4.1", "gpt-4o-mini", "gpt-4o"}
+VISION_DEFAULTS = {
+    "enabled": False, "model": "gpt-4.1-mini", "max_image_bytes": 4 * 1024 * 1024,
+    "timeout_seconds": 12,
+    "fallback_en": "I couldn't safely identify this image. Could you describe the product or send a clearer image?",
+    "fallback_si": "මෙම පින්තූරය පැහැදිලිව හඳුනාගන්න බැරි වුණා. භාණ්ඩය ගැන විස්තරයක් හෝ පැහැදිලි පින්තූරයක් එවන්න පුළුවන්ද?",
+}
+
+
+def vision_settings(snapshot: dict) -> dict:
+    """Older published snapshots remain disabled without rewriting stored JSON."""
+    return {**VISION_DEFAULTS, **snapshot.get("vision", {})}
+
 
 def default_snapshot() -> dict:
     return {
@@ -51,6 +64,7 @@ def default_snapshot() -> dict:
                      "skip_weekends": True, "public_holidays_calculated": False},
         "knowledge": [], "policies": [], "faqs": [], "guided_questions": [], "guided_flows": [],
         "recommendation_rules": [],
+        "vision": deepcopy(VISION_DEFAULTS),
     }
 
 
@@ -95,6 +109,18 @@ def get_snapshot(db: Session, draft: bool = False) -> tuple[dict, int]:
 
 def validate_snapshot(snapshot: dict) -> tuple[list[str], list[str]]:
     errors, warnings = [], []
+    vision = vision_settings(snapshot)
+    if (type(vision["enabled"]) is not bool or not isinstance(vision["model"], str)
+            or vision["model"] not in VISION_MODELS):
+        errors.append("Image understanding requires a supported vision model and boolean enable flag.")
+    if type(vision["max_image_bytes"]) is not int or not 1024 <= vision["max_image_bytes"] <= 8 * 1024 * 1024:
+        errors.append("Image size limit must be between 1024 bytes and 8 MB.")
+    if type(vision["timeout_seconds"]) is not int or not 5 <= vision["timeout_seconds"] <= 30:
+        errors.append("Image processing timeout must be between 5 and 30 seconds.")
+    for language in ("en", "si"):
+        value = vision[f"fallback_{language}"]
+        if not isinstance(value, str) or not value.strip() or len(value) > 1000:
+            errors.append("Image fallback replies must contain 1–1000 characters.")
     rules = [r for r in snapshot.get("bicycle", {}).get("age_rules", []) if r.get("enabled")]
     normalized = []
     for index, rule in enumerate(rules, 1):
