@@ -1,5 +1,22 @@
 # PixiePinks Ledger (MVP)
 
+## WhatsApp Media Upgrade — Phase 1
+
+Migration `20261024_09` adds `whatsapp_message_attachments`, linked to an existing
+conversation message by a restrictive foreign key. It supports multiple attachments
+per message with a unique `(message_id, media_id)` pair. Records contain only the
+provider media ID, media type, optional MIME type, filename, caption, SHA-256,
+size, duration, and creation timestamp. No attachment bytes, access tokens, or
+temporary download URLs are stored. Treat filenames and captions as untrusted text.
+
+This phase adds schema only: existing webhook, voice-note, inbox, AI, and outbound
+behavior stays unchanged. There is no media download, upload, processing, backfill,
+or external API call. Existing voice metadata remains in its original columns.
+Normal startup supports both new databases and existing installations; direct
+`alembic upgrade head` also applies the additive migration. Back up an existing
+database before upgrading. Roll back application code while retaining the new
+table; destructive downgrade is deliberately blocked to preserve metadata.
+
 ## CRM and customer-service workspace
 
 The authenticated `/crm` area is an operational workspace built into the existing
