@@ -25,10 +25,18 @@ class Settings(BaseSettings):
     META_APP_SECRET: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4.1-mini"
+    OPENAI_VISION_MODEL: str = "gpt-4.1-mini"
     SHOPIFY_SHOP: Optional[str] = None
     SHOPIFY_CLIENT_ID: Optional[str] = None
     SHOPIFY_CLIENT_SECRET: Optional[str] = None
     SHOPIFY_API_VERSION: str = "2026-07"
+    MEDIA_STORAGE_BUCKET: Optional[str] = None
+    MEDIA_STORAGE_ENDPOINT_URL: Optional[str] = None
+    MEDIA_STORAGE_REGION: str = "auto"
+    MEDIA_STORAGE_ACCESS_KEY_ID: Optional[str] = None
+    MEDIA_STORAGE_SECRET_ACCESS_KEY: Optional[str] = None
+    MEDIA_MAX_BYTES: int = 20 * 1024 * 1024
+    MEDIA_RETENTION_DAYS: int = 90
 
 
 settings = Settings()

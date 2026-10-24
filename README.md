@@ -167,9 +167,98 @@ Secret server-side. The backend obtains temporary access tokens automatically, c
 them in memory, and renews them before their approximately 24-hour expiry.
 
 The app requires only `read_products`, `read_inventory`, and `read_locations`; it does
-not write products or inventory. `SHOPIFY_API_VERSION` is optional and defaults to
+not write products or inventory and does not request Shopify write access.
+
+## AI Bot Management Center
+
+Authenticated staff manage the store-wide assistant at `/crm/bot-management`. The
+center uses a **Draft → Test → Publish → Live** lifecycle: ordinary saves only update
+the draft, the simulator can evaluate draft or live rules without sending WhatsApp
+messages or creating operational records, and an explicit `PUBLISH` confirmation
+creates an immutable version. Historical versions can only be restored **as a draft**,
+so rollback also requires testing and deliberate publication. Administrative saves,
+publishes, restores, and read-only Shopify discovery are audited with the signed-in
+staff username (the current application has one staff permission level).
+
+The database adds `bot_configurations` (live/draft pointers),
+`bot_configuration_versions` (immutable snapshots), `bot_knowledge_entries`
+(normalized extensibility for scoped content), and `bot_audit_events`. Startup retains
+the existing `Base.metadata.create_all()` convention. The initial published version
+preserves bicycle age-to-size rules (2–3/12, 4–5/16, 6–10/20, 11+/26), Decimal service
+fees (Rs. 2,000/2,000/2,500/2,500), free islandwide bicycle delivery, and the 3–4
+working-day estimate. New decisions use the currently published cached version;
+publishing invalidates the short-lived cache immediately. Existing selected products
+and order intents are not recomputed, so in-progress purchases remain stable.
+
+Configuration is structured into global response settings, policies, global /
+collection / product knowledge, FAQs, guided questions, generic recommendation rules,
+and specialized bicycle/service/delivery controls. Scoped retrieval is designed to
+apply global knowledge first, then collection, then product guidance; deterministic
+rules take precedence. No vector database or executable staff rule language is used.
+Collection refresh is read-only, and product-specific references are Shopify handles,
+not copied commercial data.
+
+**Authority and safety:** Shopify remains authoritative for titles, variants, SKU,
+price, inventory, images, URLs, options, and collection membership. OpenAI may
+understand and word responses but is never authoritative for those facts, fees,
+totals, order/payment state, or deterministic rules. Locked code guardrails preserve
+HUMAN-mode pausing, live Shopify checks, webhook idempotency, privacy, payment
+handover, and the ban on invented bank/payment data. Staff content is escaped by
+Jinja, inputs are bounded/validated, no staff code is executed, and secrets are never
+returned to the browser.
+
+Current limitations: roles are not finer-grained than the existing authenticated
+staff account; public holidays are stated but are not automatically calculated; the
+generic question/rule schema is versioned for expansion while the production guided
+executor currently specializes in bicycles. Railway deployment needs no new secret:
+deploy the commit normally, allow startup to create the four tables, sign in, review
+the seeded live version, test Draft and Live, then publish only intentional changes.
+`SHOPIFY_API_VERSION` is optional and defaults to
 `2026-07`. If Shopify configuration or the live service is unavailable, product requests
 degrade to a safe customer-facing response without disrupting webhook acknowledgement.
+
+### Private inbound WhatsApp media
+
+Inbound WhatsApp images, stickers, videos, documents, audio, and voice notes are saved
+as message metadata immediately and downloaded after Meta's webhook acknowledgement.
+The downloader resolves the temporary media URL through the configured Graph API
+version, authenticates server-side, validates an allow-listed MIME type and the
+`MEDIA_MAX_BYTES` limit, and writes the object to a **private, persistent,
+S3-compatible bucket**. Railway's application filesystem is never used. The CRM loads
+objects through an authenticated `/crm/whatsapp/api/attachments/{id}` proxy with
+private/no-store headers; Meta and object-storage credentials never reach the browser.
+Staff can explicitly delete an attachment with the authenticated deletion endpoint,
+while `MEDIA_RETENTION_DAYS` documents the store's retention target for an external
+scheduled deletion policy (default 90 days).
+
+Configure these Railway variables before accepting production media:
+
+```text
+MEDIA_STORAGE_BUCKET=<private bucket name>
+MEDIA_STORAGE_ENDPOINT_URL=<S3-compatible HTTPS endpoint; omit for AWS S3>
+MEDIA_STORAGE_REGION=<region, or auto for providers that support it>
+MEDIA_STORAGE_ACCESS_KEY_ID=<server-side access key>
+MEDIA_STORAGE_SECRET_ACCESS_KEY=<server-side secret>
+MEDIA_MAX_BYTES=20971520
+MEDIA_RETENTION_DAYS=90
+OPENAI_VISION_MODEL=gpt-4.1-mini
+```
+
+Grant the storage credentials access only to objects in this private bucket and block
+all public bucket access. For AWS, use `s3:PutObject`, `s3:GetObject`, and
+`s3:DeleteObject`; compatible providers need the equivalent object-only permissions.
+Existing Meta webhook subscriptions and `whatsapp_business_messaging` access are
+sufficient for media retrieval; no new Shopify permission or Meta write permission is
+required. `META_APP_SECRET` must remain configured so `X-Hub-Signature-256` requests
+are verified. On a missing storage configuration the message and attachment error state
+remain visible—media is never silently written to an ephemeral disk.
+
+AI-mode product images are analyzed only for visible, non-commercial search attributes.
+Those attributes are used to query Shopify, which remains authoritative for matches,
+availability, variants, prices, and URLs. Ambiguous results trigger clarification and
+unmatched images request a name/link. HUMAN-mode images are stored and shown without
+vision processing or an automated reply. Click-to-WhatsApp referral metadata is
+allow-listed, retained with the message, and displayed in the Inbox.
 
 To safely check authentication, GraphQL access, and a five-product sample in the
 configured environment, run:
