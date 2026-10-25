@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     META_WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
     META_GRAPH_API_VERSION: str = "v26.0"
     WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES: int = Field(4 * 1024 * 1024, ge=1024, le=5_000_000)
+    WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
     WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
     META_APP_SECRET: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None

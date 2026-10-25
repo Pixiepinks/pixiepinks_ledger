@@ -2229,7 +2229,7 @@ def whatsapp_return_to_ai(conversation_id: int, db: Session = Depends(get_db),
     return {"ok": True, "mode": "AI"}
 
 
-_outbound_media_slots = threading.BoundedSemaphore(4)
+_outbound_media_slots = threading.BoundedSemaphore(2)
 
 
 @app.get("/crm/whatsapp/api/media-policy")
@@ -2266,7 +2266,7 @@ async def whatsapp_send_media(conversation_id: int, request: Request,
         raise HTTPException(429, "Attachment service is busy. Try again shortly.")
     form = None
     try:
-        maximum = max(outbound_media.size_limit(kind) for kind in ("image", "document")) + 65536
+        maximum = max(outbound_media.size_limit(kind) for kind in ("image", "video", "document")) + 65536
         body = bytearray()
         # Bound the entire multipart request, including uploads with no Content-Length.
         async with asyncio.timeout(45):

@@ -17,3 +17,5 @@ av==16.1.0
 alembic>=1.14.0,<2.0.0
 # Parse staff PDFs in a disposable resource-limited process; never render them.
 pypdf==6.21.2
+# Validate legacy Word/Excel compound containers in the isolated upload worker.
+olefile==0.47

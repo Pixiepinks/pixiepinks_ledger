@@ -22,6 +22,12 @@ from settings import settings
 FORMATS = {
     '.jpg': ('image', 'image/jpeg'), '.jpeg': ('image', 'image/jpeg'),
     '.png': ('image', 'image/png'), '.pdf': ('document', 'application/pdf'),
+    '.mp4': ('video', 'video/mp4'),
+    '.doc': ('document', 'application/msword'),
+    '.docx': ('document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+    '.xls': ('document', 'application/vnd.ms-excel'),
+    '.xlsx': ('document', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+    '.txt': ('document', 'text/plain'),
 }
 STAFF_ROLES = {'ADMIN', 'SALES_MANAGER', 'SALES_AGENT', 'STAFF'}
 
@@ -39,6 +45,8 @@ def policy():
 def size_limit(kind):
     if kind == 'image':
         return min(settings.WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES, 5_000_000)
+    if kind == 'video':
+        return min(settings.WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES, 16_000_000)
     return min(settings.WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES, 16_000_000)
 
 
