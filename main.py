@@ -49,6 +49,7 @@ from models import (
     WhatsAppConversation,
     WhatsAppConversationMessage,
     WhatsAppMessageAttachment,
+    WhatsAppMessageReferral,
     WhatsAppManualSend,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
@@ -61,6 +62,7 @@ from models import (
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from image_understanding_service import inspect_customer_image, image_language, private_image_processing
+from whatsapp_referral_service import extract_referral
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
@@ -313,8 +315,10 @@ def _store_conversation_message(
     media_duration_seconds: float | None = None,
     created_at: datetime | None = None,
     attachment_metadata: dict | None = None,
+    referral_metadata: dict | None = None,
     processed_record: ProcessedWhatsAppMessage | None = None,
 ) -> str:
+    processed_message_id = processed_record.message_id if processed_record is not None else None
     try:
         with SessionLocal() as db:
             if processed_record is not None:
@@ -334,9 +338,12 @@ def _store_conversation_message(
                 created_at=created_at or datetime.utcnow(),
             )
             db.add(message)
-            if attachment_metadata is not None:
+            if attachment_metadata is not None or referral_metadata is not None:
                 db.flush()
+            if attachment_metadata is not None:
                 db.add(WhatsAppMessageAttachment(message_id=message.id, **attachment_metadata))
+            if referral_metadata is not None:
+                db.add(WhatsAppMessageReferral(message_id=message.id, **referral_metadata))
             phone = _normalize_whatsapp_phone(phone_number)
             conversation = db.query(WhatsAppConversation).filter_by(phone_number=phone).one_or_none()
             when = created_at or datetime.utcnow()
@@ -353,16 +360,18 @@ def _store_conversation_message(
             db.commit()
             return "stored"
     except IntegrityError:
-        if processed_record is not None:
-            with SessionLocal() as db:
-                if db.query(ProcessedWhatsAppMessage).filter_by(
-                    message_id=processed_record.message_id
-                ).first() is not None:
-                    return "duplicate"
-        logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+        if processed_message_id is not None:
+            try:
+                with SessionLocal() as db:
+                    if db.query(ProcessedWhatsAppMessage).filter_by(message_id=processed_message_id).first() is not None:
+                        return "duplicate"
+            except SQLAlchemyError:
+                pass
+        # SQL exception text can contain private referral/attribution parameters.
+        logger.error("Could not store WhatsApp conversation message direction=%s", direction)
         return "failed"
     except SQLAlchemyError:
-        logger.exception("Could not store WhatsApp conversation message direction=%s", direction)
+        logger.error("Could not store WhatsApp conversation message direction=%s", direction)
         return "failed"
 
 
@@ -1380,21 +1389,23 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     received_at=received_at,
                     processed_at=datetime.utcnow(),
                 )
+                referral_metadata = extract_referral(message)
+                profile_name = profile_names.get(sender)
+                profile_name = profile_name[:255] if isinstance(profile_name, str) else None
                 if message_type in INCOMING_MEDIA_TYPES:
                     metadata = _incoming_media_metadata(message)
-                    profile_name = profile_names.get(sender)
-                    profile_name = profile_name[:255] if isinstance(profile_name, str) else None
                     # Keep audio's legacy fields for the existing authenticated
                     # playback path; other media never enters that audio path.
                     is_audio = message_type == "audio"
-                    with private_image_processing() if message_type == "image" else nullcontext():
+                    with private_image_processing() if message_type == "image" or "referral" in message else nullcontext():
                         result = _store_conversation_message(
                             sender, "inbound", "Voice message" if is_audio else f"{message_type.title()} message",
                             customer_name=profile_name, whatsapp_message_id=message_id,
                             response_kind="customer_audio" if is_audio else "customer_media",
                             media_id=metadata["media_id"] if is_audio and metadata else None,
                             media_mime_type=metadata.get("mime_type") if is_audio and metadata else None,
-                            created_at=received_at, attachment_metadata=metadata, processed_record=record,
+                            created_at=received_at, attachment_metadata=metadata,
+                            referral_metadata=referral_metadata, processed_record=record,
                         )
                     if result == "failed":
                         raise HTTPException(status_code=503, detail="Media metadata registration unavailable")
@@ -1409,23 +1420,36 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         else:
                             background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
                     continue
-                with SessionLocal() as db:
-                    try:
-                        db.add(record)
-                        db.commit()
-                    except IntegrityError:
-                        db.rollback()
-                        logger.info("Ignored duplicate WhatsApp message message_id=%s", message_id)
-                        continue
-                    except SQLAlchemyError:
-                        db.rollback()
-                        logger.exception("Could not record WhatsApp message message_id=%s", message_id)
-                        continue
-
-                profile_name = profile_names.get(sender)
                 text_body = None
                 if message_type == "text" and isinstance(message.get("text"), dict):
                     text_body = message["text"].get("body")
+                cleaned_body = text_body.strip()[:2_000] if isinstance(text_body, str) else ""
+                if (message_type == "text" and cleaned_body) or referral_metadata is not None:
+                    with private_image_processing() if "referral" in message else nullcontext():
+                        result = _store_conversation_message(
+                            sender, "inbound", cleaned_body or f"{message_type.title()} message",
+                            customer_name=profile_name, whatsapp_message_id=message_id,
+                            created_at=received_at, referral_metadata=referral_metadata,
+                            processed_record=record,
+                        )
+                    if result == "duplicate":
+                        continue
+                    if result == "failed":
+                        raise HTTPException(status_code=503, detail="Message registration unavailable")
+                else:
+                    # Preserve receipt-only handling for empty/malformed text
+                    # and unsupported message types without usable referrals.
+                    with SessionLocal() as db:
+                        try:
+                            db.add(record)
+                            db.commit()
+                        except IntegrityError:
+                            db.rollback()
+                            continue
+                        except SQLAlchemyError:
+                            db.rollback()
+                            logger.error("Could not record WhatsApp message")
+                            raise HTTPException(status_code=503, detail="Message registration unavailable") from None
                 message_context = message.get("context")
                 context_message_id = (message_context.get("id")
                                       if isinstance(message_context, dict) else None)
@@ -1439,18 +1463,9 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     profile_name,
                 )
                 if message_type == "text" and isinstance(text_body, str):
-                    cleaned_body = text_body.strip()[:2_000]
                     if not cleaned_body:
                         logger.info("Ignored empty WhatsApp text message message_id=%s", message_id)
                         continue
-                    _store_conversation_message(
-                        sender,
-                        "inbound",
-                        cleaned_body,
-                        customer_name=profile_name,
-                        whatsapp_message_id=message_id,
-                        created_at=received_at,
-                    )
                     background_tasks.add_task(
                         _reply_to_text_message,
                         sender,
