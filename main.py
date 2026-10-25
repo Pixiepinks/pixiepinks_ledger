@@ -32,6 +32,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile as StarletteUploadFile
 import outbound_media_service as outbound_media
 import quick_message_service as quick_messages
+from phone_country_service import phone_country
 from sqlalchemy import func, inspect, text, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -2085,7 +2086,8 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
                      if sales_order.order_status == "DRAFT"
                      and "edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()) else None),
     }
-    return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
+    return {"conversation": {**_conversation_payload(db, conversation),
+                             "phone_country": phone_country(conversation.phone_number)}, "messages": message_data,
             "order": order_data, "sales_order": sales_order_data}
 
 

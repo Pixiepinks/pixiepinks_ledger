@@ -1094,3 +1094,41 @@ draft retry concurrency) both passed separately on isolated PostgreSQL.
 Requirements-only Python **3.12.14** startup/restart and authenticated Inbox,
 management and picker API checks passed on fresh SQLite and isolated PostgreSQL,
 with `pip check` clean. No live Meta/customer delivery was exercised.
+
+### WhatsApp customer phone country
+
+The existing authenticated conversation-detail API derives `conversation.phone_country`
+from the stored international WhatsApp number. The Customer & Order panel shows
+**Phone country** immediately below WhatsApp, with the region flag, English name
+and dialing code (for example, `🇱🇰 Sri Lanka (+94)`). Names, original phone strings,
+AI/HUMAN mode, order details and delivery addresses remain unchanged. The field's
+tooltip clarifies that this is the number's numbering-plan region, not current
+physical location, residence or delivery destination.
+
+Detection is entirely local: `phonenumberslite==9.0.41` supplies phone metadata
+without city/carrier/geocoder datasets, and `Babel==2.18.0` supplies packaged CLDR
+country/territory names. No geocoder, maps, GPS, external lookup, phone cache,
+additional database queries, schema columns or migration are introduced. Only the
+selected conversation's existing detail response is extended; conversation-list
+polling does not parse every number. Existing authentication/private caching and
+text-safe rendering remain in place.
+
+Digit-only Meta international numbers, `+` notation and formatted international
+numbers are accepted without assuming a default country. Missing, malformed,
+invalid and unsupported numbers display `Unknown`. NANP `+1` numbers are resolved
+from their complete numbering metadata, including Canada and Caribbean regions;
+shared services such as toll-free numbers that match multiple regions remain
+`Unknown`, rather than defaulting to the USA. Non-geographic regions such as
+international `+800` also remain `Unknown`. Metadata validity does not verify that
+a number is currently assigned, owned by the customer or physically present in
+that region. Dependency metadata can be updated through normal reviewed releases.
+
+Phone-country validation (2026-10-25; baseline
+`20eb824638b2cf9c6dda33b7dfbda564729cbd58`): **62 focused checks passed**, including
+Chromium profile order/customer switching/Unknown fallback. Full feature suite:
+**830 passed, 2 failed, 2 skipped**; unchanged-main full suite: **782 passed,
+2 failed, 2 skipped**. Both failures are the existing payment-claim and Shopify
+webhook concurrency races. Both SQLite-primary skips passed separately on isolated
+PostgreSQL. Requirements-only Python 3.12.14 startup/restart checks passed on SQLite
+and PostgreSQL, with `pip check` clean. Existing Quick Messages, media, referrals,
+AI/HUMAN, Shopify, CRM, sales and fulfillment tests ran in the complete suite.
