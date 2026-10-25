@@ -172,5 +172,9 @@ if __name__ == '__main__':
             raise ValueError()
         result = validate(raw, extension)
         sys.stdout.write(json.dumps(result))
+    except ImportError:
+        # A missing native/Python dependency is an operational failure, not bad
+        # customer content. Never print import diagnostics or deployment paths.
+        sys.exit(70)
     except BaseException:
         sys.exit(1)
