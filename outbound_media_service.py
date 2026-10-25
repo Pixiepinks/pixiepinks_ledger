@@ -10,6 +10,7 @@ import re
 import subprocess
 import sys
 import time
+import zlib
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -37,6 +38,23 @@ logger = logging.getLogger(__name__)
 
 class ValidationUnavailable(Exception):
     """The local validator could not start; no upload or customer send occurred."""
+
+
+class MediaUploadFailed(Exception):
+    """Safe, numeric provider diagnostics; never retain upstream error text."""
+
+    def __init__(self, status, payload):
+        super().__init__()
+        status = status if type(status) is int and 100 <= status <= 599 else None
+        self.diagnostic = {
+            'reason': 'configuration_or_network' if status is None else (
+                'http_rejected' if status >= 300 else 'invalid_upload_response'),
+            'http_status': status if type(status) is int and 100 <= status <= 599 else None,
+        }
+        error = payload.get('error') if isinstance(payload, dict) else None
+        for key in ('code', 'error_subcode'):
+            value = error.get(key) if isinstance(error, dict) else None
+            self.diagnostic['meta_' + key] = value if type(value) is int and 0 <= value <= 2147483647 else None
 
 
 def _validator_environment():
@@ -105,6 +123,36 @@ def validate_file(raw, filename, caption):
             'sha256': hashlib.sha256(raw).hexdigest(), 'file_size_bytes': len(raw), **metadata}
 
 
+def _decode_meta_json(body, encoding):
+    """Bound both wire bytes and decompressed JSON, including compression bombs."""
+    if len(body) > 65536:
+        return None
+    encoding = encoding.strip().lower()
+    if encoding not in {'', 'identity'}:
+        if encoding not in {'gzip', 'deflate'}:
+            return None
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS if encoding == 'gzip' else zlib.MAX_WBITS)
+        try:
+            decoded = decoder.decompress(body, 65537)
+        except zlib.error:
+            if encoding != 'deflate':
+                return None
+            # Some HTTP servers send raw RFC 1951 data for deflate.
+            decoder = zlib.decompressobj(-zlib.MAX_WBITS)
+            try:
+                decoded = decoder.decompress(body, 65537)
+            except zlib.error:
+                return None
+        if len(decoded) > 65536 or not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
+            return None
+        body = decoded
+    try:
+        payload = json.loads(body)
+        return payload if isinstance(payload, dict) else None
+    except (ValueError, UnicodeError):
+        return None
+
+
 def _meta_request(route, **kwargs):
     """Fixed trusted Graph route, bounded response, no redirects or upstream diagnostics."""
     token, phone = settings.META_WHATSAPP_ACCESS_TOKEN, settings.META_WHATSAPP_PHONE_NUMBER_ID
@@ -115,7 +163,8 @@ def _meta_request(route, **kwargs):
         try:
             with httpx.Client(timeout=httpx.Timeout(30, connect=5, pool=5), follow_redirects=False) as client:
                 with client.stream('POST', f'https://graph.facebook.com/{version}/{phone}/{route}',
-                                   headers={'Authorization': f'Bearer {token}'}, **kwargs) as response:
+                                   headers={'Authorization': f'Bearer {token}',
+                                            'Accept-Encoding': 'gzip, deflate, identity'}, **kwargs) as response:
                     deadline = time.monotonic() + 35
                     body = bytearray()
                     for chunk in response.iter_raw():
@@ -124,11 +173,7 @@ def _meta_request(route, **kwargs):
                         body.extend(chunk)
                         if len(body) > 65536:
                             return response.status_code, None
-                    try:
-                        payload = json.loads(body)
-                        return response.status_code, payload if isinstance(payload, dict) else None
-                    except (ValueError, UnicodeError):
-                        return response.status_code, None
+                    return response.status_code, _decode_meta_json(bytes(body), response.headers.get('content-encoding', ''))
         except Exception:
             # Network errors can contain URLs, authorization headers or uploaded contents.
             return None, None
@@ -138,7 +183,9 @@ def upload_media(raw, data):
     status, payload = _meta_request('media', data={'messaging_product': 'whatsapp', 'type': data['mime_type']},
         files={'file': (data['filename'], raw, data['mime_type'])})
     media_id = payload.get('id') if payload else None
-    return media_id if status and 200 <= status < 300 and isinstance(media_id, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,255}', media_id) else None
+    if status and 200 <= status < 300 and isinstance(media_id, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,255}', media_id):
+        return media_id
+    raise MediaUploadFailed(status, payload)
 
 
 def send_media(phone, media_id, data):
@@ -191,11 +238,19 @@ def perform_send(db, conversation, user, key, raw, data):
             raise HTTPException(409, 'Idempotency key cannot be reused for another request')
         return public_attempt(existing)
     # This committed unique claim is the only code path allowed to call Meta.
-    media_id = upload_media(raw, data)
+    diagnostic = None
+    try:
+        media_id = upload_media(raw, data)
+    except MediaUploadFailed as error:
+        media_id = None
+        diagnostic = error.diagnostic
     if not media_id:
         attempt.status = 'UPLOAD_FAILED'
         db.commit()
-        return public_attempt(attempt)
+        result = public_attempt(attempt)
+        if diagnostic:
+            result['upload_failure'] = diagnostic
+        return result
     attempt.media_id = media_id
     attempt.status = 'SENDING'
     db.commit()  # Must succeed before a customer message can be sent.

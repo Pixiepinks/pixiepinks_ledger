@@ -998,3 +998,24 @@ receipt and does not automatically send. Corrupt content still returns 422 and
 all processing/content/security limits remain enforced. A real PyAV ELF-loader
 regression uses disposable library copies with default library lookup disabled;
 it requires development-only `patchelf` (never a production dependency).
+
+Outbound Meta response decoding fix: the upload/send client previously passed
+`iter_raw()` bytes directly to JSON parsing. HTTP 200 responses compressed with
+gzip/deflate could therefore be discarded as invalid, creating UPLOAD_FAILED
+receipts despite a successful Meta upload (and an uncertain outcome on sends).
+The fixed client advertises only gzip/deflate/identity, bounds wire responses to
+64 KiB, decompresses with a separate 64 KiB output limit, then parses JSON. It
+rejects malformed/truncated/unsupported encoding and compression bombs; redirects
+remain disabled. A real upload/send client regression exercises compressed
+responses through persistence and duplicate-delivery protection.
+
+For failed uploads, authenticated responses and server warnings include only a
+fixed reason category, HTTP status and bounded numeric Meta error code/subcode.
+Raw provider errors, trace IDs, filenames, file contents, signed URLs and tokens
+are excluded. These diagnostics are logged after the private provider processing
+scope ends so they remain visible without enabling verbose HTTP logs. No schema
+or production configuration change is required. Uploaded media that fails before
+message sending is not automatically sent again; existing retry protection stays
+in force. Production access logs alone cannot establish the exact Meta rejection
+or response encoding from an earlier attempt; a fresh attempt's safe diagnostic
+will distinguish a provider rejection from a malformed response or transport issue.
