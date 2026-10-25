@@ -63,6 +63,7 @@ from models import (
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from image_understanding_service import inspect_customer_image, image_language, private_image_processing
 from whatsapp_referral_service import extract_referral, public_referral
+from referral_preview_service import preview_candidate, get_preview, PreviewError
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
@@ -1969,6 +1970,11 @@ def _get_conversation(db: Session, conversation_id: int) -> WhatsAppConversation
     return conversation
 
 
+def _referral_preview_tag(url: str) -> str:
+    # A stable cache-buster, not authorization. Never return the stored CDN URL.
+    return hmac.new(settings.SECRET_KEY.encode(), url.encode(), hashlib.sha256).hexdigest()[:24]
+
+
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}")
 def whatsapp_conversation_detail(conversation_id: int, response: Response, limit: int = 100,
                                  db: Session = Depends(get_db), user: User = Depends(require_user)):
@@ -1980,14 +1986,24 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
     referrals_by_message = {}
     inbound_ids = [message.id for message in messages if message.direction == "inbound"]
     if inbound_ids:
-        # Fetch only public display columns. Private click IDs and raw creative
-        # URLs never enter inbox serialization, even for authenticated staff.
+        # Click IDs are never loaded. Creative references stay server-side and
+        # only a scoped application URL can enter inbox serialization.
         referrals = db.query(
-            WhatsAppMessageReferral.message_id, WhatsAppMessageReferral.headline,
+            WhatsAppMessageReferral.id, WhatsAppMessageReferral.message_id, WhatsAppMessageReferral.headline,
             WhatsAppMessageReferral.body, WhatsAppMessageReferral.source_type,
-            WhatsAppMessageReferral.source_url,
+            WhatsAppMessageReferral.source_url, WhatsAppMessageReferral.media_type,
+            WhatsAppMessageReferral.image_url, WhatsAppMessageReferral.thumbnail_url,
         ).filter(WhatsAppMessageReferral.message_id.in_(inbound_ids)).all()
-        referrals_by_message = {row.message_id: public_referral(row._mapping) for row in referrals}
+        for row in referrals:
+            public = public_referral(row._mapping)
+            candidate = preview_candidate(row._mapping)
+            if candidate:
+                url, kind = candidate
+                public = public or {}
+                public['preview_url'] = (f'/crm/whatsapp/api/conversations/{conversation.id}/messages/{row.message_id}'
+                                         f'/referrals/{row.id}/preview?v={_referral_preview_tag(url)}')
+                public['preview_kind'] = kind
+            referrals_by_message[row.message_id] = public
     attachments_by_message = {}
     if messages:
         attachments = db.query(WhatsAppMessageAttachment).filter(
@@ -2063,6 +2079,29 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
     }
     return {"conversation": _conversation_payload(db, conversation), "messages": message_data,
             "order": order_data, "sales_order": sales_order_data}
+
+
+@app.get('/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/referrals/{referral_id}/preview')
+def whatsapp_referral_preview(conversation_id: int, message_id: int, referral_id: int, v: str | None = None,
+                             db: Session = Depends(get_db), user: User = Depends(require_user)):
+    headers = {'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+               'Content-Security-Policy': "sandbox; default-src 'none'", 'Referrer-Policy': 'no-referrer'}
+    conversation = _get_conversation(db, conversation_id)
+    row = db.query(WhatsAppMessageReferral.media_type, WhatsAppMessageReferral.image_url,
+                   WhatsAppMessageReferral.thumbnail_url).join(
+        WhatsAppConversationMessage, WhatsAppMessageReferral.message_id == WhatsAppConversationMessage.id
+    ).filter(WhatsAppMessageReferral.id == referral_id, WhatsAppConversationMessage.id == message_id,
+             WhatsAppConversationMessage.phone_number == conversation.phone_number,
+             WhatsAppConversationMessage.direction == 'inbound').one_or_none()
+    candidate = preview_candidate(row._mapping) if row else None
+    if not candidate or (v is not None and v != _referral_preview_tag(candidate[0])):
+        return JSONResponse({'detail': 'Advertisement preview unavailable'}, status_code=404, headers=headers)
+    try:
+        content = get_preview(candidate[0], (user.id, conversation_id, message_id, referral_id))
+    except PreviewError as error:
+        return JSONResponse({'detail': 'Advertisement preview unavailable'}, status_code=error.status_code, headers=headers)
+    headers['Content-Disposition'] = 'inline; filename="advertisement-preview.png"'
+    return Response(content, media_type='image/png', headers=headers)
 
 
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}/messages/{message_id}/attachments/{attachment_id}/media")
