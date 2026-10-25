@@ -40,7 +40,7 @@ def test_quote_migration_preserves_history_and_receipt_atomicity(tmp_path,monkey
             conn.execute((old_table if old_table is not None else WhatsAppConversationMessage.__table__).insert().values(phone_number='94770012301',direction='outbound',message_text='Retained original',whatsapp_message_id='wamid.old-original'))
         monkeypatch.setattr(database,'engine',engine)
         config=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
-        command.stamp(config,'20261025_12');command.upgrade(config,'head');command.upgrade(config,'head')
+        command.stamp(config,'20261025_12');command.upgrade(config,'20261025_13');command.upgrade(config,'20261025_13')
         columns={column['name']:column for column in inspect(engine).get_columns('whatsapp_conversation_messages')}
         assert columns['reply_to_whatsapp_message_id']['nullable'] and columns['reply_to_whatsapp_message_id']['type'].length==255
         with engine.connect() as conn:

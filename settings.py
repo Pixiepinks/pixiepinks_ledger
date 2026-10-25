@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
     META_APP_SECRET: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
+    LEARNING_ENABLED: bool = False
+    LEARNING_RETRIEVAL_ENABLED: bool = False
+    LEARNING_PUBLICATION_ENABLED: bool = False
+    LEARNING_AUTOPUBLISH_ENABLED: bool = False
     OPENAI_MODEL: str = "gpt-4.1-mini"
     SHOPIFY_SHOP: Optional[str] = None
     SHOPIFY_CLIENT_ID: Optional[str] = None
