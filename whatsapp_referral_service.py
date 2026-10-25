@@ -72,3 +72,22 @@ def extract_referral(message: dict) -> dict | None:
             metadata[key] = value
     # captured_at comes from the database clock, never customer-supplied data.
     return metadata or None
+
+
+def public_referral(referral) -> dict | None:
+    """Revalidate stored display fields; never serialize attribution or media URLs.
+
+    Storage may contain legacy/manual values. Return plain text for textContent,
+    not HTML markup. The inbox description is deliberately shorter than storage.
+    """
+    safe = extract_referral({"referral": {
+        key: referral.get(key) for key in ("headline", "body", "source_type", "source_url")
+    }}) or {}
+    source_type = safe.get("source_type", "").casefold()
+    if source_type in {"ad", "post"}:
+        safe["source_type"] = source_type
+    else:
+        safe.pop("source_type", None)
+    if len(safe.get("body", "")) > 300:
+        safe["body"] = safe["body"][:299].rstrip() + "…"
+    return safe or None

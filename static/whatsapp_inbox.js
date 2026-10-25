@@ -94,6 +94,30 @@
     }
     card.append(status, retry); return card;
   }
+  function safeReferralLink(value) {
+    if (typeof value !== "string" || value.length > 2048 || /[\s\u0000-\u001f\u007f\\]/u.test(value)) return null;
+    try {
+      const url = new URL(value), hosts = ["facebook.com", "instagram.com", "fb.me", "fb.watch"];
+      if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443") || !hosts.some(host => url.hostname === host || url.hostname.endsWith(`.${host}`))) return null;
+      const decoded = decodeURIComponent(decodeURIComponent(value));
+      if (/[?&#](?:access[_-]?token|token|auth|authorization|password|passwd|secret|api[_-]?key|client[_-]?secret|appsecret_proof|signed_request|ctwa_clid|signature|sig)=/i.test(decoded)) return null;
+      return url.href;
+    } catch (_) { return null; }
+  }
+  function renderReferral(referral) {
+    const card = document.createElement("aside"), header = document.createElement("div"), label = document.createElement("span");
+    card.className = "ad-referral"; card.setAttribute("aria-label", "Advertisement referral"); header.className = "ad-referral-heading"; text(label, "Advertisement referral"); header.append(label);
+    const sourceLabel = ({ad: "Ad", post: "Post"})[referral.source_type];
+    if (sourceLabel) header.append(badge(sourceLabel, "neutral"));
+    card.append(header);
+    if (referral.headline) { const headline = document.createElement("strong"); text(headline, referral.headline); card.append(headline); }
+    if (referral.body) { const description = document.createElement("p"); text(description, referral.body); card.append(description); }
+    const sourceUrl = safeReferralLink(referral.source_url);
+    if (sourceUrl) { const link = document.createElement("a"); link.href = sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer"; link.referrerPolicy = "no-referrer"; text(link, referral.source_type === "post" ? "Open post ↗" : referral.source_type === "ad" ? "Open advertisement ↗" : "Open source ↗"); card.append(link); }
+    // Creative URLs are deliberately absent: only a future authenticated media
+    // route can supply a preview. Never use an external URL as img/video src.
+    return card;
+  }
   function renderMessage(message) {
     const wrapper = document.createElement("div"), bubble = document.createElement("div"), metadata = document.createElement("small"); wrapper.className = `message ${message.direction}`; bubble.className = "bubble";
     if (message.product) {
@@ -106,9 +130,11 @@
     else if (message.attachments?.length) { bubble.classList.add("attachment-bubble"); bubble.append(...message.attachments.map(renderAttachment)); }
     else text(bubble, message.text);
     wrapper.dataset.messageId = String(message.id); wrapper.dataset.contentKey = messageContentKey(message); metadata.className = "message-meta"; wrapper.dataset.status = message.status;
-    text(metadata, messageMetadata(message)); wrapper.append(bubble, metadata); return wrapper;
+    text(metadata, messageMetadata(message));
+    if (message.direction === "inbound" && message.referral) wrapper.append(renderReferral(message.referral));
+    wrapper.append(bubble, metadata); return wrapper;
   }
-  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments]);
+  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral]);
   const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${new Date(message.timestamp).toLocaleString()} · ${message.status}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;

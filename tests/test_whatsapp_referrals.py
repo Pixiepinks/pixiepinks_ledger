@@ -244,7 +244,7 @@ def test_referral_with_empty_text_is_captured_without_creating_ai_request(webhoo
     assert calls == {"ai": [], "sent": [], "image": []}
 
 
-def test_referral_is_not_exposed_in_inbox_api_and_requires_signed_webhook(webhook):
+def test_private_referral_fields_are_not_exposed_in_inbox_api_and_requires_signed_webhook(webhook):
     client, sessions, calls = webhook
     unsigned = TestClient(main.app, base_url="https://testserver")
     assert unsigned.post("/webhook", json=payload()).status_code == 403
@@ -256,5 +256,6 @@ def test_referral_is_not_exposed_in_inbox_api_and_requires_signed_webhook(webhoo
     assert client.post("/login", data={"username": "referral-staff", "password": "password"}).status_code == 200
     response = client.get(f"/crm/whatsapp/api/conversations/{conversation_id}")
     assert response.status_code == 200
-    assert not any(value in response.text for value in (REFERRAL["ctwa_clid"], REFERRAL["headline"], REFERRAL["source_id"]))
+    assert not any(value in response.text for value in (REFERRAL["ctwa_clid"], REFERRAL["source_id"]))
+    assert response.json()["messages"][0]["referral"]["headline"] == REFERRAL["headline"]
     assert unsigned.get(f"/crm/whatsapp/api/conversations/{conversation_id}", follow_redirects=False).status_code == 303

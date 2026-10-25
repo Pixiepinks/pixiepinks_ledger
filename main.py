@@ -62,7 +62,7 @@ from models import (
 )
 from ai_service import FALLBACK_REPLY, generate_customer_reply
 from image_understanding_service import inspect_customer_image, image_language, private_image_processing
-from whatsapp_referral_service import extract_referral
+from whatsapp_referral_service import extract_referral, public_referral
 from seed import init_db
 from utils_auth import hash_password, verify_password
 from whatsapp_service import (
@@ -1970,12 +1970,24 @@ def _get_conversation(db: Session, conversation_id: int) -> WhatsAppConversation
 
 
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}")
-def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
+def whatsapp_conversation_detail(conversation_id: int, response: Response, limit: int = 100,
                                  db: Session = Depends(get_db), user: User = Depends(require_user)):
+    response.headers["Cache-Control"] = "private, no-store"
     conversation = _get_conversation(db, conversation_id)
     messages = db.query(WhatsAppConversationMessage).filter(
         WhatsAppConversationMessage.phone_number == conversation.phone_number
     ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(min(max(limit, 1), 200)).all()
+    referrals_by_message = {}
+    inbound_ids = [message.id for message in messages if message.direction == "inbound"]
+    if inbound_ids:
+        # Fetch only public display columns. Private click IDs and raw creative
+        # URLs never enter inbox serialization, even for authenticated staff.
+        referrals = db.query(
+            WhatsAppMessageReferral.message_id, WhatsAppMessageReferral.headline,
+            WhatsAppMessageReferral.body, WhatsAppMessageReferral.source_type,
+            WhatsAppMessageReferral.source_url,
+        ).filter(WhatsAppMessageReferral.message_id.in_(inbound_ids)).all()
+        referrals_by_message = {row.message_id: public_referral(row._mapping) for row in referrals}
     attachments_by_message = {}
     if messages:
         attachments = db.query(WhatsAppMessageAttachment).filter(
@@ -2014,6 +2026,7 @@ def whatsapp_conversation_detail(conversation_id: int, limit: int = 100,
         "media_url": (f"/crm/whatsapp/api/conversations/{conversation.id}/messages/{item.id}/media"
                       if item.media_id else None),
         "attachments": attachments_by_message.get(item.id, []),
+        "referral": referrals_by_message.get(item.id),
         "product": ({"title": item.product_title, "variant": item.variant_title,
                      "sku": item.product_sku, "price": float(item.product_price),
                      "currency": item.product_currency or "LKR", "image": item.product_image_url,
