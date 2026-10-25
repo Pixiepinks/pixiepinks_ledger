@@ -110,12 +110,20 @@
     const sourceLabel = ({ad: "Ad", post: "Post"})[referral.source_type];
     if (sourceLabel) header.append(badge(sourceLabel, "neutral"));
     card.append(header);
+    if (typeof referral.preview_url === "string" && /^\/crm\/whatsapp\/api\/conversations\/\d+\/messages\/\d+\/referrals\/\d+\/preview\?v=[a-f0-9]{24}$/.test(referral.preview_url)) {
+      const preview = document.createElement("div"), image = new Image(), loading = document.createElement("span");
+      preview.className = "ad-referral-preview is-loading"; text(loading, "Loading preview…"); loading.setAttribute("role", "status");
+      image.alt = referral.preview_kind === "video_thumbnail" ? "Video advertisement thumbnail" : "Advertisement image";
+      image.loading = "lazy"; image.decoding = "async"; image.referrerPolicy = "no-referrer";
+      image.onload = () => { preview.classList.remove("is-loading"); loading.hidden = true; };
+      image.onerror = () => { preview.hidden = true; image.removeAttribute("src"); };
+      image.src = referral.preview_url; preview.append(image, loading); card.append(preview);
+    }
     if (referral.headline) { const headline = document.createElement("strong"); text(headline, referral.headline); card.append(headline); }
     if (referral.body) { const description = document.createElement("p"); text(description, referral.body); card.append(description); }
     const sourceUrl = safeReferralLink(referral.source_url);
     if (sourceUrl) { const link = document.createElement("a"); link.href = sourceUrl; link.target = "_blank"; link.rel = "noopener noreferrer"; link.referrerPolicy = "no-referrer"; text(link, referral.source_type === "post" ? "Open post ↗" : referral.source_type === "ad" ? "Open advertisement ↗" : "Open source ↗"); card.append(link); }
-    // Creative URLs are deliberately absent: only a future authenticated media
-    // route can supply a preview. Never use an external URL as img/video src.
+    // Only the scoped authenticated application endpoint can supply a preview.
     return card;
   }
   function renderMessage(message) {

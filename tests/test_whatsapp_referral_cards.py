@@ -71,6 +71,9 @@ def test_complete_referral_has_only_sanitized_display_fields(inbox):
     finally: event.remove(engine,'before_cursor_execute',record)
     message = response.json()['messages'][0]
     assert message['id'] == mid
+    assert message['referral'].pop('preview_kind') == 'video_thumbnail'
+    assert message['referral'].pop('preview_url').startswith(
+        f'/crm/whatsapp/api/conversations/{ids[0]}/messages/{mid}/referrals/')
     assert message['referral'] == {'source_type':'ad','source_url':'https://fb.me/example',
                                     'headline':'Bicycle advertisement','body':'Advertisement description'}
     assert response.headers['cache-control'] == 'private, no-store'

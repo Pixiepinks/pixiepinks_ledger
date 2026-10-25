@@ -190,19 +190,18 @@ unusable values produce no card. Multiple advertisements remain attached to thei
 own message rows rather than overwriting conversation-wide attribution.
 
 The authenticated conversation-detail API returns a `referral` object or `null`
-per message. Its only possible fields are `headline`, `body`, `source_type` and
-`source_url`. Stored display fields are revalidated on read, description text is
+per message. Its base display fields are `headline`, `body`, `source_type` and
+`source_url`; Phase 5C adds protected preview fields below. Stored display fields are revalidated on read, description text is
 capped at 300 characters, and responses use `Cache-Control: private, no-store`.
-The query fetches public display columns in one batch; it does not load `ctwa_clid`,
-source IDs or raw creative URLs for serialization. Referral text is inserted with
+The query batches the needed fields without loading `ctwa_clid` or source IDs;
+raw creative references are inspected only server-side, never serialized. Referral text is inserted with
 DOM `textContent`, never HTML. Source links are checked on both server and browser,
 require HTTPS on the allowed Meta source hosts, reject credentials/private query
 parameters, and open with noopener/noreferrer and no referrer.
 
-Cards are deliberately **text-only**. Stored advertisement image/video/thumbnail
-URLs have no existing authenticated creative-preview proxy and may expire; they
-are neither returned by this API nor embedded or fetched by the browser. A future
-secure retrieval implementation is needed before thumbnails can be displayed.
+Phase 5B introduced **text-only** cards. Phase 5C below adds protected previews;
+stored advertisement image/video/thumbnail URLs still never reach the browser.
+Text-only cards remain the fallback when a creative reference is missing or unusable.
 Existing customer-image, video, document and audio media controls are unchanged.
 Inbox polling includes referral content in reconciliation so cards remain bound
 to their original messages while unchanged media elements keep playing.
@@ -218,6 +217,68 @@ test also checks actual DOM injection safety, correct card placement, link handl
 no advertisement-media fetches, polling retention and mobile overflow. To run that
 browser check, install Playwright into a development/test environment and provide
 `chromium` or `chromium-browser`; no browser dependency is added to production.
+
+### Phase 5C: secure advertisement creative previews
+
+Referral cards can display an image advertisement or the stored thumbnail of a
+video advertisement. `video_url` is never fetched and no advertisement video player
+is introduced. Images use `image_url`, with a safe thumbnail fallback; video ads
+require `thumbnail_url`. Missing/unsafe/expired/unsupported creatives leave the
+existing headline, description and source link intact. Failed images are hidden
+without broken-image icons. Lazy image elements and their stable application URLs
+survive inbox polling without repeated preview requests.
+
+The authenticated preview endpoint verifies conversation, inbound message and
+referral association before reading any cache or fetching bytes. The inbox returns
+only scoped application `preview_url` and controlled `preview_kind` fields, never
+the raw creative URL, token or private click ID. An opaque HMAC revision changes
+when the stored creative changes; it is a cache-buster, not authorization. Responses
+use private/no-store, nosniff, no-referrer and restrictive document headers.
+
+`referral_preview_service.py` is intentionally separate from the bearer-authenticated
+WhatsApp media downloader. It never uses Meta/Shopify/OpenAI credentials. Retrieval
+allows HTTPS port 443 on `*.fbcdn.net`, `*.cdninstagram.com` (including their roots)
+and exactly `lookaside.fbsbx.com`; general Facebook/Instagram application endpoints
+are not accepted. URL credentials, sensitive attribution parameters, malformed DNS
+names, fragments and encoded controls are rejected. Every actual fetch resolves
+the hostname, rejects non-public/local/special or IPv6 transition destinations, and
+pins one validated IP while preserving the original Host and TLS SNI/certificate
+verification. Redirects, HTTP compression and ambient proxy/netrc/cookie credentials
+are disabled. There is one upstream GET and no automatic retry or token refresh.
+
+Limits per application worker:
+
+- Two concurrent disposable preview processes, with duplicate in-flight requests
+  rejected rather than queued indefinitely. Busy requests receive a safe 429 fallback.
+- 3 MiB streamed input; JPEG, PNG or WebP MIME/signature plus actual decoding required.
+- At most 4096 pixels on either side and 8 million input pixels; first frame only.
+- Clean pixel-only PNG output, longest side at most 512 pixels and at most 1 MiB.
+  A fresh RGB frame strips source metadata/side data; HTML/SVG/video are rejected.
+- Twelve-second hard process deadline, three CPU seconds and 512 MiB virtual-address
+  limit per child. HTTP connect/read limits are 3/2 seconds with an 8-second streaming
+  deadline. Parent cleanup terminates/kills/reaps timed-out workers.
+- Child environment and request logging are cleared/disabled. Bounded byte IPC is
+  used instead of unpickling decoder output. Neither images nor signed URLs are logged.
+- Private RAM-only LRU scoped to staff and originating message: up to 32 entries and
+  8 MiB of normalized bytes, five-minute success TTL and one-minute failure TTL.
+  Authorization is checked even for cache hits. No disk, CDN or cross-staff cache.
+
+Runtime requires Linux process/resource-limit support, the existing PyAV wheel,
+and DNS plus direct outbound HTTPS to the allowed Meta creative CDN hosts. No new
+secret, model, migration, database setting or live Bot Management change is required.
+Environment proxies are intentionally not used for this uncredentialed fetch path;
+restricted deployments must permit direct egress or retain the text-only fallback.
+Stored URLs requiring authentication, expired signatures, unsupported hosts/formats,
+busy capacity or process restrictions fall back safely. Reload/revisit the conversation
+to retry; negative cache entries expire after one minute. RAM caches reset on restart
+and are local to each app worker. Live signed Meta references were not used in tests.
+
+Tests mock DNS and upstream HTTP, exercise actual spawned resource-limited workers,
+and cover authorization/association, SSRF and DNS rebinding, no credential forwarding,
+MIME/content/dimension/stream limits, expiry/redirects/timeouts, private caching and
+concurrency, and real Chromium thumbnail/fallback/polling behavior. Existing customer
+media controls, webhook capture, AI/HUMAN behavior, Shopify and sales flows are unchanged.
+Schema head remains `20261024_10`.
 
 ## CRM and customer-service workspace
 
