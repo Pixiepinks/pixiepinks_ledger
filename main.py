@@ -291,6 +291,16 @@ AWAITING_IMAGE_BICYCLE_MATCH = "AWAITING_IMAGE_BICYCLE_MATCH"
 SHOWING_PRODUCTS = "SHOWING_PRODUCTS"
 
 
+def _generate_with_learning(sender, message, profile_name, context, catalog=None):
+    # Keep the existing generator injectable and its existing argument contract.
+    if not settings.LEARNING_RETRIEVAL_ENABLED:
+        return generate_customer_reply(message, profile_name, context, catalog) if catalog is not None else generate_customer_reply(message, profile_name, context)
+    from learning_runtime import reply_scope
+    # Resolve the sender only inside bounded telemetry work, never on the reply path.
+    with reply_scope(sender):
+        return generate_customer_reply(message, profile_name, context, catalog) if catalog is not None else generate_customer_reply(message, profile_name, context)
+
+
 def needs_product_catalog(message: str, recent_context: list | None = None) -> bool:
     normalized = " ".join(message.casefold().split())
     if (any(term in normalized for term in PRODUCT_TERMS)
@@ -1067,11 +1077,11 @@ def _reply_to_text_message(
                     logger.warning("Live Shopify catalogue unavailable message_id=%s", message_id)
                     reply = SHOPIFY_FALLBACK_REPLY
                 else:
-                    reply = generate_customer_reply(
-                        text_body, profile_name, routing_context, catalog_results
+                    reply = _generate_with_learning(
+                        sender, text_body, profile_name, routing_context, catalog_results
                     )
             else:
-                reply = generate_customer_reply(text_body, profile_name, routing_context)
+                reply = _generate_with_learning(sender, text_body, profile_name, routing_context)
         except StopIteration:
             pass
         except Exception:
@@ -3192,10 +3202,19 @@ def fulfillment_shopify_reconcile(fulfillment_id:int,operation_id:str,request:Re
     return {"operation_id":op.operation_id,"status":op.status,"shopify_fulfillment_id":op.shopify_fulfillment_id}
 
 
+from learning_routes import build_router as build_learning_router
+app.include_router(build_learning_router(get_db,require_user,_require_csrf,_csrf_token))
+
+
 @app.get("/crm/bot-management", response_class=HTMLResponse)
 @app.get("/crm/bot-management/{section}", response_class=HTMLResponse)
 def bot_management(request: Request, section: str = "overview", db: Session = Depends(get_db),
                    user: User = Depends(require_user)):
+    if section == "learning":
+        from learning_routes import authorize
+        authorize(user)
+        return templates.TemplateResponse("learning_center.html", {"request":request,"user":user,
+            "active":"learning","page_title":"AI Learning Center"},headers={"Cache-Control":"private, no-store"})
     allowed = {"overview", "instructions", "policies", "catalog", "rules", "faqs", "test", "versions"}
     if section not in allowed:
         raise HTTPException(status_code=404)

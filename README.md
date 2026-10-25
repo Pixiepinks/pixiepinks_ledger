@@ -1196,3 +1196,14 @@ SQLite-primary skips passed separately on PostgreSQL. Requirements-only Python
 3.12.14 startup/restart checks passed on SQLite and PostgreSQL, with `pip check`
 clean. No live customer sends, production data edits, merge or deployment were
 performed; upstream services were mocked and test databases isolated.
+
+## AI Learning Center (disabled by default)
+
+The learning extension adds explicit source consent, bounded scheduled extraction,
+manager review, narrowly gated automatic communication lessons, immutable knowledge
+versions, privacy withdrawal and bounded fail-open retrieval. It does not fine-tune
+models or change live bot configuration. All four new environment gates default to
+false. See [the operator guide](docs/learning-center.md) for the inspected baseline,
+additive migration `20261025_14`, API/permissions, privacy limitations, Railway cron
+setup, budgets, manual acceptance checklist and rollback. Scheduling has not been
+deployed or verified active; no production activation is part of this change.

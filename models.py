@@ -770,3 +770,10 @@ class WhatsAppQuickMessage(Base):
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     created_by = Column(String(100))
     updated_by = Column(String(100))
+
+# Register additive learning tables with the same Base/Alembic metadata.
+from learning_models import (LearningSettings, LearningLease, LearningSource, LearningJob,
+    LearningAnalysis, LearningCandidate, LearningEvidence, LearningEvaluation,
+    LearningKnowledgeVersion, LearningAudit, LearningAction, LearningFeedback)
+from learning_models import LearningReservation
+from learning_models import LearningRegressionCase

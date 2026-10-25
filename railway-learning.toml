@@ -1,0 +1,5 @@
+# Separate Railway cron service only. Do not select this for the web service.
+# Set cron schedule */15 * * * * (UTC) in Railway; see docs/learning-center.md.
+[deploy]
+startCommand = "python -m learning_worker tick"
+restartPolicyType = "NEVER"
