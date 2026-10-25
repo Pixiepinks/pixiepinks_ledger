@@ -497,6 +497,7 @@ class WhatsAppConversationMessage(Base):
     direction = Column(String(20), nullable=False)
     message_text = Column(Text, nullable=False)
     whatsapp_message_id = Column(String(255), nullable=True, index=True)
+    reply_to_whatsapp_message_id = Column(String(255), nullable=True)
     response_kind = Column(String(20), nullable=True)
     send_status = Column(String(20), nullable=True)
     sent_by = Column(String(100), nullable=True)

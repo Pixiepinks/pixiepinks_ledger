@@ -1132,3 +1132,67 @@ webhook concurrency races. Both SQLite-primary skips passed separately on isolat
 PostgreSQL. Requirements-only Python 3.12.14 startup/restart checks passed on SQLite
 and PostgreSQL, with `pip check` clean. Existing Quick Messages, media, referrals,
 AI/HUMAN, Shopify, CRM, sales and fulfillment tests ran in the complete suite.
+
+### WhatsApp quoted-message context
+
+Incoming Meta `message.context.id` is now retained as a bounded optional
+`reply_to_whatsapp_message_id` on the conversation message. Text and supported
+media messages save the reference in the same transaction as their message,
+attachment/referral metadata and unique processed-delivery receipt. Malformed
+references are ignored, duplicate deliveries do not create another record, and a
+failed transaction remains retryable. Other context fields and complete webhook
+payloads are not stored.
+
+The existing authenticated Inbox detail API resolves references only against the
+same customer's conversation, including originals outside the current loaded
+message window. It adds a compact `reply_context` preview: author, type, bounded
+text/caption/filename and an application-owned photo/sticker preview URL when an
+attachment is available. References are resolved in batches (at most two additional
+queries, none without references), not one lookup per reply. Ambiguous duplicate
+provider IDs, self-references and unavailable originals use the same unavailable
+fallback. No other customer's text/media or raw Meta IDs enter quote previews.
+
+The Inbox shows the quote immediately above its corresponding message. Photo
+previews reuse the authenticated attachment service, can be opened at full size,
+use no raw external URLs, and hide failed previews without losing the quote text.
+Text is escaped through DOM text nodes. Quoted videos/documents/voice messages and
+product snapshots have descriptive labels; no new playback, media download,
+storage or vision processing is performed by quote resolution. Stable quote
+objects are included in message reconciliation so polling preserves preview DOM
+and existing media playback. AI/HUMAN controls, AI responses, existing verified
+product reply routing, referrals, Quick Messages, phone country, sales and customer
+workflows remain unchanged. This feature adds staff visibility; it does not teach
+the AI to inspect quoted photos.
+
+Migration **`20261025_13`** adds one nullable VARCHAR(255) column, preserving all
+existing history without a backfill or self-referential FK (originals may be
+missing or arrive later). Direct and ORM-first SQLite/PostgreSQL upgrades are
+covered. Destructive downgrade is blocked to retain reply metadata; keep this
+revision in the migration graph when rolling back application behavior. A nullable
+column addition still takes the database's normal brief schema lock.
+
+Previously ingested replies whose references were discarded cannot be reliably
+reconstructed from their text. New replies can quote older originals if those
+originals were stored with their actual WhatsApp message IDs. Messages sent outside
+CRM, older sends without recorded Meta IDs, missing/expired media and unresolved
+history can only show an unavailable or text-only preview. No nearest-message or
+product guess is substituted, and no historical/live production data is edited.
+
+Future automated text, image-follow-up and product replies now retain real outgoing
+message IDs returned by the existing Meta send functions, so later customer quotes
+can identify those originals too. This changes history metadata, not response
+content, AI routing, provider payloads or conversation modes. Legacy boolean-only
+injected senders do not create fabricated provider IDs. Older sends that never
+recorded an ID still cannot be retroactively matched safely.
+
+Quoted-context validation (2026-10-25; baseline
+`93b28052f3506decd2d28d89f7b8184740542de0`): **245 focused checks passed**, including
+Chromium, incoming text/media, image/product behavior, original-ID retention and
+direct/ORM-first SQLite/PostgreSQL upgrades with concurrent receipts. Final full
+suite: **867 passed, 2 failed, 2 skipped**; unchanged-main full suite: **830 passed,
+2 failed, 2 skipped**. The failures are the existing payment-claim and Shopify
+webhook concurrency races; their business services remain unchanged. Both
+SQLite-primary skips passed separately on PostgreSQL. Requirements-only Python
+3.12.14 startup/restart checks passed on SQLite and PostgreSQL, with `pip check`
+clean. No live customer sends, production data edits, merge or deployment were
+performed; upstream services were mocked and test databases isolated.

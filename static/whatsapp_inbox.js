@@ -130,6 +130,21 @@
     // Only the scoped authenticated application endpoint can supply a preview.
     return card;
   }
+  function renderReplyContext(reply) {
+    const card = document.createElement("aside"), heading = document.createElement("strong"), copy = document.createElement("span");
+    card.className = "message-quote"; card.setAttribute("aria-label", "Quoted message");
+    if (!reply.available) { text(heading, "Reply to an earlier message"); text(copy, "Original message unavailable in CRM."); card.append(heading, copy); return card; }
+    text(heading, `Replying to ${reply.author}`);
+    const label = ({image: "Photo", sticker: "Sticker", video: "Video", audio: "Voice message", document: "Document", product: "Product"})[reply.type];
+    text(copy, [label, reply.text].filter(Boolean).join(" · ")); card.append(heading, copy);
+    if (typeof reply.preview_url === "string" && /^\/crm\/whatsapp\/api\/conversations\/\d+\/messages\/\d+\/attachments\/\d+\/media$/.test(reply.preview_url)) {
+      card.classList.add("has-preview");
+      const image = new Image(), link = document.createElement("a"); image.alt = "Quoted photo"; image.loading = "lazy"; image.decoding = "async"; image.referrerPolicy = "no-referrer";
+      link.href = reply.preview_url; link.target = "_blank"; link.rel = "noopener noreferrer"; link.setAttribute("aria-label", "Open quoted photo");
+      image.onerror = () => { link.hidden = true; image.removeAttribute("src"); }; image.src = reply.preview_url; link.append(image); card.append(link);
+    }
+    return card;
+  }
   function appendMessageText(element, value) {
     const body = String(value || ""), pattern = /https:\/\/[^\s<>"']+/g; let start = 0;
     for (const match of body.matchAll(pattern)) {
@@ -157,9 +172,10 @@
     wrapper.dataset.messageId = String(message.id); wrapper.dataset.contentKey = messageContentKey(message); metadata.className = "message-meta"; wrapper.dataset.status = message.status;
     text(metadata, messageMetadata(message));
     if (message.direction === "inbound" && message.referral) wrapper.append(renderReferral(message.referral));
+    if (message.reply_context) wrapper.append(renderReplyContext(message.reply_context));
     wrapper.append(bubble, metadata); return wrapper;
   }
-  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral]);
+  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context]);
   const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${new Date(message.timestamp).toLocaleString()} · ${message.status}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;

@@ -51,7 +51,7 @@ def test_additive_migration_history_defaults_and_postgresql_requests(tmp_path,mo
             db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number,direction='inbound',message_text='Retained message history'));db.commit()
             db.execute(text("INSERT INTO whatsapp_manual_sends (id,idempotency_key,conversation_id,message_text,status,sent_by,created_at) VALUES (999,'historical',:cid,'Retained staff send','SENT','migration-manager',:now)"),{'cid':cid,'now':datetime.utcnow()});db.commit()
         config=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
-        command.stamp(config,'20261025_11');command.upgrade(config,'head');command.upgrade(config,'head')
+        command.stamp(config,'20261025_11');command.upgrade(config,'20261025_12');command.upgrade(config,'20261025_12')
         with engine.connect() as conn:
             assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar()=='20261025_12'
             assert conn.execute(text('SELECT message_text FROM whatsapp_conversation_messages')).scalar()=='Retained message history'
