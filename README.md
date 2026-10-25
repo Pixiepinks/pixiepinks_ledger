@@ -879,3 +879,109 @@ requests a new preflight with a different idempotency key. Retirement uses a dat
 the original request snapshot and fingerprint with status `EXPIRED`, and releases only its active-operation
 slot. Any operation that was approved, claimed, attempted, synchronized, or requires reconciliation is
 never retired or retried by this path. No schema migration is required for this recovery behavior.
+
+### WhatsApp outbound staff attachments — Phase 6A
+
+The Inbox paperclip offers Photos (JPEG/PNG) and Documents (PDF), with a local
+preview, optional caption (1,024 characters), removal and upload/send progress.
+Staff can send in AI or HUMAN mode within WhatsApp's 24-hour customer reply
+window; the action does not switch modes or invoke AI. Videos/additional Office
+formats are a separate Phase 6B change. Existing authenticated attachment
+retrieval, timeline rendering and Meta delivery-status updates serve outbound
+attachments too. No uploaded files are placed in public static storage.
+
+`WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES` defaults to 4 MiB (hard ceiling 5,000,000
+bytes). `WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES` defaults to 8 MiB (hard ceiling
+16,000,000 bytes, also below the existing authenticated download cap). Defaults
+require no configuration changes. Existing Meta token/phone/API configuration
+and messaging permission are reused. Do not expose these credentials to the
+browser. Provider support/reply-window errors remain authoritative.
+
+Requests require an existing staff login, an allowed CRM staff role, a session
+CSRF token and an idempotency key. The entire multipart request is bounded,
+including requests without Content-Length, with a 45-second read deadline and
+two active uploads per application worker. Extensions select server-owned MIME
+types; browser MIME labels are ignored. Content is parsed in a fresh subprocess
+(10-second wall timeout, 5 CPU seconds, 512 MiB address space). Images must decode
+as JPEG/PNG and stay within 20 million pixels; PNG CRCs are checked. PDFs must
+parse, be unencrypted, and contain at most 1,000 pages. Documents are never
+rendered or executed. File bytes exist only in bounded memory/temporary multipart
+spools, which are closed after the request. There is no permanent local retention
+or antivirus guarantee. Sensitive provider diagnostics and content are not logged.
+
+Migration `20261025_11` adds only `whatsapp_media_sends`, containing unique durable
+claims, staff/conversation references, a content fingerprint, state, uploaded Meta
+media ID and the successful local message reference. It preserves all existing
+history and works with direct Alembic upgrades and ORM-first startup. Retain this
+migration in the Alembic graph during application rollback. Destructive downgrade
+is intentionally blocked because deleting receipts can permit duplicate sends.
+
+Upload and customer send are separate operations. Meta uploads can be orphaned
+when a send fails; no permanent local file is retained or automatic Meta deletion
+attempted. Only a real provider message ID creates a successful timeline message.
+History, attachment metadata and the success receipt commit together. A committed
+SENDING claim precedes any customer send. Network interruption, process restart
+or persistence failure after acceptance must **not** blindly resend; duplicate
+requests return the durable status. Staff must reconcile uncertain outcomes with
+the customer/Meta before starting a fresh attempt. Successful sends and definite
+rejections can be checked through the scoped authenticated status endpoint.
+Browser session storage contains only a staff/conversation-scoped random operation
+key, never bytes or credentials; refresh retrieves status instead of resending.
+Switching customers discards an unsubmitted file and is blocked during an active
+send. Private/no-store responses apply to policy, receipt and media endpoints.
+
+Automated outbound tests use isolated databases and mocked Meta responses. They
+cover actual JPEG/PNG/PDF parsing, spoofed and malformed files, size/dimension
+limits, auth/CSRF/scope, captions, provider failures, concurrency, database failures
+before/after remote send, delivery statuses and Chromium composer/refresh behavior.
+Dedicated PostgreSQL checks require `TEST_POSTGRESQL_URL` pointing to an isolated
+`pixiepinks_test` database; they create/drop only disposable schemas. Live Meta
+upload/delivery is intentionally not exercised by automated tests.
+
+### WhatsApp outbound staff attachments — Phase 6B
+
+Phase 6B builds on Phase 6A, enabling the Videos picker plus DOC/DOCX, XLS/XLSX
+and UTF-8 TXT documents in the same composer. These use the Cloud API's `video`
+and `document` message types with server-selected MIME types; IDs are uploaded
+Meta media IDs, never advertisement IDs or Shopify product IDs. Optional captions
+and document filenames are sent in their appropriate media object. Meta's
+configured API version, account permissions and current provider restrictions can
+still reject an upload/send; these never produce false successful history.
+
+`WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES` defaults to 8 MiB, with a 16,000,000-byte hard
+ceiling. Other image/document limits remain unchanged. MP4 requires H.264 video
+with optional AAC audio, one video track, at most one audio track, no extra tracks,
+up to 120 seconds, 60 fps and 2,073,600 pixels per frame. Videos are decoded within
+the same disposable worker's CPU/memory/time limits; complex valid videos can be
+rejected if they cannot be safely validated in that budget. The request concurrency
+cap is reduced to two per application worker to bound combined decoder memory.
+The entire request cap accommodates the largest configured media category.
+
+OOXML packages are checked for the correct main document/content type, CRC/read
+integrity, duplicate/traversal entries, encryption and obvious VBA/macro payloads.
+ZIP packages have at most 1,000 entries, 32 MiB total expanded size and 2 MiB main
+XML parts; no files are extracted. Legacy DOC uses compound-container/Word FIB
+checks; legacy XLS supports unencrypted BIFF5/8 compound workbooks. `olefile`
+validates container chains, with bounded content reads in the disposable worker.
+Legacy container/header validation does not guarantee that every document is
+semantically complete or opens in every Office version. Encrypted files and
+unsupported legacy containers are rejected. TXT must be nonempty UTF-8 (optional
+BOM), without binary control characters. Office documents are download-only and
+are never executed/rendered by the application; format checks are not antivirus.
+No additional database migration or production configuration change is required.
+
+Outbound delivery validation (2026-10-25, baseline
+`de7a893b877e2a0999f8e7d4d4ec62b18992c856`): Phase 6A full suite **705 passed,
+2 failed, 2 skipped**, focused outbound/Inbox **44 passed**. Phase 6B full suite
+**730 passed, 2 failed, 2 skipped**, focused outbound/formats/Inbox **69 passed**,
+including actual Chromium. Both failures reproduce on unchanged main:
+`test_postgresql_concurrent_payment_claim_is_created_once` (duplicate reference)
+and `test_postgresql_concurrent_duplicate_delivery_is_processed_once` (webhook
+already processing; intermittent). Unchanged-main full suite was 676 passed,
+1 failed, 2 skipped, and the intermittent Shopify failure reproduced separately.
+The two SQLite-primary-suite skips (fulfillment and draft retry claims) both passed
+in separate isolated PostgreSQL-primary runs. Direct/ORM-first PostgreSQL migration
+and outbound concurrency tests passed. Requirements-only Python **3.12.14**
+startup/restart and authenticated Inbox/policy checks passed on both SQLite and
+PostgreSQL for each phase, with `pip check` clean. Live Meta upload/send and actual
+customer delivery are untested; no credentials or production changes were used.

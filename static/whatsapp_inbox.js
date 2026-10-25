@@ -162,7 +162,10 @@
     else if (anchorId) { const retained = messages.querySelector(`[data-message-id="${CSS.escape(anchorId)}"]`); if (retained) messages.scrollTop += retained.getBoundingClientRect().top - containerTop - anchorOffset; }
   }
   async function openConversation(id, markRead = false) {
-    const switching = selected !== id; selected = id; root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
+    if (selected !== id && window.inboxMediaBusy) return;
+    const switching = selected !== id; selected = id;
+    root.dataset.activeConversation = String(id);
+    if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
     if (switching) { conversationGeneration += 1; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); }
     if (conversationLoading) return;
     const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true;

@@ -2,6 +2,7 @@ import os
 from typing import Optional
 
 from pydantic_settings import BaseSettings
+from pydantic import Field
 
 class Settings(BaseSettings):
     APP_NAME: str = "PixiePinks Ledger"
@@ -22,6 +23,9 @@ class Settings(BaseSettings):
     META_WHATSAPP_ACCESS_TOKEN: Optional[str] = None
     META_WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
     META_GRAPH_API_VERSION: str = "v26.0"
+    WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES: int = Field(4 * 1024 * 1024, ge=1024, le=5_000_000)
+    WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
+    WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
     META_APP_SECRET: Optional[str] = None
     OPENAI_API_KEY: Optional[str] = None
     OPENAI_MODEL: str = "gpt-4.1-mini"
