@@ -31,6 +31,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile as StarletteUploadFile
 import outbound_media_service as outbound_media
+import quick_message_service as quick_messages
 from sqlalchemy import func, inspect, text, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -56,6 +57,7 @@ from models import (
     WhatsAppMessageAttachment,
     WhatsAppMessageReferral,
     WhatsAppManualSend,
+    WhatsAppQuickMessage,
     WhatsAppOrderIntent,
     WhatsAppOutboundProductMessage,
     BotAuditEvent, BotConfiguration, BotConfigurationVersion, ShopifyCollectionReference,
@@ -2309,6 +2311,60 @@ async def whatsapp_send_media(conversation_id: int, request: Request,
         _outbound_media_slots.release()
 
 
+@app.get("/crm/whatsapp/api/quick-messages")
+def whatsapp_quick_messages(request: Request, response: Response, q: str = Query("", max_length=100),
+        category: str = Query("", max_length=80), language: str = Query("", pattern="^(en|si)?$"),
+        offset: int = Query(0, ge=0, le=10000), db: Session = Depends(get_db), user: User = Depends(require_user)):
+    quick_messages.authorize(user)
+    response.headers["Cache-Control"] = "private, no-store"
+    return {**quick_messages.listing(db,q,category,language,offset=offset),"csrf_token":_csrf_token(request)}
+
+
+@app.get("/crm/quick-messages", response_class=HTMLResponse)
+def quick_message_management(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    quick_messages.authorize(user,manage=True)
+    return templates.TemplateResponse("quick_messages.html", {"request":request,"user":user,
+        "page_title":"Quick Messages","csrf_token":_csrf_token(request)}, headers={"Cache-Control":"private, no-store"})
+
+
+@app.get("/crm/quick-messages/api")
+def quick_message_admin_list(request: Request, response: Response, q: str = Query("",max_length=100),
+        category: str = Query("",max_length=80), language: str = Query("",pattern="^(en|si)?$"),
+        status: str = Query("",pattern="^(active|inactive)?$"), offset: int = Query(0,ge=0,le=10000),
+        db: Session = Depends(get_db),user: User = Depends(require_user)):
+    quick_messages.authorize(user,manage=True)
+    response.headers["Cache-Control"]="private, no-store"
+    return {**quick_messages.listing(db,q,category,language,status,manage=True,offset=offset),"csrf_token":_csrf_token(request)}
+
+
+@app.post("/crm/quick-messages/api")
+@app.put("/crm/quick-messages/api/{quick_message_id}")
+async def quick_message_write(request: Request, quick_message_id: int | None = None,
+        db: Session = Depends(get_db), user: User = Depends(require_user)):
+    quick_messages.authorize(user,manage=True)
+    _require_csrf(request)
+    # Bound JSON before parsing, including chunked requests.
+    body=bytearray()
+    async with asyncio.timeout(10):
+        async for chunk in request.stream():
+            if len(body)+len(chunk)>16384:raise HTTPException(413,"Quick Message request is too large")
+            body.extend(chunk)
+    try:values=quick_messages.validate(json.loads(body))
+    except (ValueError,UnicodeError):raise HTTPException(400,"Invalid JSON") from None
+    row=db.get(WhatsAppQuickMessage,quick_message_id) if quick_message_id is not None else None
+    if quick_message_id is not None and row is None:raise HTTPException(404,"Quick Message not found")
+    if row is None:
+        row=WhatsAppQuickMessage(created_by=user.username)
+        db.add(row)
+    for key,value in values.items():setattr(row,key,value)
+    row.updated_by=user.username
+    try:db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,"Shortcut is already in use") from None
+    return JSONResponse({"message":quick_messages.serialize(row)},headers={"Cache-Control":"private, no-store"})
+
+
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/send")
 async def whatsapp_manual_send(conversation_id: int, request: Request,
                                db: Session = Depends(get_db), user: User = Depends(require_user)):
@@ -2323,12 +2379,26 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         raise HTTPException(status_code=422, detail="Message must contain 1–2000 characters")
     if not key or len(key) > 100:
         raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+    quick_message_id = payload.get("quick_message_id")
+    if quick_message_id is not None:
+        quick_messages.authorize(user)
+        _require_csrf(request)
+        if type(quick_message_id) is not int or quick_message_id < 1:
+            raise HTTPException(422,"Invalid Quick Message reference")
     existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
     if existing:
+        if (existing.conversation_id != conversation.id or existing.sent_by != user.username
+                or existing.message_text != body.strip() or existing.quick_message_id != quick_message_id):
+            raise HTTPException(409,"Idempotency key belongs to another request")
         return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
                             status_code=200 if existing.status == "SENT" else 409)
+    quick_messages.require_reply_window(db,conversation)
+    if quick_message_id is not None:
+        quick_message=db.get(WhatsAppQuickMessage,quick_message_id)
+        if quick_message is None or not quick_message.active:
+            raise HTTPException(409,"Quick Message is inactive or unavailable; choose an active reply")
     attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
-                                message_text=body.strip(), sent_by=user.username)
+                                message_text=body.strip(), sent_by=user.username,quick_message_id=quick_message_id)
     db.add(attempt)
     try:
         db.commit()
@@ -2343,6 +2413,8 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         attempt.status = "FAILED"
         db.commit()
         return JSONResponse({"ok": False, "error": "Meta could not send this message."}, status_code=502)
+    if quick_message_id is not None and (not isinstance(result,str) or not result.strip()):
+        return JSONResponse({"ok":False,"status":"PROCESSING","error":"Text send outcome is unconfirmed. Check the conversation before retrying."},status_code=503)
     message_id = result if isinstance(result, str) else None
     attempt.status = "SENT"
     attempt.whatsapp_message_id = message_id
@@ -2350,7 +2422,13 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         message_text=body.strip(), whatsapp_message_id=message_id, response_kind="staff",
         send_status="sent", sent_by=user.username))
     conversation.last_message_at = datetime.utcnow()
-    db.commit()
+    if quick_message_id is not None:
+        db.query(WhatsAppQuickMessage).filter_by(id=quick_message_id).update(
+            {"usage_count":WhatsAppQuickMessage.usage_count+1},synchronize_session=False)
+    try:db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+        return JSONResponse({"ok":False,"status":"PROCESSING","error":"Text send outcome is unconfirmed. Check the conversation before retrying."},status_code=503)
     return {"ok": True, "status": "SENT"}
 
 

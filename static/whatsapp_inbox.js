@@ -3,6 +3,7 @@
   const root = document.getElementById("inbox"), list = document.getElementById("conversation-list"), messages = document.getElementById("messages"), errorBox = document.getElementById("send-error"), statusBox = document.getElementById("send-status");
   let selected = Number(root.dataset.initial) || null, filter = new URLSearchParams(location.search).get("filter") || "all";
   let recorder, stream, timer, blob, blobUrl, started, duration, voiceKey, chunks = [], discard = false;
+  let textSending = false, textSendAttempt = null;
   let conversationController, conversationLoading = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null;
   const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
   const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
@@ -126,6 +127,19 @@
     // Only the scoped authenticated application endpoint can supply a preview.
     return card;
   }
+  function appendMessageText(element, value) {
+    const body = String(value || ""), pattern = /https:\/\/[^\s<>"']+/g; let start = 0;
+    for (const match of body.matchAll(pattern)) {
+      const candidate = match[0].replace(/[.,!?;]+$/, ""); let parsed;
+      try { parsed = new URL(candidate); } catch (_) { continue; }
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password) continue;
+      element.append(document.createTextNode(body.slice(start, match.index)));
+      const link = document.createElement("a"); link.href = candidate; link.textContent = candidate;
+      link.target = "_blank"; link.rel = "noopener noreferrer"; link.referrerPolicy = "no-referrer";
+      element.append(link); start = match.index + candidate.length;
+    }
+    element.append(document.createTextNode(body.slice(start)));
+  }
   function renderMessage(message) {
     const wrapper = document.createElement("div"), bubble = document.createElement("div"), metadata = document.createElement("small"); wrapper.className = `message ${message.direction}`; bubble.className = "bubble";
     if (message.product) {
@@ -136,7 +150,7 @@
       copy.append(title); if (variant.textContent) copy.append(variant); copy.append(price); if (link.href) copy.append(link); bubble.append(copy);
     } else if (message.message_type === "audio" && message.media_url) { bubble.classList.add("audio-bubble"); const label = document.createElement("span"), audio = document.createElement("audio"); text(label, `Voice message${message.duration_seconds ? ` · ${clock(message.duration_seconds)}` : ""}`); audio.controls = true; audio.preload = "metadata"; audio.src = message.media_url; bubble.append(label, audio); }
     else if (message.attachments?.length) { bubble.classList.add("attachment-bubble"); bubble.append(...message.attachments.map(renderAttachment)); }
-    else text(bubble, message.text);
+    else appendMessageText(bubble, message.text);
     wrapper.dataset.messageId = String(message.id); wrapper.dataset.contentKey = messageContentKey(message); metadata.className = "message-meta"; wrapper.dataset.status = message.status;
     text(metadata, messageMetadata(message));
     if (message.direction === "inbound" && message.referral) wrapper.append(renderReferral(message.referral));
@@ -162,7 +176,7 @@
     else if (anchorId) { const retained = messages.querySelector(`[data-message-id="${CSS.escape(anchorId)}"]`); if (retained) messages.scrollTop += retained.getBoundingClientRect().top - containerTop - anchorOffset; }
   }
   async function openConversation(id, markRead = false) {
-    if (selected !== id && window.inboxMediaBusy) return;
+    if (selected !== id && (window.inboxMediaBusy || textSending)) return;
     const switching = selected !== id; selected = id;
     root.dataset.activeConversation = String(id);
     if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
@@ -251,7 +265,22 @@
   document.getElementById("search").addEventListener("input", () => { clearTimeout(window._searchTimer); window._searchTimer = setTimeout(loadList, 250); });
   document.querySelectorAll("#filters button").forEach(button => { if (button.dataset.filter === filter) { document.querySelectorAll("#filters button").forEach(item => item.classList.remove("selected")); button.classList.add("selected"); } button.onclick = () => { filter = button.dataset.filter; document.querySelectorAll("#filters button").forEach(item => item.classList.toggle("selected", item === button)); loadList(); }; });
   document.getElementById("mode-action").onclick = async event => { if (!selected) return; event.currentTarget.disabled = true; try { await api(`/crm/whatsapp/api/conversations/${selected}/${event.currentTarget.dataset.mode === "AI" ? "takeover" : "return-to-ai"}`, {method: "POST"}); await openConversation(selected); } finally { event.currentTarget.disabled = false; } };
-  document.getElementById("composer").onsubmit = async event => { event.preventDefault(); const input = document.getElementById("message-input"), button = document.getElementById("send-button"), body = input.value.trim(); if (!selected) { showComposerMessage("Select a conversation first.", true); return; } if (!body) { showComposerMessage("Type a message before sending.", true); input.focus(); return; } button.disabled = true; text(button, "Sending…"); showComposerMessage("Sending message…"); try { await api(`/crm/whatsapp/api/conversations/${selected}/send`, {method: "POST", headers: {"Content-Type": "application/json", "Idempotency-Key": crypto.randomUUID()}, body: JSON.stringify({message: body})}); input.value = ""; showComposerMessage("Message sent."); await openConversation(selected); } catch (error) { showComposerMessage(error.message, true); } finally { button.disabled = false; text(button, "Send"); } };
+  document.getElementById("composer").onsubmit = async event => {
+    event.preventDefault(); if (textSending) return;
+    const input = document.getElementById("message-input"), button = document.getElementById("send-button"), body = input.value.trim(), target = selected;
+    if (!target) { showComposerMessage("Select a conversation first.", true); return; }
+    if (!body) { showComposerMessage("Type a message before sending.", true); input.focus(); return; }
+    const quickId = Number(input.dataset.quickMessageId) || null;
+    const signature = JSON.stringify([target, body, quickId]);
+    if (!textSendAttempt || textSendAttempt.signature !== signature) textSendAttempt = {signature, key: crypto.randomUUID()};
+    textSending = true; input.disabled = true; button.disabled = true; text(button, "Sending…"); showComposerMessage("Sending message…");
+    try {
+      await api(`/crm/whatsapp/api/conversations/${target}/send`, {method: "POST", headers: {"Content-Type": "application/json", "Idempotency-Key": textSendAttempt.key,
+        ...(quickId ? {"X-CSRF-Token": root.dataset.quickMessageCsrf || ""} : {})}, body: JSON.stringify({message: body, ...(quickId ? {quick_message_id: quickId} : {})})});
+      input.value = ""; delete input.dataset.quickMessageId; textSendAttempt = null; showComposerMessage("Message sent."); await openConversation(target);
+    } catch (error) { showComposerMessage(error.message, true); }
+    finally { textSending = false; input.disabled = false; button.disabled = false; text(button, "Send"); }
+  };
   document.getElementById("message-input").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); document.getElementById("composer").requestSubmit(); } });
   document.getElementById("record-button").onclick = startRecording; document.getElementById("stop-recording").onclick = () => { if (recorder?.state === "recording") recorder.stop(); }; document.getElementById("cancel-recording").onclick = () => { discard = true; if (recorder?.state === "recording") recorder.stop(); else resetRecording(); }; document.getElementById("delete-recording").onclick = resetRecording; document.getElementById("send-voice").onclick = sendVoice;
   document.getElementById("details-action").onclick = () => document.getElementById("details").classList.add("open"); document.getElementById("close-details").onclick = () => document.getElementById("details").classList.remove("open"); document.getElementById("back-list").onclick = () => root.classList.remove("chat-open");

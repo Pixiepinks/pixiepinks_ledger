@@ -601,6 +601,7 @@ class WhatsAppManualSend(Base):
     id = Column(Integer, primary_key=True)
     idempotency_key = Column(String(100), unique=True, nullable=False, index=True)
     conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), nullable=False)
+    quick_message_id = Column(Integer, ForeignKey("whatsapp_quick_messages.id", ondelete="RESTRICT"))
     message_text = Column(Text, nullable=False)
     status = Column(String(20), nullable=False, default="PROCESSING")
     whatsapp_message_id = Column(String(255))
@@ -750,3 +751,21 @@ class WhatsAppMediaSend(Base):
     message_id = Column(Integer, ForeignKey("whatsapp_conversation_messages.id", ondelete="RESTRICT"))
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WhatsAppQuickMessage(Base):
+    """Editable staff reply snippets, distinct from Meta-approved templates."""
+    __tablename__ = 'whatsapp_quick_messages'
+    id = Column(Integer, primary_key=True)
+    title = Column(String(100), nullable=False)
+    shortcut = Column(String(40), unique=True, nullable=False)
+    category = Column(String(80), nullable=False)
+    language = Column(String(2), nullable=False)
+    body = Column(Text, nullable=False)
+    active = Column(Boolean, nullable=False, default=True, server_default='1')
+    display_order = Column(Integer, nullable=False, default=0, server_default='0')
+    usage_count = Column(Integer, nullable=False, default=0, server_default='0')
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by = Column(String(100))
+    updated_by = Column(String(100))

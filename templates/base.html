@@ -6,7 +6,7 @@
   <title>{{ page_title or request.app.title }}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/crm.css?v=whatsapp-outbound-phase6b">
+  <link rel="stylesheet" href="/static/crm.css?v=whatsapp-quick-messages-phase7">
 </head>
 <body class="app-body{{ ' whatsapp-page' if request.url.path.startswith('/crm/whatsapp') else '' }}">
 {% if request.url.path != '/login' %}
@@ -20,6 +20,7 @@
       <a href="/dashboard" class="{{ 'active' if request.url.path == '/dashboard' else '' }}"><span>◫</span> Finance Overview</a>
       <p class="nav-label">Customer service</p>
       <a href="/crm/whatsapp" class="{{ 'active' if request.url.path.startswith('/crm/whatsapp') else '' }}"><span>◉</span> WhatsApp Inbox{% if unread_whatsapp %}<b class="nav-count">{{ unread_whatsapp }}</b>{% endif %}</a>
+      {% if user is defined and user.role in ["ADMIN", "SALES_MANAGER"] %}<a href="/crm/quick-messages" class="{{ 'active' if request.url.path.startswith('/crm/quick-messages') else '' }}"><span>☷</span> Quick Messages</a>{% endif %}
       <a href="/crm/leads" class="{{ 'active' if request.url.path.startswith('/crm/leads') else '' }}"><span>◎</span> CRM / Leads</a>
       <a href="/crm/bot-management" class="{{ 'active' if request.url.path.startswith('/crm/bot-management') else '' }}"><span>✦</span> AI Bot Management</a>
       <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>
