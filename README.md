@@ -180,6 +180,45 @@ Tests use isolated SQLite databases and, when `TEST_POSTGRESQL_URL` points to a
 dedicated `pixiepinks_test` database, temporary PostgreSQL schemas that are removed
 after validation. Never supply a production database URL for tests.
 
+### Phase 5B: staff-only advertisement referral cards
+
+The WhatsApp Inbox now displays a compact referral card immediately above its
+originating customer message. It shows available headline, short description,
+Ad/Post label and a validated source link. Source type does not identify Facebook
+versus Instagram. Missing fields are hidden; records containing only private or
+unusable values produce no card. Multiple advertisements remain attached to their
+own message rows rather than overwriting conversation-wide attribution.
+
+The authenticated conversation-detail API returns a `referral` object or `null`
+per message. Its only possible fields are `headline`, `body`, `source_type` and
+`source_url`. Stored display fields are revalidated on read, description text is
+capped at 300 characters, and responses use `Cache-Control: private, no-store`.
+The query fetches public display columns in one batch; it does not load `ctwa_clid`,
+source IDs or raw creative URLs for serialization. Referral text is inserted with
+DOM `textContent`, never HTML. Source links are checked on both server and browser,
+require HTTPS on the allowed Meta source hosts, reject credentials/private query
+parameters, and open with noopener/noreferrer and no referrer.
+
+Cards are deliberately **text-only**. Stored advertisement image/video/thumbnail
+URLs have no existing authenticated creative-preview proxy and may expire; they
+are neither returned by this API nor embedded or fetched by the browser. A future
+secure retrieval implementation is needed before thumbnails can be displayed.
+Existing customer-image, video, document and audio media controls are unchanged.
+Inbox polling includes referral content in reconciliation so cards remain bound
+to their original messages while unchanged media elements keep playing.
+
+No database migration, webhook/attribution rewrite, AI context or response change,
+Shopify matching change, live configuration change or external media request is
+introduced. The existing Phase 5A schema head remains `20261024_10`. Asset versions
+are refreshed for the updated inbox JS/CSS.
+
+`tests/test_whatsapp_referral_cards.py` covers API security, privacy, missing and
+multiple referrals, invalid stored links and media metadata. Its optional Chromium
+test also checks actual DOM injection safety, correct card placement, link handling,
+no advertisement-media fetches, polling retention and mobile overflow. To run that
+browser check, install Playwright into a development/test environment and provide
+`chromium` or `chromium-browser`; no browser dependency is added to production.
+
 ## CRM and customer-service workspace
 
 The authenticated `/crm` area is an operational workspace built into the existing
