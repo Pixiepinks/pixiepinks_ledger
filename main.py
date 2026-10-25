@@ -33,6 +33,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 import outbound_media_service as outbound_media
 import quick_message_service as quick_messages
 from phone_country_service import phone_country
+from whatsapp_reply_service import extract_reply_id, reply_previews
 from sqlalchemy import func, inspect, text, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -325,6 +326,7 @@ def _store_conversation_message(
     created_at: datetime | None = None,
     attachment_metadata: dict | None = None,
     referral_metadata: dict | None = None,
+    reply_to_whatsapp_message_id: str | None = None,
     processed_record: ProcessedWhatsAppMessage | None = None,
 ) -> str:
     processed_message_id = processed_record.message_id if processed_record is not None else None
@@ -340,6 +342,7 @@ def _store_conversation_message(
                 direction=direction,
                 message_text=message_text,
                 whatsapp_message_id=whatsapp_message_id,
+                reply_to_whatsapp_message_id=reply_to_whatsapp_message_id,
                 response_kind=response_kind,
                 media_id=media_id,
                 media_mime_type=media_mime_type,
@@ -481,6 +484,18 @@ def _store_product_message(message_id: str | None, phone: str, product: dict) ->
         logger.info("Outbound product mapping already exists message_id=%s", message_id)
     except SQLAlchemyError:
         logger.exception("Could not store outbound product mapping message_id=%s", message_id)
+
+
+def _send_text_with_id(sender: str, text: str):
+    """Use the existing sender while retaining real provider IDs for later quotes."""
+    try:
+        return send_whatsapp_text(sender, text, return_message_id=True)
+    except TypeError:  # Compatibility with existing injected two-argument senders.
+        return send_whatsapp_text(sender, text)
+
+
+def _real_message_id(result):
+    return result if isinstance(result, str) and result.strip() else None
 
 
 def _send_product_message(sender: str, product: dict, text: str) -> str | None:
@@ -1076,8 +1091,8 @@ def _reply_to_text_message(
             products = products[:snapshot["global"]["maximum_products"]]
         if image_reply_language in {"si", "mixed"}:
             intro = _image_copy("bicycle_options", image_reply_language)
-        sent = send_whatsapp_text(sender, intro)
-        _store_conversation_message(sender, "outbound", intro, customer_name=profile_name,
+        sent = _send_text_with_id(sender, intro)
+        _store_conversation_message(sender, "outbound", intro, customer_name=profile_name, whatsapp_message_id=_real_message_id(sent),
                                     response_kind="image_bicycle" if image_reply_language else "bicycle")
         for product in products:
             if image_reply_language and not _image_can_reply(sender):
@@ -1085,27 +1100,27 @@ def _reply_to_text_message(
             product_text = format_bicycle_product(product)
             if image_reply_language and not snapshot["global"].get("send_product_images", True):
                 product = {**product, "featured_image_verified": False}
-            _send_product_message(sender, product, product_text)
-            _store_conversation_message(sender, "outbound", product_text,
+            product_message_id = _send_product_message(sender, product, product_text)
+            _store_conversation_message(sender, "outbound", product_text, whatsapp_message_id=product_message_id,
                                         customer_name=profile_name, response_kind="bicycle_product")
         follow_up = (_image_copy("more", image_reply_language) if image_reply_language else
                      "Would you like more options, or to filter by colour, brand or budget?")
         if image_reply_language and not _image_can_reply(sender):
             return
-        send_whatsapp_text(sender, follow_up)
-        _store_conversation_message(sender, "outbound", follow_up,
+        follow_up_id = _send_text_with_id(sender, follow_up)
+        _store_conversation_message(sender, "outbound", follow_up, whatsapp_message_id=_real_message_id(follow_up_id),
                                     customer_name=profile_name, response_kind="image_bicycle" if image_reply_language else "bicycle")
         logger.info("WhatsApp bicycle results sent count=%s message_id=%s sender=%s",
                     len(products), message_id, sender)
         return
     if product_image_delivery:
-        send_whatsapp_text(sender, reply)
-        _store_conversation_message(sender, "outbound", reply, customer_name=profile_name,
+        reply_id = _send_text_with_id(sender, reply)
+        _store_conversation_message(sender, "outbound", reply, whatsapp_message_id=_real_message_id(reply_id), customer_name=profile_name,
                                     response_kind="product_images")
         for product in product_image_delivery:
             product_text = format_product(product)
-            _send_product_message(sender, product, product_text)
-            _store_conversation_message(sender, "outbound", product_text,
+            product_message_id = _send_product_message(sender, product, product_text)
+            _store_conversation_message(sender, "outbound", product_text, whatsapp_message_id=product_message_id,
                                         customer_name=profile_name,
                                         response_kind="product_image")
         logger.info("WhatsApp product images sent count=%s message_id=%s sender=%s",
@@ -1118,10 +1133,10 @@ def _reply_to_text_message(
             reply = _image_copy("gender", image_reply_language)
         elif "How old is" in reply or "child's age" in reply:
             reply = _image_copy("age", image_reply_language)
-    sent = send_whatsapp_text(sender, reply)
+    sent = _send_text_with_id(sender, reply)
     logger.info("WhatsApp outbound result=%s message_id=%s sender=%s", sent, message_id, sender)
     _store_conversation_message(
-        sender, "outbound", reply, customer_name=profile_name,
+        sender, "outbound", reply, customer_name=profile_name, whatsapp_message_id=_real_message_id(sent),
         response_kind="image_bicycle" if image_reply_language and response_kind != "handover" else response_kind
     )
     with SessionLocal() as db:
@@ -1172,8 +1187,9 @@ def _send_image_reply(sender: str, reply: str, profile_name: str | None, kind: s
     try:
         if not _image_can_reply(sender):
             return
-        if send_whatsapp_text(sender, reply[:1200]):
-            _store_conversation_message(sender, "outbound", reply[:1200], customer_name=profile_name, response_kind=kind)
+        sent = _send_text_with_id(sender, reply[:1200])
+        if sent:
+            _store_conversation_message(sender, "outbound", reply[:1200], customer_name=profile_name, response_kind=kind, whatsapp_message_id=_real_message_id(sent))
     except Exception:
         logger.warning("Image reply delivery unavailable")
 
@@ -1278,8 +1294,8 @@ def _reply_to_image_message(sender: str, message_id: str, profile_name: str | No
                 return
             product_text = format_product(product)
             if snapshot["global"].get("send_product_images", True):
-                _send_product_message(sender, product, product_text)
-                _store_conversation_message(sender, "outbound", product_text, customer_name=profile_name, response_kind="image_product")
+                product_message_id = _send_product_message(sender, product, product_text)
+                _store_conversation_message(sender, "outbound", product_text, customer_name=profile_name, response_kind="image_product", whatsapp_message_id=product_message_id)
             else:
                 _send_image_reply(sender, product_text, profile_name, "image_product")
     except Exception:
@@ -1291,7 +1307,7 @@ def _reply_to_image_message(sender: str, message_id: str, profile_name: str | No
 
 
 def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
-    sent = send_whatsapp_text(sender, UNSUPPORTED_MESSAGE_REPLY)
+    sent = _send_text_with_id(sender, UNSUPPORTED_MESSAGE_REPLY)
     logger.info("WhatsApp unsupported-message outbound result=%s sender=%s", sent, sender)
     _store_conversation_message(
         sender,
@@ -1299,6 +1315,7 @@ def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
         UNSUPPORTED_MESSAGE_REPLY,
         customer_name=profile_name,
         response_kind="unsupported",
+        whatsapp_message_id=_real_message_id(sent),
     )
 
 
@@ -1399,6 +1416,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     processed_at=datetime.utcnow(),
                 )
                 referral_metadata = extract_referral(message)
+                reply_id = extract_reply_id(message)
                 profile_name = profile_names.get(sender)
                 profile_name = profile_name[:255] if isinstance(profile_name, str) else None
                 if message_type in INCOMING_MEDIA_TYPES:
@@ -1414,7 +1432,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                             media_id=metadata["media_id"] if is_audio and metadata else None,
                             media_mime_type=metadata.get("mime_type") if is_audio and metadata else None,
                             created_at=received_at, attachment_metadata=metadata,
-                            referral_metadata=referral_metadata, processed_record=record,
+                            referral_metadata=referral_metadata, reply_to_whatsapp_message_id=reply_id, processed_record=record,
                         )
                     if result == "failed":
                         raise HTTPException(status_code=503, detail="Media metadata registration unavailable")
@@ -1439,7 +1457,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                             sender, "inbound", cleaned_body or f"{message_type.title()} message",
                             customer_name=profile_name, whatsapp_message_id=message_id,
                             created_at=received_at, referral_metadata=referral_metadata,
-                            processed_record=record,
+                            reply_to_whatsapp_message_id=reply_id, processed_record=record,
                         )
                     if result == "duplicate":
                         continue
@@ -1459,11 +1477,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                             db.rollback()
                             logger.error("Could not record WhatsApp message")
                             raise HTTPException(status_code=503, detail="Message registration unavailable") from None
-                message_context = message.get("context")
-                context_message_id = (message_context.get("id")
-                                      if isinstance(message_context, dict) else None)
-                if not isinstance(context_message_id, str) or not context_message_id:
-                    context_message_id = None
+                context_message_id = reply_id
                 logger.info(
                     "WhatsApp inbound message_id=%s sender=%s type=%s profile_name=%s",
                     message_id,
@@ -2040,6 +2054,7 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
         sales_order = sales_order_query.order_by(
             SalesOrder.updated_at.desc(), SalesOrder.id.desc()
         ).first()
+    replies_by_message = reply_previews(db, conversation, messages)
     message_data = [{
         "id": item.id,
         "direction": item.direction, "text": item.message_text,
@@ -2052,6 +2067,7 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
                       if item.media_id else None),
         "attachments": attachments_by_message.get(item.id, []),
         "referral": referrals_by_message.get(item.id),
+        "reply_context": replies_by_message.get(item.id),
         "product": ({"title": item.product_title, "variant": item.variant_title,
                      "sku": item.product_sku, "price": float(item.product_price),
                      "currency": item.product_currency or "LKR", "image": item.product_image_url,
