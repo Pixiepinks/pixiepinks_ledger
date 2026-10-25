@@ -2287,6 +2287,10 @@ async def whatsapp_send_media(conversation_id: int, request: Request,
         data = await run_in_threadpool(outbound_media.validate_file, raw, upload.filename, caption)
         with private_image_processing():
             result = await run_in_threadpool(outbound_media.perform_send, db, conversation, user, key, raw, data)
+        if result.get('upload_failure'):
+            failure = result['upload_failure']
+            logger.warning('WhatsApp staff upload failed reason=%s http_status=%s meta_code=%s meta_subcode=%s',
+                failure['reason'], failure['http_status'], failure['meta_code'], failure['meta_error_subcode'])
         return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
     except TimeoutError:
         raise HTTPException(408, "Attachment upload timed out") from None
