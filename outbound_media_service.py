@@ -4,6 +4,8 @@ No customer send is retried automatically after a durable SENDING claim.
 """
 import hashlib
 import json
+import logging
+import os
 import re
 import subprocess
 import sys
@@ -30,6 +32,20 @@ FORMATS = {
     '.txt': ('document', 'text/plain'),
 }
 STAFF_ROLES = {'ADMIN', 'SALES_MANAGER', 'SALES_AGENT', 'STAFF'}
+logger = logging.getLogger(__name__)
+
+
+class ValidationUnavailable(Exception):
+    """The local validator could not start; no upload or customer send occurred."""
+
+
+def _validator_environment():
+    # Nixpacks provides PyAV's C++ runtime via this loader path. Keep only that
+    # trusted deployment setting, never application credentials or Python hooks.
+    environment = {'PATH': '/usr/bin:/bin'}
+    if os.environ.get('LD_LIBRARY_PATH'):
+        environment['LD_LIBRARY_PATH'] = os.environ['LD_LIBRARY_PATH']
+    return environment
 
 
 def authorize(user):
@@ -71,11 +87,19 @@ def validate_file(raw, filename, caption):
     try:
         result = subprocess.run([sys.executable, '-I', str(Path(__file__).with_name('outbound_media_validation.py'))],
             input=extension.encode('ascii') + b'\n' + raw, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, timeout=10, check=True, env={'PATH': '/usr/bin:/bin'})
+            stderr=subprocess.DEVNULL, timeout=10, check=True, env=_validator_environment())
         metadata = json.loads(result.stdout)
         if not isinstance(metadata, dict) or set(metadata) - {"duration_seconds"}:
             raise ValueError()
-    except (subprocess.SubprocessError, ValueError, OSError):
+    except subprocess.CalledProcessError as error:
+        if error.returncode == 70:
+            logger.warning('Outbound attachment validator unavailable: runtime dependency')
+            raise ValidationUnavailable() from None
+        raise HTTPException(422, 'The attachment is corrupt, unsupported, encrypted or exceeds processing limits') from None
+    except OSError:
+        logger.warning('Outbound attachment validator unavailable: process launch')
+        raise ValidationUnavailable() from None
+    except (subprocess.SubprocessError, ValueError):
         raise HTTPException(422, 'The attachment is corrupt, unsupported, encrypted or exceeds processing limits') from None
     return {'filename': filename, 'media_type': kind, 'mime_type': mime, 'caption': caption.strip(),
             'sha256': hashlib.sha256(raw).hexdigest(), 'file_size_bytes': len(raw), **metadata}

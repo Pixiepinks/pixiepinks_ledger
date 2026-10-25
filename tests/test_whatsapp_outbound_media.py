@@ -240,7 +240,7 @@ def test_meta_protocol_and_uncertain_response(monkeypatch,caplog):
     assert service.send_media('94770000001','uploaded',data)==('SEND_FAILED',None)
 
 
-def test_chromium_selection_send_refresh_and_customer_switch(inbox):
+def test_chromium_selection_send_refresh_and_customer_switch(inbox,monkeypatch):
     playwright=pytest.importorskip('playwright.sync_api')
     chromium=shutil.which('chromium')
     if not chromium: pytest.skip('Chromium unavailable')
@@ -265,6 +265,14 @@ def test_chromium_selection_send_refresh_and_customer_switch(inbox):
             page.locator('#attachment-file').set_input_files({'name':'photo.png','mimeType':'text/html','buffer':png()})
             assert page.locator('#attachment-preview img').is_visible()
             page.locator('#attachment-caption').fill('<caption> Staff photo')
+            validate=service.validate_file
+            monkeypatch.setattr(service,'validate_file',Mock(side_effect=service.ValidationUnavailable()))
+            page.locator('#attachment-send').click()
+            page.wait_for_function('document.getElementById("attachment-status").textContent.includes("No message was sent")')
+            assert page.locator('#attachment-send').is_enabled()
+            assert page.locator('#attachment-check').is_hidden() and not sends and not uploads
+            assert page.evaluate('Object.keys(sessionStorage).filter(key=>key.startsWith("whatsapp-media:")).length')==0
+            monkeypatch.setattr(service,'validate_file',validate)
             page.locator('#attachment-send').click()
             page.wait_for_function('document.getElementById("attachment-status").textContent.startsWith("Attachment sent")')
             assert len(uploads)==len(sends)==1
@@ -383,3 +391,71 @@ def test_database_failure_before_send_does_not_contact_customer(inbox,monkeypatc
     assert not sends and len(uploads)==1
     assert post().json()['status']=='UPLOADING'
     assert not sends and len(uploads)==1
+
+
+def test_validator_preserves_only_native_runtime_environment(monkeypatch):
+    import os
+    runtime='/nix/store/reviewed-gcc-runtime/lib'
+    for key,value in {'LD_LIBRARY_PATH':runtime,'META_WHATSAPP_ACCESS_TOKEN':'private-token',
+                      'DATABASE_URL':'private-db','PYTHONPATH':'untrusted-python','LD_PRELOAD':'untrusted-preload'}.items():
+        monkeypatch.setenv(key,value)
+    calls=[]
+    def run(*args,**kwargs):
+        calls.append(kwargs)
+        return service.subprocess.CompletedProcess(args[0],0,stdout=b'{}')
+    monkeypatch.setattr(service.subprocess,'run',run)
+    assert service.validate_file(png(),'photo.png','')['mime_type']=='image/png'
+    assert calls[0]['env']=={'PATH':'/usr/bin:/bin','LD_LIBRARY_PATH':runtime}
+    monkeypatch.delenv('LD_LIBRARY_PATH')
+    assert service._validator_environment()=={'PATH':'/usr/bin:/bin'}
+
+
+def test_missing_validator_runtime_is_not_reported_as_corrupt(inbox,monkeypatch,caplog):
+    client,sessions,_,post,uploads,sends=inbox
+    assert 'whatsapp_outbound_media.js?v=whatsapp-outbound-runtime-fix' in client.get('/crm/whatsapp').text
+    original=service.subprocess.run
+    monkeypatch.setattr(service.subprocess,'run',Mock(side_effect=service.subprocess.CalledProcessError(
+        70,['private-runtime-path'],stderr=b'private-diagnostic-token')))
+    response=post()
+    assert response.status_code==503 and response.json()['status']=='VALIDATION_UNAVAILABLE'
+    assert response.json()['retry_safe'] is True and 'No message was sent' in response.json()['error']
+    assert 'corrupt' not in response.text and 'private-' not in response.text
+    assert 'runtime dependency' in caplog.text and 'private-' not in caplog.text
+    assert not uploads and not sends
+    with sessions() as db:
+        assert db.query(WhatsAppMediaSend).count()==db.query(WhatsAppConversationMessage).count()==0
+    monkeypatch.setattr(service.subprocess,'run',original)
+    assert post().json()['status']=='SENT'  # No claim was consumed on validation startup failure.
+
+
+def test_real_pyav_worker_with_nix_style_native_library_lookup(tmp_path,monkeypatch):
+    """Real isolated PyAV, with standard library search disabled on disposable copies.
+
+    Nix supplies the C++ runtime in LD_LIBRARY_PATH rather than system defaults.
+    Reproduce that dependency without a Nix install or changes to system libraries.
+    """
+    import sys
+    import sysconfig
+    from pathlib import Path
+    patcher=shutil.which('patchelf') or str(Path(sys.executable).parent/'patchelf')
+    runtime=Path('/lib')/str(sysconfig.get_config_var('MULTIARCH'))
+    if not Path(patcher).is_file() or not (runtime/'libstdc++.so.6').is_file():
+        pytest.skip('ELF loader regression requires patchelf and the native C++ runtime')
+    environment=tmp_path/'runtime-venv'
+    service.subprocess.run([sys.executable,'-m','venv','--without-pip',str(environment)],check=True)
+    site=environment/'lib/python3.12/site-packages'
+    package=Path(av.__file__).resolve().parent
+    shutil.copytree(package,site/'av');shutil.copytree(package.parent/'av.libs',site/'av.libs')
+    for library in (site/'av.libs').glob('*.so*'):
+        service.subprocess.run([patcher,'--no-default-lib',str(library)],check=True)
+    interpreter=str(environment/'bin/python')
+    worker=str(Path(service.__file__).with_name('outbound_media_validation.py'))
+    result=service.subprocess.run([interpreter,'-I',worker],input=b'.png\n'+png(),
+        env={'PATH':'/usr/bin:/bin'},capture_output=True,timeout=10)
+    assert result.returncode==70 and result.stdout==b'' and result.stderr==b''
+    monkeypatch.setattr(sys,'executable',interpreter)
+    monkeypatch.setenv('LD_LIBRARY_PATH',str(runtime))
+    assert service.validate_file(png(),'photo.png','')['mime_type']=='image/png'
+    assert service.validate_file(jpeg(),'photo.jpg','')['mime_type']=='image/jpeg'
+    with pytest.raises(main.HTTPException) as error:service.validate_file(b'not an image','bad.png','')
+    assert error.value.status_code==422

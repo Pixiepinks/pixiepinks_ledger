@@ -103,6 +103,9 @@
     xhr.onload = () => {
       let data; try { data = JSON.parse(xhr.responseText); } catch (_) { data = {}; }
       if (xhr.status >= 200 && xhr.status < 300 || data.status === "OUTCOME_UNCERTAIN") renderOutcome(data);
+      else if (xhr.status === 503 && data.status === "VALIDATION_UNAVAILABLE") {
+        remember(null); operation = null; message(data.error); check.hidden = true;
+      }
       else if ([400, 403, 404, 408, 413, 415, 422, 429].includes(xhr.status)) {
         remember(null); operation = null; message(data.detail || "Attachment request rejected. Review the file and try again.");
       } else { message(data.detail || "Send result is unavailable. Check status and the conversation before trying again."); check.hidden = false; }

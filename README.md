@@ -985,3 +985,16 @@ and outbound concurrency tests passed. Requirements-only Python **3.12.14**
 startup/restart and authenticated Inbox/policy checks passed on both SQLite and
 PostgreSQL for each phase, with `pip check` clean. Live Meta upload/send and actual
 customer delivery are untested; no credentials or production changes were used.
+
+Outbound validator runtime fix: Nixpacks supplies PyAV's native C++ runtime through
+`LD_LIBRARY_PATH` (see `nixpacks.toml`). Disposable upload validators preserve
+that trusted deployment value alongside a fixed PATH, while excluding tokens,
+database credentials, Python hooks and preload settings. Clearing the loader
+path incorrectly rejected valid images on such deployments. Missing worker
+imports/launch failures now produce a private 503 `VALIDATION_UNAVAILABLE` response
+before any Meta upload or send claim, with a safe category-only server warning.
+The composer retains the selected file for a manual retry, clears the unused
+receipt and does not automatically send. Corrupt content still returns 422 and
+all processing/content/security limits remain enforced. A real PyAV ELF-loader
+regression uses disposable library copies with default library lookup disabled;
+it requires development-only `patchelf` (never a production dependency).

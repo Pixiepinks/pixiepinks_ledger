@@ -2290,6 +2290,10 @@ async def whatsapp_send_media(conversation_id: int, request: Request,
         return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
     except TimeoutError:
         raise HTTPException(408, "Attachment upload timed out") from None
+    except outbound_media.ValidationUnavailable:
+        return JSONResponse({"ok": False, "status": "VALIDATION_UNAVAILABLE", "retry_safe": True,
+            "error": "Attachment validation is temporarily unavailable. No message was sent. Try again later."},
+            status_code=503, headers={"Cache-Control": "private, no-store"})
     except SQLAlchemyError:
         db.rollback()
         # A remote send may have completed. The durable claim blocks retransmission.
