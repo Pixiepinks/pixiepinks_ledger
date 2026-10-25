@@ -36,8 +36,8 @@ def test_inbox_requires_authentication_and_renders_for_staff():
     response = authenticated_client().get("/crm/whatsapp")
     assert response.status_code == 200
     assert 'class="app-body whatsapp-page"' in response.text
-    assert '/static/crm.css?v=whatsapp-outbound-phase6b' in response.text
-    assert '/static/whatsapp_inbox.js?v=whatsapp-outbound-phase6b' in response.text
+    assert '/static/crm.css?v=whatsapp-quick-messages-phase7' in response.text
+    assert '/static/whatsapp_inbox.js?v=whatsapp-quick-messages-phase7' in response.text
     assert 'id="send-button">Send</button>' in response.text
     assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
     assert all(control in response.text for control in (
@@ -90,7 +90,7 @@ def test_conversation_order_search_unread_and_selected_read():
 
 def test_takeover_return_and_manual_send_idempotency(monkeypatch):
     with SessionLocal() as db:
-        conversation = WhatsAppConversation(phone_number="94770000003", customer_name="Kumari")
+        conversation = WhatsAppConversation(last_customer_message_at=datetime.utcnow(), phone_number="94770000003", customer_name="Kumari")
         db.add(conversation); db.commit(); conversation_id = conversation.id
     client = authenticated_client()
     assert client.post(f"/crm/whatsapp/api/conversations/{conversation_id}/takeover").json()["mode"] == "HUMAN"
@@ -109,7 +109,7 @@ def test_takeover_return_and_manual_send_idempotency(monkeypatch):
 
 def test_manual_send_failure_is_not_persisted_as_success(monkeypatch):
     with SessionLocal() as db:
-        conversation = WhatsAppConversation(phone_number="94770000004")
+        conversation = WhatsAppConversation(last_customer_message_at=datetime.utcnow(), phone_number="94770000004")
         db.add(conversation); db.commit(); conversation_id = conversation.id
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args, **kwargs: False)
     response = authenticated_client().post(f"/crm/whatsapp/api/conversations/{conversation_id}/send",
@@ -121,7 +121,7 @@ def test_manual_send_failure_is_not_persisted_as_success(monkeypatch):
 
 def test_manual_send_preserves_multiline_text(monkeypatch):
     with SessionLocal() as db:
-        conversation = WhatsAppConversation(phone_number="94770000014")
+        conversation = WhatsAppConversation(last_customer_message_at=datetime.utcnow(), phone_number="94770000014")
         db.add(conversation); db.commit(); conversation_id = conversation.id
     delivered = []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda phone, text, **kwargs: delivered.append(text) or "wamid.multiline")

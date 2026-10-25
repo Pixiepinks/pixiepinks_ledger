@@ -328,7 +328,7 @@ def test_additive_migration_and_postgresql_concurrent_send(tmp_path,monkeypatch,
             user=User(username='pg-staff',password_hash='not-a-login');db.add_all([conversation,user]);db.commit();cid,uid=conversation.id,user.id
             db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number,direction='inbound',message_text='Preserved history'));db.commit()
         config=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
-        command.stamp(config,'20261024_10');command.upgrade(config,'head');command.upgrade(config,'head')
+        command.stamp(config,'20261024_10');command.upgrade(config,'20261025_11');command.upgrade(config,'20261025_11')
         with engine.connect() as conn:assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar()=='20261025_11'
         actual=inspect(engine)
         assert actual.get_unique_constraints('whatsapp_media_sends')[0]['column_names']==['idempotency_key']

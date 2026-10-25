@@ -1019,3 +1019,78 @@ message sending is not automatically sent again; existing retry protection stays
 in force. Production access logs alone cannot establish the exact Meta rejection
 or response encoding from an earlier attempt; a fresh attempt's safe diagnostic
 will distinguish a provider rejection from a malformed response or transport issue.
+
+### Phase 7 — Staff Quick Messages
+
+The Inbox **Quick Messages** button opens a searchable, category-grouped reply
+picker with English/Sinhala filtering. Selecting a reply replaces the current
+composer text; staff can edit it and must separately press Send. Nothing is sent
+on selection, list/search requests, or shortcut expansion. A whole-composer slash
+command such as `/website`, `/delivery`, `/orderinfo` or `/thankyou` opens matching
+choices; Enter/Tab inserts the highlighted choice, with an exact shortcut match
+preferred. Ordinary sentences, URLs, IME composition and embedded slashes are not
+expanded. Escape closes the picker. A selected Quick Message draft is discarded
+when switching customers, and switching is blocked while the existing text-send
+request is in flight. Media/recording controls retain ownership of their composer.
+
+**Customer service → Quick Messages** provides create/edit, activation, category,
+title, unique shortcut, language, body, order, usage, search/filtering and paging.
+Existing `ADMIN` and `SALES_MANAGER` roles can manage replies; `STAFF` and
+`SALES_AGENT` can use active replies. No existing staff role is changed. All new
+endpoints require authenticated access; management writes and Quick Message sends
+require the session CSRF token. Input is bounded (title 100, shortcut 40, category
+80, body 2,000 characters; 16 KiB management requests), normalized shortcuts are
+case-insensitively unique, and usage/audit fields cannot be supplied by the client.
+Stored strings are rendered as plain text, with safe HTTPS links in text messages;
+no saved HTML is executed. URLs passed to Meta remain unchanged. WhatsApp controls
+link recognition/previews; no automatic link preview is promised.
+
+Quick Messages are staff snippets, **not Meta-approved message templates**. They
+use the existing authenticated text-send endpoint/provider function, message
+history and delivery callbacks. The shared manual-text endpoint now checks the
+24-hour customer-service window before any new send, including ordinary text so
+removing the Quick Message reference cannot bypass it. Only a customer timestamp
+(or actual inbound history for legacy conversations) establishes that window;
+outbound messages do not extend it. This Inbox has no approved-Meta-template send
+workflow: outside the window it rejects free-form sends and staff must wait for a
+customer reply or use an approved-template workflow outside this Inbox. Selection
+never changes AI/HUMAN mode or invokes AI, Shopify, order or fulfillment actions.
+
+Usage is the number of **Meta-accepted sends attributed to a reply**, including
+staff-edited text. Selection does not count. A source reference is stored on the
+existing unique manual-send receipt. Success history, receipt state and an atomic
+`usage_count + 1` update commit together; failed/ambiguous sends and rolled-back
+transactions do not increment usage. Duplicate/replayed sends do not count again.
+Retries preserve the request key, scoped to staff, conversation, source and text;
+uncertain outcomes must be reconciled rather than blindly resent. Delivery/read
+callbacks retain existing behavior and do not change attribution counts.
+
+Migration **`20261025_12`** adds `whatsapp_quick_messages` and a nullable,
+RESTRICT-protected `quick_message_id` on `whatsapp_manual_sends`. Existing receipts
+retain null attribution and all existing history is preserved. Four suggested
+English replies are inserted once and remain editable/deactivatable; upgrades or
+restarts do not reset edits or usage. Both direct upgrades and ORM-first startup
+are supported on SQLite and PostgreSQL. No live data/configuration is modified by
+development checks. Destructive downgrade is deliberately blocked to retain saved
+replies, counts and attribution: roll back application behavior with this revision
+retained in the migration graph, rather than deleting staff data. No delete API is
+provided; deactivate a reply when it should no longer be offered.
+
+Regression coverage includes management/auth/CSRF, multilingual content, literal
+search and filters, concurrent duplicate creation and sends, atomic usage, rollback,
+window restrictions, real Chromium selection/editing/shortcuts/URLs/XSS/customer
+switching/management, and direct/ORM-first SQLite/PostgreSQL migrations. Upstream
+Meta calls are mocked and databases isolated; live customer delivery is not tested.
+
+Phase 7 validation (2026-10-25; baseline
+`d6a732162863d47346597f49044305bc7dca9789`): **47 focused tests passed**,
+including Chromium, rollback and actual PostgreSQL concurrency/migration checks.
+Full feature suite: **782 passed, 2 failed, 2 skipped**. Unchanged-main full suite:
+**749 passed, 2 failed, 2 skipped**. Both failures are the pre-existing
+`test_postgresql_concurrent_payment_claim_is_created_once` and
+`test_postgresql_concurrent_duplicate_delivery_is_processed_once` races; their
+business services remain unchanged. The two SQLite-primary skips (fulfillment and
+draft retry concurrency) both passed separately on isolated PostgreSQL.
+Requirements-only Python **3.12.14** startup/restart and authenticated Inbox,
+management and picker API checks passed on fresh SQLite and isolated PostgreSQL,
+with `pip check` clean. No live Meta/customer delivery was exercised.
