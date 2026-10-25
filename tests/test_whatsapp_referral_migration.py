@@ -91,7 +91,7 @@ def test_postgresql_alembic_upgrade_and_atomic_capture(monkeypatch, orm_first):
             db.commit()
         config = Config(str(Path(__file__).resolve().parents[1] / 'alembic.ini'))
         command.stamp(config, '20261024_09')
-        command.upgrade(config, 'head'); command.upgrade(config, 'head')
+        command.upgrade(config, '20261024_10'); command.upgrade(config, '20261024_10')
         with engine.connect() as connection:
             assert connection.execute(text('SELECT version_num FROM alembic_version')).scalar() == '20261024_10'
             assert connection.execute(text('SELECT message_text FROM whatsapp_conversation_messages')).scalar() == 'Existing PostgreSQL history'

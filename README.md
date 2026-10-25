@@ -879,3 +879,61 @@ requests a new preflight with a different idempotency key. Retirement uses a dat
 the original request snapshot and fingerprint with status `EXPIRED`, and releases only its active-operation
 slot. Any operation that was approved, claimed, attempted, synchronized, or requires reconciliation is
 never retired or retried by this path. No schema migration is required for this recovery behavior.
+
+### WhatsApp outbound staff attachments — Phase 6A
+
+The Inbox paperclip offers Photos (JPEG/PNG) and Documents (PDF), with a local
+preview, optional caption (1,024 characters), removal and upload/send progress.
+Staff can send in AI or HUMAN mode within WhatsApp's 24-hour customer reply
+window; the action does not switch modes or invoke AI. Videos/additional Office
+formats are a separate Phase 6B change. Existing authenticated attachment
+retrieval, timeline rendering and Meta delivery-status updates serve outbound
+attachments too. No uploaded files are placed in public static storage.
+
+`WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES` defaults to 4 MiB (hard ceiling 5,000,000
+bytes). `WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES` defaults to 8 MiB (hard ceiling
+16,000,000 bytes, also below the existing authenticated download cap). Defaults
+require no configuration changes. Existing Meta token/phone/API configuration
+and messaging permission are reused. Do not expose these credentials to the
+browser. Provider support/reply-window errors remain authoritative.
+
+Requests require an existing staff login, an allowed CRM staff role, a session
+CSRF token and an idempotency key. The entire multipart request is bounded,
+including requests without Content-Length, with a 45-second read deadline and
+four active uploads per application worker. Extensions select server-owned MIME
+types; browser MIME labels are ignored. Content is parsed in a fresh subprocess
+(10-second wall timeout, 5 CPU seconds, 512 MiB address space). Images must decode
+as JPEG/PNG and stay within 20 million pixels; PNG CRCs are checked. PDFs must
+parse, be unencrypted, and contain at most 1,000 pages. Documents are never
+rendered or executed. File bytes exist only in bounded memory/temporary multipart
+spools, which are closed after the request. There is no permanent local retention
+or antivirus guarantee. Sensitive provider diagnostics and content are not logged.
+
+Migration `20261025_11` adds only `whatsapp_media_sends`, containing unique durable
+claims, staff/conversation references, a content fingerprint, state, uploaded Meta
+media ID and the successful local message reference. It preserves all existing
+history and works with direct Alembic upgrades and ORM-first startup. Retain this
+migration in the Alembic graph during application rollback. Destructive downgrade
+is intentionally blocked because deleting receipts can permit duplicate sends.
+
+Upload and customer send are separate operations. Meta uploads can be orphaned
+when a send fails; no permanent local file is retained or automatic Meta deletion
+attempted. Only a real provider message ID creates a successful timeline message.
+History, attachment metadata and the success receipt commit together. A committed
+SENDING claim precedes any customer send. Network interruption, process restart
+or persistence failure after acceptance must **not** blindly resend; duplicate
+requests return the durable status. Staff must reconcile uncertain outcomes with
+the customer/Meta before starting a fresh attempt. Successful sends and definite
+rejections can be checked through the scoped authenticated status endpoint.
+Browser session storage contains only a staff/conversation-scoped random operation
+key, never bytes or credentials; refresh retrieves status instead of resending.
+Switching customers discards an unsubmitted file and is blocked during an active
+send. Private/no-store responses apply to policy, receipt and media endpoints.
+
+Automated outbound tests use isolated databases and mocked Meta responses. They
+cover actual JPEG/PNG/PDF parsing, spoofed and malformed files, size/dimension
+limits, auth/CSRF/scope, captions, provider failures, concurrency, database failures
+before/after remote send, delivery statuses and Chromium composer/refresh behavior.
+Dedicated PostgreSQL checks require `TEST_POSTGRESQL_URL` pointing to an isolated
+`pixiepinks_test` database; they create/drop only disposable schemas. Live Meta
+upload/delivery is intentionally not exercised by automated tests.

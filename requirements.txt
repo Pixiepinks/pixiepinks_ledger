@@ -15,3 +15,5 @@ openai>=1.68.0,<3.0.0
 # including libx264, instead of relying on the Nix image's FFmpeg packages.
 av==16.1.0
 alembic>=1.14.0,<2.0.0
+# Parse staff PDFs in a disposable resource-limited process; never render them.
+pypdf==6.21.2

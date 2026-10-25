@@ -735,3 +735,18 @@ class BotGuidedFlowState(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow,
                         onupdate=datetime.utcnow)
+
+
+class WhatsAppMediaSend(Base):
+    """Durable staff-media send claim; metadata only, never uploaded file bytes."""
+    __tablename__ = "whatsapp_media_sends"
+    id = Column(Integer, primary_key=True)
+    idempotency_key = Column(String(100), nullable=False, unique=True)
+    conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id", ondelete="RESTRICT"), nullable=False)
+    staff_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    fingerprint = Column(String(64), nullable=False)
+    status = Column(String(24), nullable=False)
+    media_id = Column(String(255))
+    message_id = Column(Integer, ForeignKey("whatsapp_conversation_messages.id", ondelete="RESTRICT"))
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)

@@ -1,3 +1,5 @@
+import asyncio
+import threading
 import hashlib
 import hmac
 import json
@@ -26,6 +28,9 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.concurrency import run_in_threadpool
+from starlette.datastructures import UploadFile as StarletteUploadFile
+import outbound_media_service as outbound_media
 from sqlalchemy import func, inspect, text, or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -1918,6 +1923,7 @@ def _conversation_payload(db: Session, conversation: WhatsAppConversation,
 @app.get("/crm/whatsapp", response_class=HTMLResponse)
 def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order: int | None = None,
                    db: Session = Depends(get_db), user: User = Depends(require_user)):
+    _csrf_token(request)  # Persist the session token before inbox polling begins.
     unread = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
     return templates.TemplateResponse("whatsapp_inbox.html", {
         "request": request, "initial_conversation_id": conversation, "unread_whatsapp": unread,
@@ -2221,6 +2227,78 @@ def whatsapp_return_to_ai(conversation_id: int, db: Session = Depends(get_db),
     conversation.returned_to_ai_at = datetime.utcnow()
     db.commit()
     return {"ok": True, "mode": "AI"}
+
+
+_outbound_media_slots = threading.BoundedSemaphore(4)
+
+
+@app.get("/crm/whatsapp/api/media-policy")
+def whatsapp_media_policy(request: Request, response: Response, user: User = Depends(require_user)):
+    outbound_media.authorize(user)
+    response.headers["Cache-Control"] = "private, no-store"
+    return {**outbound_media.policy(), "csrf_token": _csrf_token(request), "staff_id": user.id}
+
+
+@app.get("/crm/whatsapp/api/conversations/{conversation_id}/media-sends/{key}")
+def whatsapp_media_send_status(conversation_id: int, key: str, response: Response,
+                               db: Session = Depends(get_db), user: User = Depends(require_user)):
+    outbound_media.authorize(user)
+    _get_conversation(db, conversation_id)
+    row = outbound_media.scoped_attempt(db, key, conversation_id, user.id)
+    if not row:
+        raise HTTPException(404, "Attachment send not found")
+    response.headers["Cache-Control"] = "private, no-store"
+    return outbound_media.public_attempt(row)
+
+
+@app.post("/crm/whatsapp/api/conversations/{conversation_id}/send-media")
+async def whatsapp_send_media(conversation_id: int, request: Request,
+                              db: Session = Depends(get_db), user: User = Depends(require_user)):
+    outbound_media.authorize(user)
+    _require_csrf(request)
+    conversation = _get_conversation(db, conversation_id)
+    key = request.headers.get("Idempotency-Key", "")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{16,100}", key):
+        raise HTTPException(400, "A valid Idempotency-Key is required")
+    if not request.headers.get("content-type", "").lower().startswith("multipart/form-data;"):
+        raise HTTPException(415, "Use a multipart attachment upload")
+    if not _outbound_media_slots.acquire(blocking=False):
+        raise HTTPException(429, "Attachment service is busy. Try again shortly.")
+    form = None
+    try:
+        maximum = max(outbound_media.size_limit(kind) for kind in ("image", "document")) + 65536
+        body = bytearray()
+        # Bound the entire multipart request, including uploads with no Content-Length.
+        async with asyncio.timeout(45):
+            async for chunk in request.stream():
+                if len(body) + len(chunk) > maximum:
+                    raise HTTPException(413, "Attachment request exceeds the size limit")
+                body.extend(chunk)
+        request._body = bytes(body)
+        with private_image_processing():
+            form = await request.form(max_files=1, max_fields=1)
+        if len(form.multi_items()) > 2 or set(form) - {"file", "caption"}:
+            raise HTTPException(422, "Send one file and an optional caption")
+        upload = form.get("file")
+        caption = form.get("caption", "")
+        if not isinstance(upload, StarletteUploadFile) or not isinstance(caption, str):
+            raise HTTPException(422, "Select one attachment")
+        raw = await upload.read(maximum)
+        data = await run_in_threadpool(outbound_media.validate_file, raw, upload.filename, caption)
+        with private_image_processing():
+            result = await run_in_threadpool(outbound_media.perform_send, db, conversation, user, key, raw, data)
+        return JSONResponse(result, headers={"Cache-Control": "private, no-store"})
+    except TimeoutError:
+        raise HTTPException(408, "Attachment upload timed out") from None
+    except SQLAlchemyError:
+        db.rollback()
+        # A remote send may have completed. The durable claim blocks retransmission.
+        return JSONResponse({"ok": False, "status": "OUTCOME_UNCERTAIN", "retry_safe": False},
+                            status_code=503, headers={"Cache-Control": "private, no-store"})
+    finally:
+        if form is not None:
+            await form.close()
+        _outbound_media_slots.release()
 
 
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/send")
