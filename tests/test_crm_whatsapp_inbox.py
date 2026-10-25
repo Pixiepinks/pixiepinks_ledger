@@ -36,14 +36,15 @@ def test_inbox_requires_authentication_and_renders_for_staff():
     response = authenticated_client().get("/crm/whatsapp")
     assert response.status_code == 200
     assert 'class="app-body whatsapp-page"' in response.text
-    assert '/static/crm.css?v=whatsapp-quoted-context' in response.text
-    assert '/static/whatsapp_inbox.js?v=whatsapp-quoted-context' in response.text
+    assert '/static/crm.css?v=conversation-details-1' in response.text
+    assert '/static/whatsapp_inbox.js?v=conversation-details-1' in response.text
     assert 'id="send-button">Send</button>' in response.text
     assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
     assert all(control in response.text for control in (
         'id="record-button"', 'id="stop-recording"', 'id="cancel-recording"',
         'id="voice-preview-audio"', 'id="delete-recording"', 'id="send-voice"',
         'id="catalog-button"', 'id="product-modal"',
+        'id="conversation-details-dialog"', 'id="conversation-details-close"',
     ))
 
 

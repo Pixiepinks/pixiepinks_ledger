@@ -2008,6 +2008,17 @@ def _referral_preview_tag(url: str) -> str:
     return hmac.new(settings.SECRET_KEY.encode(), url.encode(), hashlib.sha256).hexdigest()[:24]
 
 
+@app.get("/crm/whatsapp/api/conversations/{conversation_id}/details")
+def whatsapp_conversation_details(conversation_id: int, response: Response,
+                                  db: Session = Depends(get_db), user: User = Depends(require_user)):
+    from learning_routes import authorize
+    from conversation_details_service import conversation_details
+    authorize(user)
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    return {"conversation": conversation_details(db, _get_conversation(db, conversation_id))}
+
+
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}")
 def whatsapp_conversation_detail(conversation_id: int, response: Response, limit: int = 100,
                                  db: Session = Depends(get_db), user: User = Depends(require_user)):
