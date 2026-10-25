@@ -54,7 +54,7 @@ def change_settings(db,values,actor):
     return new
 
 
-def source_change(db,conversation_id,allowed,actor,consent_reference='',legal_hold=False,erase=False,evaluation_only=False):
+def source_change(db,conversation_id,allowed,actor,consent_reference='',legal_hold=False,erase=False,evaluation_only=False,messages_from=None):
     config_row(db,True)
     if db.get(WhatsAppConversation,conversation_id) is None:raise LearningError('Conversation not found')
     source=db.query(LearningSource).filter_by(conversation_id=conversation_id).one_or_none()
@@ -62,6 +62,10 @@ def source_change(db,conversation_id,allowed,actor,consent_reference='',legal_ho
         source=LearningSource(conversation_id=conversation_id,allowed=False);db.add(source);db.flush()
     if evaluation_only and not source.evaluation_only and db.query(LearningAnalysis.id).filter_by(source_id=source.id).first():
         raise LearningError('Evaluation sources must be reserved before analysis')
+    if messages_from is not None:
+        if messages_from!=source.messages_from and db.query(LearningAnalysis.id).filter_by(source_id=source.id).first():raise LearningError('Set message scope before analysis; existing derivatives require privacy review before changing scope')
+        if source.messages_from and messages_from<source.messages_from:raise LearningError('Existing consent scope cannot be broadened')
+        source.messages_from=messages_from
     source.evaluation_only=evaluation_only or source.evaluation_only
     may_erase=erase and not source.legal_hold and not legal_hold and not configuration(db)['legal_hold']
     if allowed:
@@ -313,6 +317,7 @@ def enqueue(db,key,kind='MANUAL'):
     if db.query(LearningJob).filter(LearningJob.status.in_(['QUEUED','RUNNING','RETRY'])).first():raise LearningError('A learning job is already pending')
     if kind=='MANUAL' and db.query(LearningJob).filter(LearningJob.job_type=='MANUAL',LearningJob.created_at>=datetime.utcnow()-timedelta(hours=24)).count()>=3:
         raise LearningError('Manual run limit reached')
-    job=LearningJob(id=str(uuid4()),request_key=key,job_type=kind,status='QUEUED')
+    from learning_diagnostics import environment
+    job=LearningJob(id=str(uuid4()),request_key=key,job_type=kind,status='QUEUED',diagnostics={'queued_environment':environment(),'skip_reasons':{},'sources_evaluated':0,'sources_skipped':0,'conversations_selected':0,'eligible_human_messages':0,'eligible_customer_messages':0,'excluded_messages':0})
     db.add(job);db.flush();audit(db,None,'JOB_QUEUED','job',job.id)
     return job

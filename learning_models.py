@@ -30,6 +30,7 @@ class LearningSource(Base):
     consent_reference=Column(String(200))
     consent_by=Column(Integer,ForeignKey('users.id',ondelete='SET NULL'))
     consent_at=Column(DateTime)
+    messages_from=Column(DateTime)  # Optional explicit lower bound, not authorization time.
     withdrawn_at=Column(DateTime)
     legal_hold=Column(Boolean,nullable=False,default=False)
     last_message_id=Column(Integer,nullable=False,default=0)
@@ -44,6 +45,7 @@ class LearningJob(Base):
     job_type=Column(String(20),nullable=False)
     status=Column(String(24),nullable=False,index=True,default='QUEUED')
     checkpoint=Column(Integer,nullable=False,default=0)
+    diagnostics=Column(JSON,nullable=False,default=dict)
     conversations_processed=Column(Integer,nullable=False,default=0)
     candidates_generated=Column(Integer,nullable=False,default=0)
     candidates_rejected=Column(Integer,nullable=False,default=0)

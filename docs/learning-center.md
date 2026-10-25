@@ -1,5 +1,9 @@
 # AI Learning Center: repository inspection and operational contract
 
+Phase7A updates worker selection, diagnostics and the migration head to `20261025_15`.
+Use [the current worker rollout guide](learning-worker-phase7a.md) for those deployment
+and verification steps; the inspection/validation baseline below records the original release.
+
 Verified baseline: f5f18b400d791bd7e0f4aa6c51864736480ec797 (PR #74), migration head 20261025_13.
 
 The application is FastAPI/Uvicorn, not Flask. SQLAlchemy 2 uses one Base and

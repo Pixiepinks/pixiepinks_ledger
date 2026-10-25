@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 from pydantic import BaseModel,ConfigDict,Field
 from typing import Literal
 
-ANALYZER_VERSION='1'
+ANALYZER_VERSION='2'  # Re-evaluate authorized lookback after corrected collector semantics.
 EVALUATION_VERSION='1'
 # Reviewed initial promotion surface. Novel wording always needs human review.
 COMMUNICATION={

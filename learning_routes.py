@@ -19,6 +19,7 @@ from learning_models import (LearningCandidate,LearningEvidence,LearningEvaluati
 from learning_service import (LearningError,configuration,change_settings,review,source_change,enqueue,
     config_row,audit,disable_knowledge,privacy_ready)
 from learning_schedule import next_run,day_start
+from learning_diagnostics import environment
 from settings import settings
 
 logger=logging.getLogger(__name__)
@@ -51,7 +52,14 @@ def public(row):
     for key,value in result.items():
         if isinstance(value,datetime):result[key]=value.replace(tzinfo=timezone.utc).isoformat()
         elif type(value).__name__=='Decimal':result[key]=float(value)
+    if row.__tablename__=='learning_jobs':result.pop('diagnostics',None)
     return result
+
+
+def job_summary(row):
+    data=public(row);data.pop('request_key',None);diagnostics=row.diagnostics or {}
+    data['summary']={key:diagnostics[key] for key in ['outcome','authorized_sources','total_sources','sources_evaluated','sources_skipped','conversations_selected','eligible_human_messages','eligible_customer_messages','excluded_messages','skip_reasons','duration_seconds','candidate_reasons'] if key in diagnostics}
+    return data
 
 
 async def read_body(request):
@@ -113,8 +121,10 @@ def build_router(get_db,require_user,require_csrf,csrf_token):
             'new_candidates':db.query(LearningCandidate).filter(LearningCandidate.created_at>=today).count(),
             'auto_published_today':db.query(LearningKnowledgeVersion).filter(LearningKnowledgeVersion.source_type=='AUTO',LearningKnowledgeVersion.created_at>=today).count(),
             'published_knowledge':db.query(BotKnowledgeEntry).join(LearningCandidate,LearningCandidate.knowledge_entry_id==BotKnowledgeEntry.id).filter(BotKnowledgeEntry.enabled.is_(True)).count(),
-            'last_successful_run':public(last) if last else None,'next_schedule_due':next_run(config) if config['enabled'] else None,
+            'last_successful_run':job_summary(last) if last else None,'next_schedule_due':next_run(config) if config['enabled'] else None,
             'worker_last_seen':lease.last_seen_at.isoformat()+'Z' if lease and lease.last_seen_at else None,
+            'latest_run':job_summary(db.query(LearningJob).order_by(LearningJob.created_at.desc()).first()) if db.query(LearningJob.id).first() else None,
+            'web_environment':environment(),
             'schedule_verified_active':False,'actual_tokens':int(costs[0]),'reserved_cost_estimate':float(costs[1]),
             'errors':int(db.query(func.coalesce(func.sum(LearningJob.error_count),0)).scalar()),
             'observations':feedback_metrics(db,now-timedelta(days=7),now),'baseline':feedback_metrics(db,now-timedelta(days=14),now-timedelta(days=7)),
@@ -196,11 +206,19 @@ def build_router(get_db,require_user,require_csrf,csrf_token):
     @router.post('/sources')
     async def update_source(request:Request,db=Depends(get_db),user:User=Depends(require_user)):
         authorize(user,'admin');require_csrf(request);body=await read_body(request)
-        if set(body)-{'conversation_id','allowed','consent_reference','erase','legal_hold','evaluation_only'} or type(body.get('conversation_id')) is not int or type(body.get('allowed')) is not bool:
+        if set(body)-{'conversation_id','allowed','consent_reference','erase','legal_hold','evaluation_only','messages_from'} or type(body.get('conversation_id')) is not int or type(body.get('allowed')) is not bool:
             raise HTTPException(422,'A conversation ID and boolean eligibility are required')
         if any(type(body.get(key,False)) is not bool for key in ['erase','legal_hold','evaluation_only']) or not isinstance(body.get('consent_reference',''),str) or len(body.get('consent_reference',''))>200:raise HTTPException(422,'Invalid privacy settings')
+        scope=None
+        if body.get('messages_from') is not None and (not isinstance(body['messages_from'],str) or len(body['messages_from'])>64):raise HTTPException(422,'Invalid message scope timestamp')
+        if body.get('messages_from'):
+            try:
+                scope=datetime.fromisoformat(body['messages_from'].replace('Z','+00:00'))
+                if scope.tzinfo is None:raise ValueError()
+                scope=scope.astimezone(timezone.utc).replace(tzinfo=None)
+            except (ValueError,AttributeError,TypeError):raise HTTPException(422,'Scope start must include a timezone') from None
         def operation():
-            row=source_change(db,body['conversation_id'],body['allowed'],user.id,body.get('consent_reference',''),body.get('legal_hold',False),body.get('erase',False),body.get('evaluation_only',False))
+            row=source_change(db,body['conversation_id'],body['allowed'],user.id,body.get('consent_reference',''),body.get('legal_hold',False),body.get('erase',False),body.get('evaluation_only',False),scope)
             return {'id':row.id,'allowed':row.allowed}
         return mutate(db,user,request.headers.get('Idempotency-Key',''),request.url.path,body,operation)
 
@@ -241,14 +259,27 @@ def build_router(get_db,require_user,require_csrf,csrf_token):
     @router.get('/history')
     def history(response:Response,offset:int=Query(0,ge=0),db=Depends(get_db),user:User=Depends(require_user)):
         authorize(user);response.headers['Cache-Control']='private, no-store'
-        return {'jobs':[public(row) for row in db.query(LearningJob).order_by(LearningJob.created_at.desc()).offset(offset).limit(50)],
+        return {'jobs':[job_summary(row) for row in db.query(LearningJob).order_by(LearningJob.created_at.desc()).offset(offset).limit(50)],
             'audit':[public(row) for row in db.query(LearningAudit).order_by(LearningAudit.id.desc()).offset(offset).limit(50)]}
 
     @router.get('/jobs/{jid}')
     def job_status(jid:str,response:Response,db=Depends(get_db),user:User=Depends(require_user)):
         authorize(user);response.headers['Cache-Control']='private, no-store';row=db.get(LearningJob,jid)
         if row is None:raise HTTPException(404,'Job not found')
-        return public(row)
+        return job_summary(row)
+
+    @router.get('/jobs/{jid}/diagnostics')
+    def job_diagnostics(jid:str,response:Response,db=Depends(get_db),user:User=Depends(require_user)):
+        authorize(user,'manage');response.headers['Cache-Control']='private, no-store'
+        row=db.get(LearningJob,jid)
+        if row is None:raise HTTPException(404,'Job not found')
+        return {'job':job_summary(row),'diagnostics':row.diagnostics or {},'historical_available':bool(row.diagnostics)}
+
+    @router.get('/diagnostics/sources')
+    def source_diagnostics(response:Response,offset:int=Query(0,ge=0),db=Depends(get_db),user:User=Depends(require_user)):
+        authorize(user,'admin');response.headers['Cache-Control']='private, no-store'
+        from learning_diagnostics import diagnose
+        return diagnose(db,offset)
 
     @router.post('/feedback')
     async def feedback(request:Request,db=Depends(get_db),user:User=Depends(require_user)):
