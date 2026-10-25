@@ -42,7 +42,10 @@
   function detailLink(label, url, primary = false) { const link = document.createElement("a"); link.className = `btn ${primary ? "btn-primary" : "btn-secondary"}`; link.href = url; text(link, label); return link; }
   function renderDetails(data) {
     const profile = document.getElementById("profile"); profile.replaceChildren(); const heading = document.createElement("h3"); text(heading, "Customer profile");
-    profile.append(heading, detailRow("Name", data.conversation.customer_name), detailRow("WhatsApp", data.conversation.phone_number), detailRow("Mode", data.conversation.mode));
+    const country = data.conversation.phone_country;
+    const phoneCountry = detailRow("Phone country", country ? `${country.flag} ${country.name} (${country.dialing_code})` : "Unknown");
+    phoneCountry.title = "Numbering-plan country/region only; does not indicate current location, residence or delivery address.";
+    profile.append(heading, detailRow("Name", data.conversation.customer_name), detailRow("WhatsApp", data.conversation.phone_number), phoneCountry, detailRow("Mode", data.conversation.mode));
     const order = document.getElementById("order"); order.replaceChildren();
     if (data.sales_order) {
       const value = data.sales_order, heading = document.createElement("h3"), actions = document.createElement("div"); heading.className = "detail-title"; text(heading, "Latest sales order"); actions.className = "detail-actions";

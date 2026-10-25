@@ -19,3 +19,7 @@ alembic>=1.14.0,<2.0.0
 pypdf==6.21.2
 # Validate legacy Word/Excel compound containers in the isolated upload worker.
 olefile==0.47
+# Offline numbering-plan regions, without city/carrier/geocoder datasets.
+phonenumberslite==9.0.41
+# Localized country/territory names from packaged CLDR data; no network lookup.
+Babel==2.18.0
