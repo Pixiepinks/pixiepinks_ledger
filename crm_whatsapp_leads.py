@@ -129,6 +129,15 @@ def build_router(get_db,require_user,require_csrf,csrf_token,statuses,preview_ta
             'lead':lead_data(lead),'referrals':referrals,'referral_total':total,'offset':offset,
             'matching_leads':[{'id':item.id,'lead_no':item.lead_no,'customer_name':item.customer_name} for item in matching_leads(db,conversation,normalize_phone)] if not lead else []}
 
+    @router.get('/{cid}/status')
+    def get_status(cid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        authorize(user);conversation=db.get(WhatsAppConversation,cid)
+        if conversation is None:raise HTTPException(404,'Conversation not found')
+        lead=db.query(Lead).filter_by(whatsapp_conversation_id=cid).one_or_none()
+        return {'conversation_id':cid,'lead':lead_data(lead),'statuses':statuses,'status_labels':status_labels or {},
+            'matching_leads':[{'id':item.id,'lead_no':item.lead_no,'customer_name':item.customer_name} for item in matching_leads(db,conversation,normalize_phone)] if not lead else [],
+            'csrf_token':csrf_token(request)}
+
     @router.post('/{cid}/lead')
     async def save_lead(cid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
         authorize(user);require_csrf(request);body=await read_body(request)

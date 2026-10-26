@@ -67,6 +67,10 @@ def test_additive_link_migration_and_concurrent_management(tmp_path,monkeypatch,
         with ThreadPoolExecutor(max_workers=2) as executor:responses=list(executor.map(create_once,range(2)))
         assert [response.status_code for response in responses]==[200,200]
         assert responses[0].json()['lead']['id']==responses[1].json()['lead']['id']
+        inbox_rows=client.get('/crm/whatsapp/api/conversations').json()['conversations']
+        inbox_row=next(row for row in inbox_rows if row['id']==10)
+        assert inbox_row['lead_id']==responses[0].json()['lead']['id'] and inbox_row['lead_status']=='NEW'
+        assert client.get(f'{BASE}/10/status').json()['lead']['id']==inbox_row['lead_id']
         with sessions() as db:
             assert db.query(Lead).count()==2 and db.query(Lead).filter_by(whatsapp_conversation_id=10).count()==1
             assert db.query(LeadNote).one().note=='Retain note history' and db.query(LeadTask).one().note=='Retain task history'
