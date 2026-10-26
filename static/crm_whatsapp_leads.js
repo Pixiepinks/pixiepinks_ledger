@@ -11,15 +11,15 @@
   }
   function safeLink(value){try{const url=new URL(value);return url.protocol==="https:"&&!url.username&&!url.password&&(!url.port||url.port==="443")&&["facebook.com","instagram.com","fb.me","fb.watch"].some(host=>url.hostname===host||url.hostname.endsWith("."+host))?url.href:null;}catch(_){return null;}}
   function referralCard(referral,history=false){
-    const card=document.createElement("article"),body=document.createElement("div"),heading=document.createElement("strong"),meta=document.createElement("small");card.className="wa-lead-referral";
+    const card=document.createElement("article"),body=document.createElement("div"),heading=document.createElement("strong"),meta=document.createElement("small");card.className="wa-lead-referral"+(history?"":" wa-lead-referral-compact");
     write(heading,referral.headline||({ad:"Advertisement referral",post:"Post referral"})[referral.source_type]||"Meta referral");
-    write(meta,`${referral.source_type==="ad"?"Ad":referral.source_type==="post"?"Post":"Referral"}${referral.source_id?` ID: ${referral.source_id}`:" · ID unavailable"}`);body.append(heading,meta);
-    if(referral.body){const description=document.createElement("p");write(description,referral.body);body.append(description);}
+    write(meta,`${referral.source_type==="ad"?"Ad":referral.source_type==="post"?"Post":"Referral"}${referral.source_id?` ID: ${referral.source_id}`:" · ID unavailable"}`);if(history)body.append(heading);body.append(meta);
+    if(history&&referral.body){const description=document.createElement("p");write(description,referral.body);body.append(description);}
     if(referral.preview_url&&/^\/crm\/whatsapp\/api\/conversations\/\d+\/messages\/\d+\/referrals\/\d+\/preview\?v=[a-f0-9]+$/.test(referral.preview_url)){
       const image=new Image();image.src=referral.preview_url;image.alt=referral.preview_kind==="video_thumbnail"?"Advertisement video thumbnail":"Referral creative preview";image.loading="lazy";image.referrerPolicy="no-referrer";
-      image.onerror=()=>{image.remove();const unavailable=document.createElement("small");write(unavailable,"Preview unavailable");body.append(unavailable);};card.append(image);
+      image.onerror=()=>{image.remove();const unavailable=document.createElement(history?"small":"span");if(history)write(unavailable,"Preview unavailable");else{unavailable.className="wa-lead-preview-unavailable";unavailable.setAttribute("role","img");unavailable.setAttribute("aria-label","Preview unavailable");unavailable.title="Preview unavailable";unavailable.textContent="—";}if(history)body.append(unavailable);else card.prepend(unavailable);};card.append(image);
     }
-    const source=safeLink(referral.source_url);if(source){const link=document.createElement("a");link.href=source;link.target="_blank";link.rel="noopener noreferrer";write(link,"View source ↗");body.append(link);}
+    const source=history?safeLink(referral.source_url):null;if(source){const link=document.createElement("a");link.href=source;link.target="_blank";link.rel="noopener noreferrer";write(link,"View source ↗");body.append(link);}
     if(history){const time=document.createElement("small");write(time,`Captured ${date(referral.captured_at)} · Message ${referral.message_id}`);body.append(time);if(referral.customer_message){const message=document.createElement("p");write(message,`Customer: ${referral.customer_message}`);body.append(message);}}
     card.append(body);return card;
   }
@@ -37,7 +37,7 @@
       el("wa-leads-rows").replaceChildren(...data.items.map(item=>{
         const row=document.createElement("tr"),customer=document.createElement("td"),name=document.createElement("strong"),phone=document.createElement("small"),mode=document.createElement("small");row.dataset.conversationId=String(item.conversation_id);write(name,item.customer_name);write(phone,item.phone_number);write(mode,`${item.mode}${item.lead?` · ${item.lead.lead_no}`:""}`);customer.append(name,phone,mode);row.append(customer);
         const activity=document.createElement("td");write(activity,date(item.last_activity));row.append(activity);
-        const source=document.createElement("td");if(item.latest_referral){source.append(referralCard(item.latest_referral));const count=document.createElement("small");write(count,`Most recent referral · ${item.referral_count} received · ${item.ad_count} ad referrals`);source.append(count);}else write(source,"WhatsApp · No referral received");row.append(source);
+        const source=document.createElement("td");if(item.latest_referral){source.append(referralCard(item.latest_referral));}else write(source,"WhatsApp · No referral received");row.append(source);
         for(const value of [item.lead?.product_interest,item.lead?(item.lead.status?.replaceAll("_"," ")||"Status not set"):"Not organized",item.lead?.assigned_to,item.lead?.next_followup]){const cell=document.createElement("td");write(cell,value);row.append(cell);}
         const actions=document.createElement("td"),wrap=document.createElement("div"),inbox=document.createElement("a"),manage=document.createElement("button");wrap.className="wa-lead-actions";inbox.href=item.inbox_url;write(inbox,"Open Inbox");manage.type="button";write(manage,item.lead?"Manage / referrals":"Organize / referrals");manage.onclick=()=>open(item.conversation_id);wrap.append(inbox,manage);actions.append(wrap);row.append(actions);return row;
       }));
