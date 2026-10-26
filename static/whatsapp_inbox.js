@@ -22,7 +22,7 @@
     const name = document.createElement("strong"); text(name, c.customer_name);
     const time = document.createElement("time"); text(time, c.last_message_at ? new Date(c.last_message_at).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : ""); line.append(name, time);
     const preview = document.createElement("p"); text(preview, c.latest_message || c.phone_number);
-    const meta = document.createElement("div"); meta.className = "conversation-meta"; meta.append(badge(c.mode, c.mode.toLowerCase())); const leadStatus = badge(c.lead_status_label || "Not organized", "lead-status"); leadStatus.setAttribute("aria-label", `Lead status: ${c.lead_status_label || "Not organized"}`); meta.append(leadStatus);
+    const meta = document.createElement("div"); meta.className = "conversation-meta"; meta.append(badge(c.mode, c.mode.toLowerCase())); const leadStatus = badge(c.lead_status_label || "Not organized", "lead-status"); leadStatus.dataset.leadStatus = c.lead_status || "UNORGANIZED"; leadStatus.setAttribute("aria-label", `Lead status: ${c.lead_status_label || "Not organized"}`); meta.append(leadStatus);
     if (c.payment_required) meta.append(badge("PAYMENT REQUIRED", "payment"));
     if (c.unread_count) { const unread = document.createElement("span"); unread.className = "unread"; text(unread, c.unread_count); meta.append(unread); }
     button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true); return button;

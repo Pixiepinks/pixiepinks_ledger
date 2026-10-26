@@ -171,7 +171,7 @@ URL was supplied. These runs overlap; the full repository suite was not rerun.
 
 Baseline: `d51ef60544277f469c464816c15feb4302e110f4` (PR81).
 Select a conversation, choose one of the17 CRM statuses in the new Lead status bar
-below the chat header, then choose Save status. A blue status badge appears directly
+below the chat header, then choose Save status. A status-colored badge appears directly
 beside the AI/HUMAN badge in the conversation list, including mobile. Both views
 read the same primary Lead.whatsapp_conversation_id relationship used by CRM Leads.
 
@@ -202,9 +202,24 @@ failures/skips, including real SQLite/PostgreSQL CRM checks and existing WhatsAp
 media/referral/Quick Messages/learning/Bot Management/Shopify/sales coverage. A final
 22-check Inbox run passed after mark-read refresh refinement. Runs overlap. The new
 8-check group includes four staff roles plus real Chromium mobile/desktop status
-editing, persisted blue badges, CRM-to-Inbox polling, failed-save retry, delayed old
+editing, persisted status badges, CRM-to-Inbox polling, failed-save retry, delayed old
 conversation responses, explicit legacy linking and retained image elements without
 repeat media download. PostgreSQL/SQLite requirements-only Python3.12.14 startup/
 restart, pip check, JavaScript syntax and diff checks passed. The full repository
 suite was not rerun for this change. No live data, customer sends, merge or deployment
 was performed.
+
+## Status badge colors
+
+Inbox lead badges now use distinct colors for all17 stored states, retaining their
+text and accessible labels. New/Replied use sky/blue, Interested/paid stages use
+green tones, Future Buyer lavender, Follow-up orange, Negotiating purple, pending
+reply/payment amber/yellow, Dispatched cyan, Delivered dark green, Lost dark red,
+Not Interested rose and Invalid/Spam charcoal. Not organized and unrecognized legacy
+states fall back to neutral gray. AI/HUMAN styling is unchanged.
+
+This is display-only: no status meaning, API, data, permission, migration or worker
+change. Final23 relevant checks passed, including real Chromium checks for17 distinct
+backgrounds, text contrast of at least4.5:1, mobile fit, labels, live status updates
+and neutral fallbacks. JavaScript syntax and diff checks passed. Deploy the reviewed
+web release and refresh the Inbox to load the versioned JS/CSS assets.

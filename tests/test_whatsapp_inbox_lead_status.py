@@ -119,7 +119,7 @@ def test_chromium_mobile_badges_edit_errors_polling_switches_and_media_identity(
             assert len(media_requests)==initial_media_requests
             page.locator('#back-list').click()
             first_row.locator('.lead-status').filter(has_text='Future Buyer').wait_for()
-            assert first_row.locator('.lead-status').evaluate('(node)=>getComputedStyle(node).backgroundColor')=='rgb(234, 242, 255)'
+            assert first_row.locator('.lead-status').evaluate('(node)=>getComputedStyle(node).backgroundColor')=='rgb(237, 233, 254)'
             assert first_row.locator('.lead-status').bounding_box()['x']>first_row.locator('.badge.human').bounding_box()['x']
             page.reload();first_row.locator('.lead-status').filter(has_text='Future Buyer').wait_for()
             page.set_viewport_size({'width':1366,'height':900});first_row.click()
@@ -150,4 +150,52 @@ def test_chromium_mobile_badges_edit_errors_polling_switches_and_media_identity(
                 assert db.get(Lead,901).whatsapp_conversation_id==ids[1] and db.get(Lead,901).notes=='Keep legacy notes'
                 assert db.get(WhatsAppConversation,ids[1]).mode=='AI'
             assert media_requests and not errors and not sends
+        finally:browser.close()
+
+
+def test_chromium_all_status_colors_are_distinct_readable_and_mobile_safe(inbox):
+    import re
+    playwright=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    client,sessions,ids,sends,_,_=inbox;status_ids={}
+    with sessions() as db:
+        for number,status in enumerate(main.LEAD_STATUSES+['LEGACY_STATE']):
+            conversation=WhatsAppConversation(phone_number=f'44770077{number:04d}',customer_name='Color '+status,mode='AI')
+            db.add(conversation);db.flush()
+            db.add(Lead(lead_no='LD-color-'+str(number),customer_name=conversation.customer_name,mobile=conversation.phone_number,status=status,whatsapp_conversation_id=conversation.id));status_ids[status]=conversation.id
+        db.commit()
+    def luminance(value):
+        rgb=[float(number)/255 for number in re.findall(r'[\d.]+',value)[:3]]
+        linear=[number/12.92 if number<=.04045 else ((number+.055)/1.055)**2.4 for number in rgb]
+        return sum(number*weight for number,weight in zip(linear,[.2126,.7152,.0722]))
+    with playwright.sync_playwright() as api:
+        browser=api.chromium.launch(executable_path=chromium,headless=True,args=['--no-sandbox'])
+        try:
+            page=browser.new_page(viewport={'width':390,'height':760});errors=[]
+            page.on('pageerror',lambda error:errors.append(str(error)))
+            def serve(route):
+                request=route.request;url=urlsplit(request.url)
+                if url.hostname!='inbox.test':route.fulfill(status=200,body='');return
+                response=client.request(request.method,url.path+('?' + url.query if url.query else ''),follow_redirects=False)
+                route.fulfill(status=response.status_code,body=response.content,headers={key:value for key,value in response.headers.items() if key not in {'content-length','content-encoding','set-cookie'}})
+            page.route('**/*',serve);page.goto('https://inbox.test/crm/whatsapp')
+            page.wait_for_function('document.querySelectorAll(".conversation-row").length===20')
+            colors=set()
+            for status in main.LEAD_STATUSES:
+                row=page.locator(f'.conversation-row[data-conversation-id="{status_ids[status]}"]')
+                badge=row.locator('.lead-status');style=badge.evaluate('(node)=>({bg:getComputedStyle(node).backgroundColor,fg:getComputedStyle(node).color})')
+                colors.add(style['bg'])
+                first,second=luminance(style['bg']),luminance(style['fg'])
+                assert (max(first,second)+.05)/(min(first,second)+.05)>=4.5,status
+                assert badge.get_attribute('data-lead-status')==status
+                assert badge.get_attribute('aria-label').startswith('Lead status: ')
+                assert badge.inner_text() and badge.bounding_box()['width']<=row.bounding_box()['width']
+                assert row.locator('.badge.ai').count()==1
+            assert len(colors)==len(main.LEAD_STATUSES)
+            neutral=page.locator(f'.conversation-row[data-conversation-id="{ids[0]}"] .lead-status')
+            unknown=page.locator(f'.conversation-row[data-conversation-id="{status_ids["LEGACY_STATE"]}"] .lead-status')
+            assert neutral.inner_text()=='Not organized'
+            assert neutral.evaluate('(node)=>getComputedStyle(node).backgroundColor')=='rgb(241, 245, 249)'
+            assert unknown.evaluate('(node)=>getComputedStyle(node).backgroundColor')=='rgb(241, 245, 249)'
+            assert not errors and not sends
         finally:browser.close()
