@@ -3578,6 +3578,10 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
     })
 
 
+from crm_whatsapp_leads import build_router as build_whatsapp_leads_router
+app.include_router(build_whatsapp_leads_router(get_db,require_user,_require_csrf,_csrf_token,LEAD_STATUSES,_referral_preview_tag,_normalize_whatsapp_phone))
+
+
 @app.get("/crm/leads", response_class=HTMLResponse)
 def crm_leads(
     request: Request,
@@ -3588,6 +3592,7 @@ def crm_leads(
     db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ):
+    _csrf_token(request)
     lead_query = db.query(Lead)
     today = date.today()
 
@@ -3729,7 +3734,7 @@ def crm_create_lead(
     )
     db.add(lead)
     db.commit()
-    return RedirectResponse("/crm/leads", status_code=303)
+    return RedirectResponse("/crm/leads?view=saved", status_code=303)
 
 
 @app.get("/crm/leads/{lead_id}", response_class=HTMLResponse)

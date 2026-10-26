@@ -9,6 +9,7 @@
     <p class="text-sm mt-2">Notes: {{ lead.notes or '-' }}</p>
   </div>
 
+  {% if lead.whatsapp_conversation_id %}<p><a href="/crm/whatsapp?conversation={{ lead.whatsapp_conversation_id }}" class="text-emerald-700 underline">Open linked WhatsApp conversation</a></p>{% endif %}
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
     <div class="bg-white rounded-xl shadow p-4">
       <h2 class="font-semibold mb-3">Notes History</h2>

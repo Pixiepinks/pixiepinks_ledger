@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
+<link rel="stylesheet" href="/static/crm_whatsapp_leads.css?v=wa-leads-1">
 <div class="space-y-6">
   <div class="flex items-center justify-between mb-4">
     <h1 class="text-3xl font-bold">CRM Leads</h1>
@@ -13,6 +14,22 @@
     </button>
   </div>
 
+  <nav class="wa-leads-tabs" aria-label="Lead views"><button type="button" id="wa-leads-tab" aria-controls="wa-leads-pane" aria-pressed="true">WhatsApp leads</button><button type="button" id="saved-leads-tab" aria-controls="saved-leads-pane" aria-pressed="false">Saved CRM leads</button></nav>
+  <section id="wa-leads-pane" aria-label="WhatsApp leads">
+    <p>All existing and new WhatsApp conversations appear here. Organize a conversation to save its CRM status, assignee and follow-up. Activity times use Sri Lanka time.</p>
+    <p class="wa-leads-help">Source labels use Meta referral records. “No referral received” does not prove an organic visit. The most recent referral is shown; open referral history to see every advertisement.</p>
+    <div class="wa-leads-filters"><input id="wa-leads-search" maxlength="100" placeholder="Search customer, phone, lead or product interest" aria-label="Search WhatsApp leads"><select id="wa-leads-source" aria-label="Referral source"><option value="">All sources</option><option value="ad">Ad referral received</option><option value="post">Post referral received</option><option value="none">No referral received</option><option value="referral">Any referral received</option></select><select id="wa-leads-status" aria-label="Lead status"><option value="">All statuses</option><option value="UNORGANIZED">Not organized</option></select><select id="wa-leads-assigned" aria-label="Assigned staff"><option value="">All assignees</option><option value="UNASSIGNED">Unassigned</option></select></div>
+    <p id="wa-leads-result" role="status" aria-live="polite">Loading WhatsApp leads…</p><p id="wa-leads-error" role="alert"></p><button type="button" id="wa-leads-retry" hidden>Retry</button>
+    <div class="wa-leads-scroll"><table class="wa-leads-table"><thead><tr><th>Customer</th><th>Latest activity</th><th>Source / creative</th><th>Product interest</th><th>Status</th><th>Assigned</th><th>Next follow-up</th><th>Actions</th></tr></thead><tbody id="wa-leads-rows"></tbody></table></div>
+    <div class="wa-leads-pagination"><button type="button" id="wa-leads-prev" disabled>Previous</button><button type="button" id="wa-leads-next" disabled>Next</button></div>
+  </section>
+  <dialog id="wa-lead-dialog" aria-labelledby="wa-lead-title"><header><h2 id="wa-lead-title">Organize WhatsApp lead</h2><button type="button" id="wa-lead-close" aria-label="Close WhatsApp lead" autofocus>×</button></header><p id="wa-lead-summary"></p><p id="wa-lead-dialog-status" role="status" aria-live="polite"></p><p id="wa-lead-dialog-error" role="alert"></p>
+    <section id="wa-lead-link"><label>Existing CRM lead<select id="wa-lead-match"></select></label><p id="wa-lead-link-help"></p><button type="button" id="wa-lead-create">Create CRM record</button></section>
+    <form id="wa-lead-form"><fieldset id="wa-lead-fields" disabled><label>Status<select id="wa-lead-edit-status" required></select></label><label>Assigned to<select id="wa-lead-edit-assigned"><option value="">Unassigned</option></select></label><label>Product interest (staff entered)<input id="wa-lead-product" maxlength="255"></label><label>Next follow-up<input id="wa-lead-followup" type="date"></label><label>Add note<textarea id="wa-lead-note" maxlength="2000" rows="2"></textarea></label><button type="submit" id="wa-lead-save">Save lead</button><a id="wa-lead-view" hidden>Open full CRM record</a></fieldset></form>
+    <h3>Advertisement / post referral history</h3><p>Each card belongs to its original customer message. Advertised products are not guessed from generic greetings.</p><div id="wa-lead-referrals"></div><button type="button" id="wa-lead-more-referrals" hidden>More referrals</button>
+  </dialog>
+
+  <section id="saved-leads-pane" hidden>
   <div
     id="leadFormCard"
     class="hidden bg-white rounded-2xl shadow-lg p-6 mb-6 border border-gray-200 transition-all duration-300"
@@ -116,6 +133,7 @@
       </tbody>
     </table>
   </div>
+</section>
 </div>
 <script>
 document.addEventListener("DOMContentLoaded", function () {
@@ -223,4 +241,5 @@ document.addEventListener("DOMContentLoaded", function () {
     {% endif %}
 });
 </script>
+<script src="/static/crm_whatsapp_leads.js?v=wa-leads-1"></script>
 {% endblock %}
