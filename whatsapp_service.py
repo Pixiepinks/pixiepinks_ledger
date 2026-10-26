@@ -44,17 +44,18 @@ def _message_id(response: httpx.Response) -> str | None:
 
 
 def send_whatsapp_image(
-    recipient: str, image_url: str, caption: str | None = None, *, return_message_id: bool = False
-) -> bool | str | None:
+    recipient: str, image_url: str, caption: str | None = None, *, return_message_id: bool = False,
+    return_outcome: bool = False,
+) -> bool | str | tuple[str, str | None] | None:
     """Send a verified Shopify image through the existing Meta Cloud API."""
     if not is_shopify_image_url(image_url):
         logger.warning("WhatsApp image skipped recipient=%s reason=untrusted_url", recipient)
-        return False
+        return ("FAILED", None) if return_outcome else False
     access_token = settings.META_WHATSAPP_ACCESS_TOKEN
     phone_number_id = settings.META_WHATSAPP_PHONE_NUMBER_ID
     if not access_token or not phone_number_id:
         logger.error("WhatsApp image skipped recipient=%s reason=missing_configuration", recipient)
-        return False
+        return ("FAILED", None) if return_outcome else False
     version = settings.META_GRAPH_API_VERSION.strip().lstrip("/") or "v26.0"
     url = f"https://graph.facebook.com/{version}/{phone_number_id}/messages"
     image = {"link": image_url.strip()}
@@ -71,14 +72,17 @@ def send_whatsapp_image(
     except httpx.HTTPStatusError as exc:
         logger.error("WhatsApp image failed recipient=%s status_code=%s",
                      recipient, exc.response.status_code)
-        return False
+        state = "FAILED" if 400 <= exc.response.status_code < 500 and exc.response.status_code not in {408, 429} else "UNKNOWN"
+        return (state, None) if return_outcome else False
     except httpx.RequestError as exc:
         logger.error("WhatsApp image failed recipient=%s error_type=%s",
                      recipient, type(exc).__name__)
-        return False
+        return ("UNKNOWN", None) if return_outcome else False
     logger.info("WhatsApp image succeeded recipient=%s status_code=%s",
                 recipient, response.status_code)
     message_id = _message_id(response)
+    if return_outcome:
+        return ("SENT", message_id) if message_id else ("UNKNOWN", None)
     return message_id if return_message_id else True
 
 
