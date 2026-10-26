@@ -7,7 +7,7 @@ import logging
 import re
 import secrets
 from contextlib import nullcontext
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import quote, urlparse
 
@@ -1945,6 +1945,14 @@ def _payment_required_phones(db: Session) -> set[str]:
     }
 
 
+def _inbox_utc_timestamp(value: datetime | None) -> str | None:
+    """Legacy naive database timestamps represent UTC, never browser local time."""
+    if value is None:
+        return None
+    aware = value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+    return aware.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
 def _inbox_lead_status(lead) -> dict:
     if lead is None:return {"lead_id":None,"lead_status":None,"lead_status_label":"Not organized"}
     value=lead.status
@@ -1971,7 +1979,7 @@ def _conversation_payload(db: Session, conversation: WhatsAppConversation,
         "customer_name": conversation.customer_name or "WhatsApp customer",
         "mode": conversation.mode,
         "unread_count": conversation.unread_count or 0,
-        "last_message_at": conversation.last_message_at.isoformat() if conversation.last_message_at else None,
+        "last_message_at": _inbox_utc_timestamp(conversation.last_message_at),
         "latest_message": latest.message_text[:120] if latest else "",
         "payment_required": conversation.phone_number in payment_phones,
     }
@@ -2113,7 +2121,7 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
         "direction": item.direction, "text": item.message_text,
         "source": item.response_kind or ("customer" if item.direction == "inbound" else "ai"),
         "status": item.send_status or ("received" if item.direction == "inbound" else "sent"),
-        "timestamp": item.created_at.isoformat(),
+        "timestamp": _inbox_utc_timestamp(item.created_at),
         "message_type": "audio" if item.media_id else "text",
         "duration_seconds": item.media_duration_seconds,
         "media_url": (f"/crm/whatsapp/api/conversations/{conversation.id}/messages/{item.id}/media"

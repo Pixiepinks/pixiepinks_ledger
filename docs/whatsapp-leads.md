@@ -223,3 +223,8 @@ change. Final23 relevant checks passed, including real Chromium checks for17 dis
 backgrounds, text contrast of at least4.5:1, mobile fit, labels, live status updates
 and neutral fallbacks. JavaScript syntax and diff checks passed. Deploy the reviewed
 web release and refresh the Inbox to load the versioned JS/CSS assets.
+
+
+### Inbox timestamp display
+
+The Inbox conversation list and message timestamps display Sri Lanka time (`Asia/Colombo`), independently of the browser/device timezone. The conversation heading identifies SL time. Stored naive database timestamps remain UTC; the Inbox API now includes the UTC `Z` suffix so browsers preserve the correct instant. No data rewrite, migration, messaging-window or learning quiet-period changes are involved. Regression coverage includes a New York browser displaying 09:05 UTC as 14:35 Sri Lanka time, explicit-offset normalization and unchanged stored timestamps.
