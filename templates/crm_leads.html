@@ -51,7 +51,7 @@
       <input name="mobile" required placeholder="Mobile" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
       <input name="city" placeholder="City" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
       <input name="product_interest" placeholder="Product Interest" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
-      <select name="status" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">{% for s in statuses %}<option value="{{ s }}">{{ s }}</option>{% endfor %}</select>
+      <select name="status" class="border border-gray-300 rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">{% for s in statuses %}<option value="{{ s }}">{{ status_labels.get(s, s) }}</option>{% endfor %}</select>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <select name="assigned_to" id="assigned_to_select" class="border border-gray-300 rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-emerald-300">
           <option value="">-- Select Assignee --</option>
@@ -127,7 +127,7 @@
       <tbody>
       {% for lead in leads %}
       <tr class="border-b hover:bg-gray-50">
-        <td class="px-3 py-2">{{ lead.lead_no }}</td><td class="px-3 py-2">{{ lead.created_at.date() if lead.created_at else '-' }}</td><td class="px-3 py-2">{{ lead.customer_name }}</td><td class="px-3 py-2">{{ lead.mobile }}</td><td class="px-3 py-2">{{ lead.city or '-' }}</td><td class="px-3 py-2">{{ lead.product_interest or '-' }}</td><td class="px-3 py-2">{{ lead.status }}</td><td class="px-3 py-2">{{ lead.assigned_to or '-' }}</td><td class="px-3 py-2">{{ lead.next_followup or '-' }}</td><td class="px-3 py-2"><a href="/crm/leads/{{ lead.id }}" class="text-emerald-700 underline">View</a></td>
+        <td class="px-3 py-2">{{ lead.lead_no }}</td><td class="px-3 py-2">{{ lead.created_at.date() if lead.created_at else '-' }}</td><td class="px-3 py-2">{{ lead.customer_name }}</td><td class="px-3 py-2">{{ lead.mobile }}</td><td class="px-3 py-2">{{ lead.city or '-' }}</td><td class="px-3 py-2">{{ lead.product_interest or '-' }}</td><td class="px-3 py-2">{{ status_labels.get(lead.status, lead.status) }}</td><td class="px-3 py-2">{{ lead.assigned_to or '-' }}</td><td class="px-3 py-2">{{ lead.next_followup or '-' }}</td><td class="px-3 py-2"><a href="/crm/leads/{{ lead.id }}" class="text-emerald-700 underline">View</a></td>
       </tr>
       {% endfor %}
       </tbody>
@@ -241,5 +241,5 @@ document.addEventListener("DOMContentLoaded", function () {
     {% endif %}
 });
 </script>
-<script src="/static/crm_whatsapp_leads.js?v=wa-leads-compact-1"></script>
+<script src="/static/crm_whatsapp_leads.js?v=lead-statuses-1"></script>
 {% endblock %}
