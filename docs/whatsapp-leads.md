@@ -145,3 +145,24 @@ isolated; no production database, real customer send or paid AI call was used.
 - `tests/test_crm_whatsapp_leads.py`, `tests/test_crm_whatsapp_leads_migration.py`,
   `tests/test_learning_migration.py` (new head assertion only).
 - `docs/whatsapp-leads.md`.
+
+## Expanded lead statuses
+
+The shared list now supports17 states: New, Replied, Awaiting Customer Reply,
+Not Responding, Interested, Future Buyer, Follow-up, Negotiating, Out of Stock,
+Payment Pending, Paid, Order Confirmed, Dispatched, Delivered, Lost, Not Interested
+and Invalid/Spam. The new options appear in the WhatsApp editor/filter and saved
+CRM create/detail/follow-up views. Existing stored status keys are retained.
+
+Future Buyer, Paid and Dispatched remain active for explicitly scheduled follow-ups.
+Delivered, Lost, Not Interested and Invalid/Spam are excluded from active reminder
+counts/lists. Paid/Dispatched here are CRM labels; actual payments and fulfillment
+continue through the existing Sales Order workflows. No accounting entry, payment,
+shipment, WhatsApp send or AI/HUMAN change is triggered by choosing a lead status.
+No migration or dependency is required.
+
+Expanded-status validation:26 final checks passed, including the eight additions,
+create/update/filter/render behavior, closed-state reminders, legacy forms and actual
+Chromium Future Buyer/Paid/Dispatched flows. A broader run passed68 checks with one
+PostgreSQL-only payment concurrency check skipped because no isolated PostgreSQL
+URL was supplied. These runs overlap; the full repository suite was not rerun.

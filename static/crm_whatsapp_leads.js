@@ -1,8 +1,9 @@
 (() => {
   "use strict";
   const el=id=>document.getElementById(id), base="/crm/leads/api/whatsapp", dialog=el("wa-lead-dialog");
-  let offset=0, total=0, csrf="", statuses=[], assignees=[], generation=0, selected=null, detail=null, refOffset=0, searchTimer, controller;
+  let offset=0, total=0, csrf="", statuses=[], statusLabels={}, assignees=[], generation=0, selected=null, detail=null, refOffset=0, searchTimer, controller;
   const write=(node,value)=>{node.textContent=value==null||value===""?"—":String(value);};
+  const statusLabel=value=>statusLabels[value]||(value?value.replaceAll("_"," "):"Status not set");
   const date=value=>value?new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Colombo",dateStyle:"medium",timeStyle:"short"}).format(new Date(value)):"—";
   async function api(path,method="GET",body=null,key=null,signal=null){
     const response=await fetch(base+path,{method,credentials:"same-origin",cache:"no-store",signal,headers:method==="GET"?{}:{"Content-Type":"application/json","X-CSRF-Token":csrf,"Idempotency-Key":key||crypto.randomUUID()},...(body?{body:JSON.stringify(body)}:{})});
@@ -33,12 +34,12 @@
     try{
       const query=new URLSearchParams({q:el("wa-leads-search").value,source:el("wa-leads-source").value,status:el("wa-leads-status").value,assigned:el("wa-leads-assigned").value,offset:String(offset)});
       const data=await api("?"+query);if(token!==generation)return;total=data.total;csrf=data.csrf_token;if(offset>=total&&offset>0){offset=total?Math.floor((total-1)/50)*50:0;return load();}
-      if(!statuses.length){statuses=data.statuses;assignees=data.assignees;for(const status of statuses)el("wa-leads-status").add(new Option(status.replaceAll("_"," "),status));for(const name of assignees)el("wa-leads-assigned").add(new Option(name,name));}
+      if(!statuses.length){statuses=data.statuses;statusLabels=data.status_labels||{};assignees=data.assignees;for(const status of statuses)el("wa-leads-status").add(new Option(statusLabel(status),status));for(const name of assignees)el("wa-leads-assigned").add(new Option(name,name));}
       el("wa-leads-rows").replaceChildren(...data.items.map(item=>{
         const row=document.createElement("tr"),customer=document.createElement("td"),name=document.createElement("strong"),phone=document.createElement("small"),mode=document.createElement("small");row.dataset.conversationId=String(item.conversation_id);write(name,item.customer_name);write(phone,item.phone_number);write(mode,`${item.mode}${item.lead?` · ${item.lead.lead_no}`:""}`);customer.append(name,phone,mode);row.append(customer);
         const activity=document.createElement("td");write(activity,date(item.last_activity));row.append(activity);
         const source=document.createElement("td");if(item.latest_referral){source.append(referralCard(item.latest_referral));}else write(source,"WhatsApp · No referral received");row.append(source);
-        for(const value of [item.lead?.product_interest,item.lead?(item.lead.status?.replaceAll("_"," ")||"Status not set"):"Not organized",item.lead?.assigned_to,item.lead?.next_followup]){const cell=document.createElement("td");write(cell,value);row.append(cell);}
+        for(const value of [item.lead?.product_interest,item.lead?(statusLabel(item.lead.status)):"Not organized",item.lead?.assigned_to,item.lead?.next_followup]){const cell=document.createElement("td");write(cell,value);row.append(cell);}
         const actions=document.createElement("td"),wrap=document.createElement("div"),inbox=document.createElement("a"),manage=document.createElement("button");wrap.className="wa-lead-actions";inbox.href=item.inbox_url;write(inbox,"Open Inbox");manage.type="button";write(manage,item.lead?"Manage / referrals":"Organize / referrals");manage.onclick=()=>open(item.conversation_id);wrap.append(inbox,manage);actions.append(wrap);row.append(actions);return row;
       }));
       write(el("wa-leads-result"),total?`${offset+1}–${Math.min(offset+50,total)} of ${total} WhatsApp conversations` :"No WhatsApp conversations match these filters.");el("wa-leads-prev").disabled=offset===0;el("wa-leads-next").disabled=offset+50>=total;
@@ -52,7 +53,7 @@
     try{
       const data=await api("/"+selected,"GET",null,null,controller.signal);if(token!==detailGeneration||!dialog.open)return;detail=data;
       write(el("wa-lead-summary"),`${data.customer_name} · ${data.phone_number} · Conversation ${data.conversation_id}`);
-      el("wa-lead-edit-status").replaceChildren(...statuses.map(value=>new Option(value.replaceAll("_"," "),value)));
+      el("wa-lead-edit-status").replaceChildren(...statuses.map(value=>new Option(statusLabel(value),value)));
       el("wa-lead-edit-assigned").replaceChildren(new Option("Unassigned",""),...assignees.map(name=>new Option(name,name)));
       if(data.lead){el("wa-lead-form").hidden=false;el("wa-lead-fields").disabled=false;el("wa-lead-edit-status").value=data.lead.status;el("wa-lead-edit-assigned").value=data.lead.assigned_to||"";if(data.lead.assigned_to&&!assignees.includes(data.lead.assigned_to)){el("wa-lead-edit-assigned").add(new Option(data.lead.assigned_to,data.lead.assigned_to));el("wa-lead-edit-assigned").value=data.lead.assigned_to;}el("wa-lead-product").value=data.lead.product_interest||"";el("wa-lead-followup").value=data.lead.next_followup||"";el("wa-lead-note").value="";el("wa-lead-view").href=data.lead.url;el("wa-lead-view").hidden=false;}
       else{el("wa-lead-link").hidden=false;el("wa-lead-match").replaceChildren(new Option("Choose existing CRM lead",""),...data.matching_leads.map(item=>new Option(`${item.lead_no} · ${item.customer_name}`,item.id)));el("wa-lead-match").disabled=!data.matching_leads.length;write(el("wa-lead-create"),data.matching_leads.length?"Link selected CRM lead":"Create CRM record");write(el("wa-lead-link-help"),data.matching_leads.length?"Existing records match this number. Choose one; its saved status and follow-up will be preserved.":"This creates one CRM record. It does not send a message or change AI/HUMAN mode.");el("wa-lead-view").hidden=true;}

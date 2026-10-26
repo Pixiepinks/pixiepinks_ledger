@@ -256,14 +256,33 @@ LOGIN_PATH = "/login"
 LEAD_STATUSES = [
     "NEW",
     "REPLIED",
+    "AWAITING_CUSTOMER_REPLY",
+    "NOT_RESPONDING",
     "INTERESTED",
+    "FUTURE_BUYER",
     "FOLLOW_UP",
     "NEGOTIATING",
+    "OUT_OF_STOCK",
     "PAYMENT_PENDING",
+    "PAID",
     "ORDER_CONFIRMED",
+    "DISPATCHED",
     "DELIVERED",
     "LOST",
+    "NOT_INTERESTED",
+    "INVALID_SPAM",
 ]
+LEAD_STATUS_LABELS = {
+    "AWAITING_CUSTOMER_REPLY": "Awaiting Customer Reply",
+    "FUTURE_BUYER": "Future Buyer",
+    "PAID": "Paid",
+    "DISPATCHED": "Dispatched",
+    "NOT_RESPONDING": "Not Responding",
+    "OUT_OF_STOCK": "Out of Stock",
+    "NOT_INTERESTED": "Not Interested",
+    "INVALID_SPAM": "Invalid/Spam",
+}
+CLOSED_LEAD_STATUSES = ("DELIVERED", "LOST", "NOT_INTERESTED", "INVALID_SPAM")
 
 HUMAN_HANDOVER_REPLY = (
     "Certainly. I'll leave this conversation for the PixiePinks team to assist you."
@@ -3541,13 +3560,13 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
     today = date.today()
     total_leads = db.query(func.count(Lead.id)).scalar() or 0
     new_leads = db.query(func.count(Lead.id)).filter(Lead.status == "NEW").scalar() or 0
-    followups_today = db.query(func.count(Lead.id)).filter(Lead.next_followup == today).scalar() or 0
+    followups_today = db.query(func.count(Lead.id)).filter(Lead.next_followup == today, Lead.status.notin_(CLOSED_LEAD_STATUSES)).scalar() or 0
     completed_sales = db.query(func.count(Lead.id)).filter(Lead.status == "DELIVERED").scalar() or 0
     lost_leads = db.query(func.count(Lead.id)).filter(Lead.status == "LOST").scalar() or 0
 
     pending_followups = (
         db.query(Lead)
-        .filter(Lead.next_followup.is_not(None), Lead.next_followup <= today, Lead.status.notin_(["DELIVERED", "LOST"]))
+        .filter(Lead.next_followup.is_not(None), Lead.next_followup <= today, Lead.status.notin_(CLOSED_LEAD_STATUSES))
         .order_by(Lead.next_followup.asc(), Lead.created_at.desc())
         .all()
     )
@@ -3579,7 +3598,7 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
 
 
 from crm_whatsapp_leads import build_router as build_whatsapp_leads_router
-app.include_router(build_whatsapp_leads_router(get_db,require_user,_require_csrf,_csrf_token,LEAD_STATUSES,_referral_preview_tag,_normalize_whatsapp_phone))
+app.include_router(build_whatsapp_leads_router(get_db,require_user,_require_csrf,_csrf_token,LEAD_STATUSES,_referral_preview_tag,_normalize_whatsapp_phone,status_labels=LEAD_STATUS_LABELS))
 
 
 @app.get("/crm/leads", response_class=HTMLResponse)
@@ -3687,6 +3706,7 @@ def crm_leads(
             "request": request,
             "leads": leads,
             "statuses": LEAD_STATUSES,
+            "status_labels": LEAD_STATUS_LABELS,
             "crm_users": crm_users,
             "query": search_query,
             "range_type": selected_range,
@@ -3747,7 +3767,7 @@ def crm_lead_view(lead_id: int, request: Request, db: Session = Depends(get_db),
     tasks = db.query(LeadTask).filter(LeadTask.lead_id == lead_id).order_by(LeadTask.task_date.desc(), LeadTask.id.desc()).all()
 
     return templates.TemplateResponse("crm_lead_view.html", {
-        "request": request, "lead": lead, "notes": notes, "tasks": tasks, "statuses": LEAD_STATUSES
+        "request": request, "lead": lead, "notes": notes, "tasks": tasks, "statuses": LEAD_STATUSES, "status_labels": LEAD_STATUS_LABELS
     })
 
 

@@ -105,7 +105,7 @@ def matching_leads(db,conversation,normalize_phone):
         Lead.notes.contains('\nWhatsApp: '+compact+'\n'),Lead.notes.startswith('WhatsApp: '+compact+'\n'))).order_by(Lead.id.desc()).limit(20).all()
 
 
-def build_router(get_db,require_user,require_csrf,csrf_token,statuses,preview_tag,normalize_phone):
+def build_router(get_db,require_user,require_csrf,csrf_token,statuses,preview_tag,normalize_phone,status_labels=None):
     from learning_routes import read_body
     router=APIRouter(prefix='/crm/leads/api/whatsapp',route_class=LeadRoute)
     @router.get('')
@@ -113,7 +113,7 @@ def build_router(get_db,require_user,require_csrf,csrf_token,statuses,preview_ta
         status:str=Query('',max_length=32),assigned:str=Query('',max_length=100),offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
         authorize(user)
         if status and status not in statuses+['UNORGANIZED']:raise HTTPException(422,'Invalid status')
-        return {**listing(db,preview_tag,q.strip(),source,status,assigned,offset),'statuses':statuses,
+        return {**listing(db,preview_tag,q.strip(),source,status,assigned,offset),'statuses':statuses,'status_labels':status_labels or {},
             'assignees':[name for name, in db.query(CRMUser.name).order_by(CRMUser.name)],'csrf_token':csrf_token(request)}
 
     @router.get('/{cid}')
