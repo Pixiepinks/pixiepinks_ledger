@@ -2525,6 +2525,38 @@ def whatsapp_product_search(q: str = Query("", max_length=100),
         raise HTTPException(503, "Shopify product search is temporarily unavailable") from None
 
 
+def _staff_product_caption(product):
+    variant_line = (f"\n{product['variant_title']}" if product.get("variant_title")
+                    and product["variant_title"] != "Default Title" else "")
+    caption = (f"{product['title']}{variant_line}\n"
+               f"Price: Rs. {product['price']:,.2f}\nView Product: {product['url']}")
+    return caption
+
+
+def _record_staff_product(db, conversation, user, product, attempt, message_id):
+    """Shared persistence for single-product and collection image sends."""
+    caption = _staff_product_caption(product)
+    attempt.status, attempt.whatsapp_message_id = "SENT", message_id
+    db.add(WhatsAppConversationMessage(
+        phone_number=conversation.phone_number, direction="outbound", message_text=caption,
+        whatsapp_message_id=message_id, response_kind="staff_product", send_status="sent",
+        sent_by=user.username, shopify_product_reference=product["id"],
+        shopify_variant_reference=product["variant_id"], product_handle=product["handle"],
+        product_title=product["title"], variant_title=product.get("variant_title"),
+        product_sku=product.get("sku"), product_price=product["price"],
+        product_currency=product["currency"], product_image_url=product["image"],
+        product_url=product["url"],
+    ))
+    if message_id and not db.query(WhatsAppOutboundProductMessage).filter_by(
+            whatsapp_message_id=message_id).first():
+        db.add(WhatsAppOutboundProductMessage(
+            whatsapp_message_id=message_id, customer_phone=conversation.phone_number,
+            shopify_product_handle=product["handle"], product_title=product["title"],
+        ))
+    conversation.last_message_at = datetime.utcnow()
+    db.commit()
+
+
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/send-product")
 async def whatsapp_manual_product_send(conversation_id: int, request: Request,
                                        db: Session = Depends(get_db),
@@ -2552,10 +2584,7 @@ async def whatsapp_manual_product_send(conversation_id: int, request: Request,
         raise HTTPException(503, "Shopify product verification is temporarily unavailable") from None
     if product is None:
         raise HTTPException(422, "This product or variant is unavailable. Refresh the catalogue and choose again.")
-    variant_line = (f"\n{product['variant_title']}" if product.get("variant_title")
-                    and product["variant_title"] != "Default Title" else "")
-    caption = (f"{product['title']}{variant_line}\n"
-               f"Price: Rs. {product['price']:,.2f}\nView Product: {product['url']}")
+    caption = _staff_product_caption(product)
     attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
                                 message_text=caption, sent_by=user.username)
     db.add(attempt)
@@ -2575,25 +2604,7 @@ async def whatsapp_manual_product_send(conversation_id: int, request: Request,
         db.commit()
         return JSONResponse({"ok": False, "error": "Meta could not send this product image. Verify the image and customer service window."}, status_code=502)
     message_id = result if isinstance(result, str) else None
-    attempt.status, attempt.whatsapp_message_id = "SENT", message_id
-    db.add(WhatsAppConversationMessage(
-        phone_number=conversation.phone_number, direction="outbound", message_text=caption,
-        whatsapp_message_id=message_id, response_kind="staff_product", send_status="sent",
-        sent_by=user.username, shopify_product_reference=product["id"],
-        shopify_variant_reference=product["variant_id"], product_handle=product["handle"],
-        product_title=product["title"], variant_title=product.get("variant_title"),
-        product_sku=product.get("sku"), product_price=product["price"],
-        product_currency=product["currency"], product_image_url=product["image"],
-        product_url=product["url"],
-    ))
-    if message_id and not db.query(WhatsAppOutboundProductMessage).filter_by(
-            whatsapp_message_id=message_id).first():
-        db.add(WhatsAppOutboundProductMessage(
-            whatsapp_message_id=message_id, customer_phone=conversation.phone_number,
-            shopify_product_handle=product["handle"], product_title=product["title"],
-        ))
-    conversation.last_message_at = datetime.utcnow()
-    db.commit()
+    _record_staff_product(db, conversation, user, product, attempt, message_id)
     return {"ok": True, "status": "SENT"}
 
 
@@ -4093,3 +4104,12 @@ def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depe
         "assets_total": assets_total, "liab_total": liab_total,
         "equity_total": equity_total, "liab_equity_total": liab_equity_total
     })
+
+
+from shopify_collection_routes import build_router as build_shopify_collection_router
+app.include_router(build_shopify_collection_router(
+    get_db, require_user, _require_csrf, _csrf_token,
+    lambda pid, vid, client: resolve_inbox_product(pid, vid, catalog_client=client),
+    lambda phone, image, body: send_whatsapp_image(phone, image, body, return_outcome=True),
+    _staff_product_caption, _record_staff_product,
+))
