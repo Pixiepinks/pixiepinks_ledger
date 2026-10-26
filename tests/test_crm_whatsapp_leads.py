@@ -161,6 +161,11 @@ def test_chromium_leads_ad_preview_history_manage_and_saved_records(inbox):
             page.locator('#wa-leads-source').select_option('ad')
             page.locator('#wa-leads-result').filter(has_text='of 1 WhatsApp').wait_for()
             assert 'second-ad' in page.locator('#wa-leads-rows').inner_text()
+            source_cell=page.locator('#wa-leads-rows tr').first.locator('td').nth(2)
+            assert source_cell.inner_text()=='Ad ID: second-ad'
+            assert source_cell.locator('strong,p,a').count()==0
+            assert source_cell.locator('img').evaluate('(node)=>node.getBoundingClientRect().height')==48
+            assert page.locator('#wa-leads-rows tr').first.bounding_box()['height']<100
             page.get_by_role('button',name='Organize / referrals').click()
             page.locator('#wa-lead-referrals').filter(has_text='first-ad').wait_for()
             assert attack in page.locator('#wa-lead-referrals').inner_text()
@@ -259,8 +264,9 @@ def test_chromium_unavailable_creative_keeps_useful_text_card(inbox):
                 route.fulfill(status=response.status_code,body=response.content,headers={key:value for key,value in response.headers.items() if key not in {'content-length','content-encoding','set-cookie'}})
             page.route('**/*',serve);page.goto('https://inbox.test/crm/leads')
             row=page.locator(f'#wa-leads-rows tr[data-conversation-id="{ids[0]}"]')
-            row.filter(has_text='Preview unavailable').wait_for()
-            assert 'Verified referral headline' in row.inner_text() and 'ad-123' in row.inner_text()
-            assert row.locator('img').count()==0 and row.get_by_role('link',name='View source').count()==1
+            row.get_by_role('img',name='Preview unavailable').wait_for()
+            assert 'Verified referral headline' not in row.inner_text() and 'ad-123' in row.inner_text()
+            assert row.locator('img').count()==0 and row.get_by_role('link',name='View source').count()==0
+            assert row.bounding_box()['height']<100
             assert not errors and not sends
         finally:browser.close()

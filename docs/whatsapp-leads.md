@@ -32,9 +32,9 @@ A phone match is a suggestion for staff review, not an attribution relationship.
 
 ## What the source card establishes
 
-The list shows the **most recently captured referral**, its stored headline,
-source type, safe source ID/link, count of referrals and count explicitly marked
-ad. Source filters match actual stored ad/post types; they do not infer Facebook
+The list shows the **most recently captured referral** as a compact48px thumbnail
+and source/ad ID only. Headlines, descriptions, source links and additional details
+remain in Organize / referrals, keeping the table rows short. Source filters match actual stored ad/post types; they do not infer Facebook
 versus Instagram. An ad filter means an ad referral exists in that conversation,
 not that every subsequent message or the customer's first-ever contact came from it.
 
@@ -106,6 +106,12 @@ Nothing was merged or deployed by this task. After review/authorization:
    when rolling application behavior back on SQLite. No constraints are disabled.
 
 ## Validation
+
+Compact-row follow-up:16 relevant checks passed, including real Chromium assertions
+that rows show only the thumbnail/ID, remain compact and retain full dialog history.
+The change is display-only and needs no additional migration or backend change.
+
+Original feature validation:
 
 Final feature checks: **20 passed**, including real Chromium create/manage/filter/
 referral history/mobile behavior, XSS escaping, real successful image responses and
