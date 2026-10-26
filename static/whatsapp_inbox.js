@@ -4,7 +4,7 @@
   let selected = Number(root.dataset.initial) || null, filter = new URLSearchParams(location.search).get("filter") || "all";
   let recorder, stream, timer, blob, blobUrl, started, duration, voiceKey, chunks = [], discard = false;
   let textSending = false, textSendAttempt = null;
-  let conversationController, conversationLoading = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null;
+  let conversationController, conversationLoading = false, conversationMarkRead = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null, listGeneration = 0;
   const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
   const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
   const badge = (value, kind = "neutral") => { const el = document.createElement("span"); el.className = `badge ${kind}`; text(el, value); return el; };
@@ -17,26 +17,27 @@
     return data;
   }
   function conversationRow(c) {
-    const button = document.createElement("button"); button.className = "conversation-row" + (c.id === selected ? " selected" : "");
+    const button = document.createElement("button"); button.dataset.conversationId = String(c.id); button.className = "conversation-row" + (c.id === selected ? " selected" : "");
     const line = document.createElement("div"); line.className = "conversation-line";
     const name = document.createElement("strong"); text(name, c.customer_name);
     const time = document.createElement("time"); text(time, c.last_message_at ? new Date(c.last_message_at).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : ""); line.append(name, time);
     const preview = document.createElement("p"); text(preview, c.latest_message || c.phone_number);
-    const meta = document.createElement("div"); meta.className = "conversation-meta"; meta.append(badge(c.mode, c.mode.toLowerCase()));
+    const meta = document.createElement("div"); meta.className = "conversation-meta"; meta.append(badge(c.mode, c.mode.toLowerCase())); const leadStatus = badge(c.lead_status_label || "Not organized", "lead-status"); leadStatus.setAttribute("aria-label", `Lead status: ${c.lead_status_label || "Not organized"}`); meta.append(leadStatus);
     if (c.payment_required) meta.append(badge("PAYMENT REQUIRED", "payment"));
     if (c.unread_count) { const unread = document.createElement("span"); unread.className = "unread"; text(unread, c.unread_count); meta.append(unread); }
     button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true); return button;
   }
-  async function loadList() {
-    if (listLoading || document.hidden) return;
-    listLoading = true;
+  async function loadList(force = false) {
+    if ((listLoading && !force) || document.hidden) return;
+    const generation = ++listGeneration; listLoading = true;
     try {
       const search = document.getElementById("search").value;
       const data = await api(`/crm/whatsapp/api/conversations?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}`);
+      if (generation !== listGeneration) return;
       list.replaceChildren(...data.conversations.map(conversationRow)); text(document.getElementById("list-status"), `${data.conversations.length} shown`);
       if (!data.conversations.length) { const empty = document.createElement("div"); empty.className = "empty"; text(empty, search ? "No search results." : "No WhatsApp conversations."); list.replaceChildren(empty); }
-    } catch (_) { list.innerHTML = '<div class="empty">Could not load conversations.</div>'; }
-    finally { listLoading = false; }
+    } catch (_) { if (generation === listGeneration) list.innerHTML = '<div class="empty">Could not load conversations.</div>'; }
+    finally { if (generation === listGeneration) listLoading = false; }
   }
   function detailRow(label, value) { const row = document.createElement("div"), name = document.createElement("span"), content = document.createElement("span"); row.className = "detail-row"; text(name, label); text(content, value); row.append(name, content); return row; }
   function detailLink(label, url, primary = false) { const link = document.createElement("a"); link.className = `btn ${primary ? "btn-primary" : "btn-secondary"}`; link.href = url; text(link, label); return link; }
@@ -201,18 +202,28 @@
     if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
     if (switching) { conversationGeneration += 1; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); }
     if (conversationLoading) return;
-    const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true;
+    const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true; conversationMarkRead = markRead;
     try {
       if (markRead) await api(`/crm/whatsapp/api/conversations/${id}/read`, {method: "POST", signal: controller.signal}); const data = await api(`/crm/whatsapp/api/conversations/${id}`, {signal: controller.signal});
       if (generation !== conversationGeneration || selected !== id) return;
       currentConversationData = data;
+      root.dispatchEvent(new CustomEvent("inbox-conversation-data", {detail: {id, conversation: data.conversation}}));
       text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));
       const action = document.getElementById("mode-action"); text(action, data.conversation.mode === "AI" ? "Take Over" : "Return to AI"); action.dataset.mode = data.conversation.mode; document.getElementById("payment-banner").hidden = !data.conversation.payment_required;
       reconcileMessages(data.messages); const nextDetailsSignature = JSON.stringify([data.conversation, data.order, data.sales_order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
       if (markRead || switching) loadList();
     } catch (error) { if (error.name !== "AbortError" && !messages.children.length) messages.innerHTML = '<div class="empty">Conversation not found or could not be loaded.</div>'; }
-    finally { if (conversationController === controller) { conversationLoading = false; conversationController = null; } }
+    finally { if (conversationController === controller) { conversationLoading = false; conversationMarkRead = false; conversationController = null; } }
   }
+  root.addEventListener("inbox-lead-status-updated", event => {
+    const id = event.detail.id; loadList(true);
+    if (selected === id) {
+      // Fence out a pre-save polling response while retaining message/media nodes.
+      const keepMarkRead = conversationLoading && conversationMarkRead;
+      conversationGeneration += 1; conversationController?.abort(); conversationLoading = false;
+      openConversation(id, keepMarkRead);
+    }
+  });
   const stopTracks = () => { stream?.getTracks().forEach(track => track.stop()); stream = null; };
   const recordingFilename = type => type.includes("ogg") ? "voice.ogg" : type.includes("mp4") ? "voice.m4a" : "voice.webm";
   function showComposerMessage(message = "", isError = false) {

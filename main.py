@@ -1945,16 +1945,27 @@ def _payment_required_phones(db: Session) -> set[str]:
     }
 
 
+def _inbox_lead_status(lead) -> dict:
+    if lead is None:return {"lead_id":None,"lead_status":None,"lead_status_label":"Not organized"}
+    value=lead.status
+    return {"lead_id":lead.id,"lead_status":value,
+            "lead_status_label":LEAD_STATUS_LABELS.get(value,value.replace("_"," ") if value else "Status not set")}
+
+
 def _conversation_payload(db: Session, conversation: WhatsAppConversation,
                           payment_phones: set[str] | None = None,
-                          latest_messages: dict[str, WhatsAppConversationMessage] | None = None) -> dict:
+                          latest_messages: dict[str, WhatsAppConversationMessage] | None = None,
+                          linked_leads: dict | None = None) -> dict:
     latest = (latest_messages or {}).get(conversation.phone_number)
     if latest_messages is None:
         latest = db.query(WhatsAppConversationMessage).filter(
             WhatsAppConversationMessage.phone_number == conversation.phone_number
         ).order_by(WhatsAppConversationMessage.created_at.desc()).first()
     payment_phones = payment_phones if payment_phones is not None else _payment_required_phones(db)
+    linked=(linked_leads.get(conversation.id) if linked_leads is not None else
+            db.query(Lead.id,Lead.status).filter_by(whatsapp_conversation_id=conversation.id).one_or_none())
     return {
+        **_inbox_lead_status(linked),
         "id": conversation.id,
         "phone_number": conversation.phone_number,
         "customer_name": conversation.customer_name or "WhatsApp customer",
@@ -1983,8 +1994,9 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
 
 
 @app.get("/crm/whatsapp/api/conversations")
-def whatsapp_conversations(search: str = "", filter: str = "all", limit: int = 50,
+def whatsapp_conversations(response: Response, search: str = "", filter: str = "all", limit: int = 50,
                            db: Session = Depends(get_db), user: User = Depends(require_user)):
+    response.headers["Cache-Control"] = "private, no-store"
     query = db.query(WhatsAppConversation)
     term = search.strip()
     if term:
@@ -2011,7 +2023,8 @@ def whatsapp_conversations(search: str = "", filter: str = "all", limit: int = 5
     for message in recent_messages:
         latest_messages.setdefault(message.phone_number, message)
     unread_total = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
-    return {"conversations": [_conversation_payload(db, row, payment_phones, latest_messages) for row in rows],
+    linked_leads={row.whatsapp_conversation_id:row for row in db.query(Lead.id,Lead.status,Lead.whatsapp_conversation_id).filter(Lead.whatsapp_conversation_id.in_([item.id for item in rows] or [-1])).all()}
+    return {"conversations": [_conversation_payload(db, row, payment_phones, latest_messages, linked_leads) for row in rows],
             "unread_total": unread_total}
 
 

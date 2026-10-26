@@ -166,3 +166,45 @@ create/update/filter/render behavior, closed-state reminders, legacy forms and a
 Chromium Future Buyer/Paid/Dispatched flows. A broader run passed68 checks with one
 PostgreSQL-only payment concurrency check skipped because no isolated PostgreSQL
 URL was supplied. These runs overlap; the full repository suite was not rerun.
+
+## Update lead status directly in WhatsApp Inbox
+
+Baseline: `d51ef60544277f469c464816c15feb4302e110f4` (PR81).
+Select a conversation, choose one of the17 CRM statuses in the new Lead status bar
+below the chat header, then choose Save status. A blue status badge appears directly
+beside the AI/HUMAN badge in the conversation list, including mobile. Both views
+read the same primary Lead.whatsapp_conversation_id relationship used by CRM Leads.
+
+Opening or polling the Inbox does not create records. An unlinked conversation is
+labelled Not organized. Its first explicit status save creates the CRM record, or
+requires staff to choose an existing matching legacy lead before linking. Other
+fields and notes are preserved. This editor sends only status/optional lead ID to
+the existing staff-authorized, CSRF/idempotency-protected lead mutation API; there
+is no second status store or separate sending implementation.
+
+GET `/crm/leads/api/whatsapp/{conversation_id}/status` supplies only lightweight
+editor metadata, current CRM state, candidates and CSRF token. The Inbox list now
+bulk-loads linked status data in one query, with private/no-store responses. Selected
+conversation metadata carries the same status. Existing polling refreshes badges
+and external CRM changes; an in-progress staff edit is preserved. Successful saves
+refresh the list/selected metadata while fencing old responses and retaining media
+DOM nodes. A pending mark-read intent is retained if its request must be refreshed.
+
+Saving status does not send WhatsApp messages, change mode, change conversation
+activity time/quiet deadlines, record payments, dispatch orders or authorize learning.
+Paid/Dispatched remain CRM labels; operational actions use the existing Sales Order
+workflows. The new UI has loading/retry/save-error states, disabled duplicate-submit
+controls and generation checks for fast conversation switching.
+
+No migration, dependency, environment, worker or schedule change is required; deploy
+only the reviewed web release. Validation:617 relevant regressions passed without
+failures/skips, including real SQLite/PostgreSQL CRM checks and existing WhatsApp/
+media/referral/Quick Messages/learning/Bot Management/Shopify/sales coverage. A final
+22-check Inbox run passed after mark-read refresh refinement. Runs overlap. The new
+8-check group includes four staff roles plus real Chromium mobile/desktop status
+editing, persisted blue badges, CRM-to-Inbox polling, failed-save retry, delayed old
+conversation responses, explicit legacy linking and retained image elements without
+repeat media download. PostgreSQL/SQLite requirements-only Python3.12.14 startup/
+restart, pip check, JavaScript syntax and diff checks passed. The full repository
+suite was not rerun for this change. No live data, customer sends, merge or deployment
+was performed.
