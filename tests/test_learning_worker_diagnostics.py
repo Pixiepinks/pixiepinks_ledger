@@ -184,7 +184,8 @@ def test_chromium_zero_run_history_diagnostics_and_mobile(learning,monkeypatch):
     client,sessions,engine,_,_,_=learning;enable(sessions,monkeypatch);cid=source(sessions)
     with sessions() as db:
         row=config_row(db);row.config={**configuration(db),'quiet_hours':24}
-        db.get(WhatsAppConversation,cid).last_message_at=datetime.utcnow();db.commit()
+        activity=datetime.utcnow()
+        db.get(WhatsAppConversation,cid).last_message_at=activity;db.commit()
     worker.tick(engine,sessions,lambda *a:pytest.fail('Quiet source analyzed'))
     with playwright.sync_playwright() as api:
         browser=api.chromium.launch(executable_path=chromium,headless=True,args=['--no-sandbox'])
@@ -204,6 +205,17 @@ def test_chromium_zero_run_history_diagnostics_and_mobile(learning,monkeypatch):
             page.locator('#learning-diagnostics-sources').filter(has_text='QUIET_PERIOD').wait_for()
             assert 'Person1' not in page.locator('#learning-run-diagnostics').inner_text()
             assert '9477000' not in page.locator('#learning-run-diagnostics').inner_text()
+            def assert_deadlines():
+                table=page.locator('#learning-diagnostics-sources table')
+                headers=table.locator('th').all_text_contents();cells=table.locator('tr').nth(1).locator('td')
+                assert cells.nth(headers.index('quiet hours')).inner_text()=='24'
+                assert cells.nth(headers.index('last message at')).inner_text()==(activity+timedelta(hours=5,minutes=30)).strftime('%d %b %Y, %H:%M')
+                assert cells.nth(headers.index('quiet until')).inner_text()==(activity+timedelta(hours=29,minutes=30)).strftime('%d %b %Y, %H:%M')
+            assert_deadlines()
+            page.locator('[data-tab="sources"]').click()
+            page.locator('#learning-inspect-sources').click()
+            page.locator('#learning-diagnostics-status').filter(has_text='Current state only').wait_for()
+            assert_deadlines()
             page.set_viewport_size({'width':375,'height':800})
             assert page.locator('#learning-run-diagnostics').is_visible() and not errors
         finally:browser.close()

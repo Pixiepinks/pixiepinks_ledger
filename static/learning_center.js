@@ -1,6 +1,7 @@
 (() => {
   "use strict";
   const base="/crm/bot-management/learning/api", root=document.getElementById("learning-center"), error=document.getElementById("learning-error");
+  const sourceColumns=["source_id","conversation_id","reason","last_message_at","quiet_hours","quiet_until","origin_counts","window_counts","consent_at","messages_from","cursor","minimum_evidence","last_analysis_status"];
   let csrf="", role="", dashboard, selected=null, offset=0, total=0, searchTimer, generation=0;
   const element=id=>document.getElementById(id), text=(node,value)=>{node.textContent=value==null?"Not available":String(value);};
   const date=value=>value?new Intl.DateTimeFormat("en-GB",{timeZone:"Asia/Colombo",dateStyle:"medium",timeStyle:"short"}).format(new Date(value)):"Not yet";
@@ -11,7 +12,7 @@
   function table(target,rows,keys){
     target.replaceChildren();if(!rows.length){text(target,"No records yet.");return;}
     const table=document.createElement("table"),head=document.createElement("tr");keys.forEach(key=>{const th=document.createElement("th");text(th,key.replaceAll("_"," "));head.append(th);});table.append(head);
-    rows.forEach(row=>{const tr=document.createElement("tr");keys.forEach(key=>{const td=document.createElement("td"),value=row[key];if(key==="diagnostics"){const button=document.createElement("button");button.type="button";button.textContent="View Diagnostics";button.disabled=!["ADMIN","SALES_MANAGER"].includes(role);button.onclick=()=>safe(()=>runDiagnostics(row.id));td.append(button);tr.append(td);return;}text(td,key.endsWith("_at")||key==="timestamp"?date(value):typeof value==="object"?JSON.stringify(value):value);tr.append(td);});table.append(tr);});target.append(table);
+    rows.forEach(row=>{const tr=document.createElement("tr");keys.forEach(key=>{const td=document.createElement("td"),value=row[key];if(key==="diagnostics"){const button=document.createElement("button");button.type="button";button.textContent="View Diagnostics";button.disabled=!["ADMIN","SALES_MANAGER"].includes(role);button.onclick=()=>safe(()=>runDiagnostics(row.id));td.append(button);tr.append(td);return;}text(td,key.endsWith("_at")||["timestamp","quiet_until","messages_from"].includes(key)?date(value):typeof value==="object"?JSON.stringify(value):value);tr.append(td);});table.append(tr);});target.append(table);
   }
   function show(panel){root.querySelectorAll("[data-panel]").forEach(node=>{node.hidden=node.dataset.panel!==panel;});root.querySelectorAll("[data-tab]").forEach(node=>node.classList.toggle("selected",node.dataset.tab===panel));}
   async function refresh(){
@@ -60,7 +61,7 @@
     const data=await api(`/jobs/${id}/diagnostics`), values=data.diagnostics||{};
     element("learning-run-diagnostics").hidden=false; text(element("learning-diagnostics-status"),data.historical_available?runText(data.job):"No diagnostic snapshot was recorded for this historical job. Inspect current sources separately; current state cannot prove historical skip reasons.");
     table(element("learning-diagnostics-summary"),Object.entries(values).filter(([key])=>key!=="sources").map(([metric,value])=>({metric,value})),["metric","value"]);
-    table(element("learning-diagnostics-sources"),values.sources||[],["source_id","conversation_id","reason","origin_counts","window_counts","consent_at","messages_from","cursor","minimum_evidence","last_analysis_status"]);
+    table(element("learning-diagnostics-sources"),values.sources||[],sourceColumns);
     element("learning-run-diagnostics").focus();
   }
   async function history(){const data=await api("/history");table(element("learning-jobs"),data.jobs.map(job=>({...job,result:runText(job)})),["id","result","created_at","completed_at","conversations_processed","candidates_generated","candidates_auto_published","token_usage","estimated_cost","error_count","error_summary","diagnostics"]);table(element("learning-audit"),data.audit,["timestamp","actor_id","action","entity_type","entity_id","previous_state","new_state"]);}
@@ -69,7 +70,7 @@
     try{const job=await api(`/jobs/${id}`);text(element("learning-notice"),`Job ${id}: ${runText(job)}. Cron checks approximately every 15 minutes.`);text(element("learning-latest-run"),runText(job));if(["QUEUED","RUNNING","RETRY"].includes(job.status)&&attempt<45)setTimeout(()=>watchJob(id,attempt+1),5000);else await history();}catch(_){text(element("learning-notice"),`Job ${id} is queued; status could not be refreshed. Check History.`);}
   }
   element("learning-diagnostics-close").onclick=()=>{element("learning-run-diagnostics").hidden=true;};
-  element("learning-inspect-sources").onclick=()=>safe(async()=>{const data=await api("/diagnostics/sources");element("learning-run-diagnostics").hidden=false;text(element("learning-diagnostics-status"),"Current state only; not a reconstruction of historical runs. No customer content is included.");table(element("learning-diagnostics-summary"),[{backend:data.database_backend,effective_enabled:data.effective_enabled,total_sources:data.total_sources,environment:data.environment}],["backend","effective_enabled","total_sources","environment"]);table(element("learning-diagnostics-sources"),data.sources,["source_id","conversation_id","reason","origin_counts","window_counts","consent_at","messages_from","cursor","last_analysis_status"]);element("learning-run-diagnostics").focus();});
+  element("learning-inspect-sources").onclick=()=>safe(async()=>{const data=await api("/diagnostics/sources");element("learning-run-diagnostics").hidden=false;text(element("learning-diagnostics-status"),"Current state only; not a reconstruction of historical runs. No customer content is included.");table(element("learning-diagnostics-summary"),[{backend:data.database_backend,effective_enabled:data.effective_enabled,total_sources:data.total_sources,environment:data.environment}],["backend","effective_enabled","total_sources","environment"]);table(element("learning-diagnostics-sources"),data.sources,sourceColumns);element("learning-run-diagnostics").focus();});
   async function safe(action){error.textContent="";try{await action();}catch(failure){text(error,failure.message);}}
   root.querySelectorAll("[data-tab]").forEach(node=>node.onclick=()=>safe(async()=>{show(node.dataset.tab);if(node.dataset.tab==="suggestions")await suggestions();if(node.dataset.tab==="history")await history();if(node.dataset.tab==="sources")await sources();}));
   root.querySelectorAll("[data-action]").forEach(button=>button.onclick=()=>safe(async()=>{button.disabled=true;try{const body=button.dataset.action==="edit"?{content:element("learning-detail-content").value,title:element("learning-edit-title").value}:button.dataset.action==="approve"?{verified:element("learning-verified").checked}:{};await api(`/candidates/${selected.id}/${button.dataset.action}`,"POST",body);await detail(selected.id);await refresh();await suggestions();}finally{button.disabled=false;}}));
