@@ -4093,3 +4093,7 @@ def balance_sheet(request: Request, as_of: str | None = None, db: Session = Depe
         "assets_total": assets_total, "liab_total": liab_total,
         "equity_total": equity_total, "liab_equity_total": liab_equity_total
     })
+
+
+from whatsapp_collection_routes import build_router as build_whatsapp_collection_router
+app.include_router(build_whatsapp_collection_router(get_db, require_user, _require_csrf, _csrf_token))

@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     META_WHATSAPP_ACCESS_TOKEN: Optional[str] = None
     META_WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
     META_GRAPH_API_VERSION: str = "v26.0"
+    META_WHATSAPP_BUSINESS_ACCOUNT_ID: Optional[str] = None
+    META_WHATSAPP_CATALOG_ID: Optional[str] = None
+    # Explicit full Shopify variant GID -> Meta retailer_id mapping. Never infer IDs.
+    META_WHATSAPP_PRODUCT_MAPPING_JSON: str = "{}"
     WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES: int = Field(4 * 1024 * 1024, ge=1024, le=5_000_000)
     WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
     WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
