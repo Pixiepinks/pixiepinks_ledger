@@ -86,13 +86,14 @@ def test_chromium_mobile_badges_edit_errors_polling_switches_and_media_identity(
     client,sessions,ids,sends,_,csrf=inbox
     with sessions() as db:
         first=db.get(WhatsAppConversation,ids[0]);second=db.get(WhatsAppConversation,ids[1])
+        first.last_message_at=datetime(2026,10,26,9,5)
         lead=Lead(id=901,lead_no='LD-match',customer_name='Legacy CRM customer',mobile=second.phone_number,status='INTERESTED',notes='Keep legacy notes')
-        message=WhatsAppConversationMessage(phone_number=first.phone_number,direction='inbound',message_text='Image message',response_kind='customer_media')
+        message=WhatsAppConversationMessage(phone_number=first.phone_number,direction='inbound',message_text='Image message',response_kind='customer_media',created_at=datetime(2026,10,26,9,5))
         db.add_all([lead,message]);db.flush();db.add(WhatsAppMessageAttachment(message_id=message.id,media_id='test-image',media_type='image',mime_type='image/png'));db.commit()
     with playwright.sync_playwright() as api:
         browser=api.chromium.launch(executable_path=chromium,headless=True,args=['--no-sandbox'])
         try:
-            page=browser.new_page(viewport={'width':390,'height':760});errors=[];fail={'save':False};media_requests=[]
+            page=browser.new_page(viewport={'width':390,'height':760},timezone_id='America/New_York');errors=[];fail={'save':False};media_requests=[]
             page.on('pageerror',lambda error:errors.append(str(error)))
             def serve(route):
                 request=route.request;url=urlsplit(request.url)
@@ -108,9 +109,11 @@ def test_chromium_mobile_badges_edit_errors_polling_switches_and_media_identity(
             first_row=page.locator(f'.conversation-row[data-conversation-id="{ids[0]}"]')
             first_row.locator('.lead-status').filter(has_text='Not organized').wait_for()
             assert first_row.locator('.badge.human').count()==1
+            assert '02:35 pm' in first_row.locator('time').inner_text().lower()
             first_row.click();page.wait_for_function('!document.getElementById("inbox-lead-status-select").disabled')
             assert page.locator('#inbox-lead-status-select option').count()==18
             page.locator('#messages .message-attachment img').wait_for()
+            assert '02:35:00 pm' in page.locator('#messages').inner_text().lower()
             page.evaluate('window.retainedImage=document.querySelector("#messages .message-attachment img");document.getElementById("inbox").addEventListener("inbox-conversation-data",e=>{if(e.detail.conversation.lead_status==="FUTURE_BUYER")window.leadStatusRefreshed=true;});')
             initial_media_requests=len(media_requests)
             page.locator('#inbox-lead-status-select').select_option('FUTURE_BUYER');page.locator('#inbox-lead-status-save').click()
@@ -199,3 +202,21 @@ def test_chromium_all_status_colors_are_distinct_readable_and_mobile_safe(inbox)
             assert unknown.evaluate('(node)=>getComputedStyle(node).backgroundColor')=='rgb(241, 245, 249)'
             assert not errors and not sends
         finally:browser.close()
+
+
+def test_inbox_timestamp_serialization_preserves_utc_instant(inbox):
+    from datetime import timezone, timedelta
+    client,sessions,ids,*_=inbox
+    instant=datetime(2026,10,26,9,5)
+    with sessions() as db:
+        conversation=db.get(WhatsAppConversation,ids[0]);conversation.last_message_at=instant
+        db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number,direction="inbound",message_text="Timezone regression",created_at=instant))
+        db.commit()
+    rows=client.get('/crm/whatsapp/api/conversations').json()['conversations']
+    assert next(row for row in rows if row['id']==ids[0])['last_message_at']=='2026-10-26T09:05:00Z'
+    messages=client.get(f'/crm/whatsapp/api/conversations/{ids[0]}').json()['messages']
+    assert next(row for row in messages if row['text']=='Timezone regression')['timestamp']=='2026-10-26T09:05:00Z'
+    assert main._inbox_utc_timestamp(None) is None
+    assert main._inbox_utc_timestamp(datetime(2026,10,26,14,35,tzinfo=timezone(timedelta(hours=5,minutes=30))))=='2026-10-26T09:05:00Z'
+    with sessions() as db:
+        assert db.get(WhatsAppConversation,ids[0]).last_message_at==instant

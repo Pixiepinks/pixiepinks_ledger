@@ -16,11 +16,20 @@
     if (!response.ok) { const error = new Error(data.detail || data.error || "Request failed"); error.status = response.status; throw error; }
     return data;
   }
+  // Inbox business times are explicit Sri Lanka time, independent of browser timezone.
+  function inboxTime(value, compact = false) {
+    if (!value) return "—";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return "—";
+    return date.toLocaleString("en-GB", {timeZone: "Asia/Colombo", hour12: true,
+      ...(compact ? {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}
+        : {year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit"})});
+  }
   function conversationRow(c) {
     const button = document.createElement("button"); button.dataset.conversationId = String(c.id); button.className = "conversation-row" + (c.id === selected ? " selected" : "");
     const line = document.createElement("div"); line.className = "conversation-line";
     const name = document.createElement("strong"); text(name, c.customer_name);
-    const time = document.createElement("time"); text(time, c.last_message_at ? new Date(c.last_message_at).toLocaleString([], {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}) : ""); line.append(name, time);
+    const time = document.createElement("time"); text(time, c.last_message_at ? inboxTime(c.last_message_at, true) : ""); line.append(name, time);
     const preview = document.createElement("p"); text(preview, c.latest_message || c.phone_number);
     const meta = document.createElement("div"); meta.className = "conversation-meta"; meta.append(badge(c.mode, c.mode.toLowerCase())); const leadStatus = badge(c.lead_status_label || "Not organized", "lead-status"); leadStatus.dataset.leadStatus = c.lead_status || "UNORGANIZED"; leadStatus.setAttribute("aria-label", `Lead status: ${c.lead_status_label || "Not organized"}`); meta.append(leadStatus);
     if (c.payment_required) meta.append(badge("PAYMENT REQUIRED", "payment"));
@@ -177,7 +186,7 @@
     wrapper.append(bubble, metadata); return wrapper;
   }
   const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context]);
-  const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${new Date(message.timestamp).toLocaleString()} · ${message.status}`;
+  const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${inboxTime(message.timestamp)} · ${message.status}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
     const containerTop = messages.getBoundingClientRect().top;
