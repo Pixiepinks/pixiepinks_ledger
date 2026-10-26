@@ -438,6 +438,8 @@ class CRMUser(Base):
 class Lead(Base):
     __tablename__ = "leads"
 
+    whatsapp_conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id", ondelete="RESTRICT"), nullable=True, unique=True, index=True)
+
     id = Column(Integer, primary_key=True, index=True)
     lead_no = Column(String, unique=True, index=True)
     customer_name = Column(String, nullable=False)
