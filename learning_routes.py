@@ -6,6 +6,8 @@ import json
 import logging
 import re
 from zoneinfo import ZoneInfo
+from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
 
 from fastapi.routing import APIRoute
 from fastapi.responses import JSONResponse
@@ -109,6 +111,17 @@ def feedback_metrics(db,start,end):
 
 def build_router(get_db,require_user,require_csrf,csrf_token):
     router=APIRouter(prefix='/crm/bot-management/learning/api',route_class=SafeLearningRoute)
+    @router.post('/lesson-test')
+    async def lesson_test(request:Request,db=Depends(get_db),user:User=Depends(require_user)):
+        authorize(user,'manage');require_csrf(request)
+        from learning_test_service import LessonTestInput,LessonTestError,compare
+        from shopify_catalog_service import ShopifyCatalogError
+        body=await read_body(request)
+        try:values=LessonTestInput.model_validate(body)
+        except ValidationError:raise HTTPException(422,'Provide a published candidate ID, a bounded synthetic question, valid context and an optional Shopify handle only') from None
+        try:return await run_in_threadpool(compare,db,user.id,values)
+        except LessonTestError as error:raise HTTPException(error.status_code,str(error)) from None
+        except ShopifyCatalogError:raise HTTPException(503,'Shopify verification is unavailable. No AI comparison was started.') from None
     @router.get('/dashboard')
     def dashboard(request:Request,response:Response,db=Depends(get_db),user:User=Depends(require_user)):
         authorize(user);response.headers['Cache-Control']='private, no-store';config=configuration(db)

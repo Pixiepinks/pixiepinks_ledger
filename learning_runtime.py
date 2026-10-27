@@ -53,36 +53,8 @@ def retrieve(query,catalog=None):
             rows=db.query(BotKnowledgeEntry,LearningKnowledgeVersion).join(LearningKnowledgeVersion,
                 LearningKnowledgeVersion.knowledge_item_id==BotKnowledgeEntry.id).filter(
                 BotKnowledgeEntry.enabled.is_(True),BotKnowledgeEntry.archived.is_(False)).order_by(LearningKnowledgeVersion.id.desc()).limit(200).all()
-            handles={p.get('handle') for p in (catalog or []) if isinstance(p,dict)}
-            words=set(re.sub(r'[^\w\u0D80-\u0DFF]',' ',normalized(query)).split())
-            words-={'a','an','the','is','are','i','you','me','to','for','and','my','it','this','that','please','can','do','of','in','ඔබට','මට','මම'}
-            if words&{'hi','hello','hey','ayubowan','ආයුබෝවන්'}:words|={'greeting','hello'}
-            if words&{'thanks','thank','sthuthi','ස්තුතියි'}:words|={'acknowledgement','thank'}
-            selected=[];seen=set()
-            for entry,version in rows:
-                if entry.id in seen:continue
-                seen.add(entry.id)
-                if version.publication_status!='PUBLISHED' or prohibited(entry.content):continue
-                if entry.topic=='product' and (entry.scope!='PRODUCT' or entry.scope_reference not in handles):continue
-                if entry.scope=='PRODUCT' and entry.scope_reference not in handles:continue
-                terms=set(re.sub(r'[^\w\u0D80-\u0DFF]',' ',normalized(entry.title+' '+entry.content+' '+(entry.tags or ''))).split())
-                score=len(words&terms)
-                if not score:continue
-                selected.append((score,version.source_type,entry,version))
-            selected.sort(key=lambda row:(row[1]!='MANAGER',-row[0]))
-            manager=[];automatic=[];versions=[];characters=0
-            for _,source,entry,version in selected[:4]:
-                value={'title':entry.title[:120],'content':entry.content[:700]}
-                characters+=len(value['content'])
-                if characters>2000:break
-                (automatic if source=='AUTO' else manager).append(value);versions.append(version.id)
-            if not versions:return None
             bot=db.query(BotConfiguration).first();snapshot=bot.published_snapshot if bot else {}
-            admin=[{'title':str(item.get('title',''))[:100],'content':str(item.get('content',''))[:500]}
-                   for bucket in ('policies','knowledge','faqs') for item in snapshot.get(bucket,[])
-                   if item.get('enabled',True) and any(word in normalized(str(item)) for word in words)]
-            return {'administrator_policies':admin[:3],'approved_bicycle_and_delivery_rules':{'bicycle':snapshot.get('bicycle',{}),'delivery':snapshot.get('delivery',{})},
-                'manager_reviewed_examples':manager,'automatic_communication_examples':automatic,'versions':versions}
+            return select_examples(query, catalog, rows, snapshot)
     return _bounded(lookup)
 
 
@@ -106,3 +78,37 @@ def record(kind,versions=(),conversation_id=None):
             for version in (versions or [None])[:4]:db.add(LearningFeedback(kind=kind,version_id=version,conversation_id=resolved))
             db.commit()
     _bounded(save)
+
+
+def select_examples(query, catalog, rows, snapshot, *, force_ids=()):
+    """Pure shared matcher; production never supplies force_ids."""
+    from learning_policy import prohibited, normalized
+    handles={p.get('handle') for p in (catalog or []) if isinstance(p,dict)}
+    words=set(re.sub(r'[^\w\u0D80-\u0DFF]',' ',normalized(query)).split())
+    words-={'a','an','the','is','are','i','you','me','to','for','and','my','it','this','that','please','can','do','of','in','ඔබට','මට','මම'}
+    if words&{'hi','hello','hey','ayubowan','ආයුබෝවන්'}:words|={'greeting','hello'}
+    if words&{'thanks','thank','sthuthi','ස්තුතියි'}:words|={'acknowledgement','thank'}
+    selected=[];seen=set()
+    for entry,version in rows:
+        if entry.id in seen:continue
+        seen.add(entry.id)
+        if version.publication_status!='PUBLISHED' or prohibited(entry.content):continue
+        if entry.topic=='product' and (entry.scope!='PRODUCT' or entry.scope_reference not in handles):continue
+        if entry.scope=='PRODUCT' and entry.scope_reference not in handles:continue
+        terms=set(re.sub(r'[^\w\u0D80-\u0DFF]',' ',normalized(entry.title+' '+entry.content+' '+(entry.tags or ''))).split())
+        score=len(words&terms)
+        if not score and entry.id not in force_ids:continue
+        selected.append((score,version.source_type,entry,version))
+    selected.sort(key=lambda row:(row[1]!='MANAGER',-row[0]))
+    manager=[];automatic=[];versions=[];characters=0
+    for _,source,entry,version in selected[:4]:
+        value={'title':entry.title[:120],'content':entry.content[:700]}
+        characters+=len(value['content'])
+        if characters>2000:break
+        (automatic if source=='AUTO' else manager).append(value);versions.append(version.id)
+    if not versions:return None
+    admin=[{'title':str(item.get('title',''))[:100],'content':str(item.get('content',''))[:500]}
+           for bucket in ('policies','knowledge','faqs') for item in snapshot.get(bucket,[])
+           if item.get('enabled',True) and any(word in normalized(str(item)) for word in words)]
+    return {'administrator_policies':admin[:3],'approved_bicycle_and_delivery_rules':{'bicycle':snapshot.get('bicycle',{}),'delivery':snapshot.get('delivery',{})},
+        'manager_reviewed_examples':manager,'automatic_communication_examples':automatic,'versions':versions}
