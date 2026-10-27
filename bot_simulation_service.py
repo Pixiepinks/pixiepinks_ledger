@@ -124,6 +124,39 @@ def simulate(db, actor, values, needs_catalog):
         message, context_text = sanitize(values.message), sanitize(values.context_text)
         context = [{"direction": "inbound", "message_text": "Synthetic context, not verified business facts: " + context_text}] if context_text else []
         warnings, catalog, catalog_status = [], None, "NOT_REQUESTED"
+        if prefs.get("automatic_product_attachments") and prefs.get("send_product_images"):
+            from product_recommendation_service import recommend
+            exact = None
+            if values.product_handle:
+                try:
+                    exact = get_product_by_handle(values.product_handle) or {}
+                    if exact.get("handle") != values.product_handle:
+                        exact = {}
+                except ShopifyCatalogError:
+                    exact = {}
+                    warnings.append("The exact product could not be verified. No attachments were selected.")
+            result = recommend(snapshot, message, context, catalog_enabled=values.catalog_mode != "off",
+                               exact_product=exact)
+            cards = []
+            for product in result.products:
+                variant = next(v for v in product["variants"] if v["id"] == product["selected_variant_id"])
+                cards.append({"title": product["title"], "handle": product["handle"],
+                    "product_type": product.get("product_type"), "price": variant["price"],
+                    "currency": variant.get("currency", "LKR"),
+                    "image": variant.get("image") or product.get("featured_image")})
+            return {"reply": result.reply if result.status == "GENERATED" else None,
+                "status": result.status, "tokens": result.tokens, "model": settings.OPENAI_MODEL,
+                "products": cards, "warnings": warnings,
+                "trace": {"engine": "PRODUCT_RECOMMENDATION_PREVIEW", "mode": values.mode.upper(),
+                    "stage": result.stage, "published_version": config.published_version,
+                    "global_instructions_supplied": True, "verified_products": len(cards),
+                    "input_redacted": message != values.message or context_text != values.context_text,
+                    "live_learning_retrieval_unchanged": settings.LEARNING_RETRIEVAL_ENABLED,
+                    "learning_examples_supplied": False, "customer_records_loaded": False, "messages_sent": 0},
+                "notice": "Up to two billable AI calls: requirement discovery and verified product selection. "
+                    "These cards are previews only; no WhatsApp attachments were sent. Live delivery rechecks "
+                    "stock, current price, AI mode and the 24-hour service window before each attachment. "
+                    "Existing bicycle and order workflows keep their own routing."}
         if values.product_handle:
             try:
                 found = get_product_by_handle(values.product_handle)

@@ -503,6 +503,8 @@ def test_manager_rejection_cannot_be_overridden_by_new_auto_evidence(learning,mo
 def test_learning_retrieval_outage_does_not_change_reply_fallback(monkeypatch):
     import ai_service
     from types import SimpleNamespace
+    # This check isolates learning failure from independently published language preferences.
+    monkeypatch.setattr(ai_service, 'published_response_preferences', lambda: None)
     monkeypatch.setattr(settings,'OPENAI_API_KEY','private-key')
     monkeypatch.setattr(learning_runtime,'retrieve',lambda *a:(_ for _ in ()).throw(RuntimeError('private')))
     calls=[]

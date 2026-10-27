@@ -202,6 +202,40 @@ def test_live_reply_during_simulation_does_not_receive_draft_instructions(simula
     assert not settings.LEARNING_RETRIEVAL_ENABLED
 
 
+def test_automatic_attachment_preview_is_read_only_and_shows_ten_cards(simulator, monkeypatch):
+    from test_automatic_product_recommendations import product
+    import shopify_catalog_service
+    _, sessions, _, _, _, run = simulator
+    with sessions() as db:
+        row = db.query(BotConfiguration).one()
+        draft = copy.deepcopy(row.draft_snapshot)
+        draft["global"].update(automatic_product_attachments=True, maximum_products=10)
+        row.draft_snapshot = draft
+        db.commit()
+    responses = [
+        {"action": "search", "reply": "Hari", "query": "school bag"},
+        {"reply": "Me options balanna.", "products": [
+            {"product_index": i, "variant_id": f"gid://shopify/ProductVariant/{i + 1}"} for i in range(10)]},
+    ]
+    monkeypatch.setattr(shopify_catalog_service, "search_available_products", lambda *a, **k: [product(i) for i in range(1, 11)])
+    monkeypatch.setattr(ai_service, "OpenAI", lambda **kwargs: SimpleNamespace(responses=SimpleNamespace(
+        create=lambda **kwargs: SimpleNamespace(output_text=json.dumps(responses.pop(0)), usage=None))))
+    statements = []
+    with sessions() as db: engine = db.get_bind()
+    def capture(conn, cursor, statement, *args): statements.append(statement.strip().split()[0].upper())
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        response = run(message="Unisex bags for age 7")
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert response.status_code == 200
+    data = response.json()
+    assert data["trace"]["messages_sent"] == 0 and len(data["products"]) == 10
+    assert all(card["image"].startswith("https://cdn.shopify.com/") and card["price"] == "1500.00" for card in data["products"])
+    assert not {"INSERT", "UPDATE", "DELETE"}.intersection(statements)
+    assert not responses
+
+
 def test_model_failure_limits_and_bad_preferences_never_change_settings(simulator, monkeypatch):
     _, sessions, _, _, calls, run = simulator
     monkeypatch.setattr(settings, "OPENAI_API_KEY", None)
@@ -281,3 +315,39 @@ def test_chromium_general_simulator_presets_draft_style_no_auto_calls_and_stale_
             page.locator("#bot-simulation-run").click(); page.locator("#bot-simulation-status").filter(has_text="AI preview generated").wait_for()
             assert page.locator("#bot-simulation-reply").inner_text() == "How can I help?" and not errors
         finally: browser.close()
+
+
+def test_chromium_attachment_previews_render_images_prices_without_sending(simulator):
+    playwright = pytest.importorskip("playwright.sync_api")
+    chromium = shutil.which("chromium")
+    if not chromium: pytest.skip("Chromium unavailable")
+    client, _, _, _, calls, _ = simulator
+    html = client.get("/crm/bot-management/test").text
+    preview = {"reply": "Me options balanna.", "status": "GENERATED", "model": "mock", "tokens": 100,
+        "trace": {"mode": "DRAFT", "messages_sent": 0}, "warnings": [], "notice": "Preview only",
+        "products": [{"handle": f"school-bag-{i}", "title": f"Bag {i}", "price": "1500.00", "currency": "LKR",
+                      "image": "https://cdn.shopify.com/bag.jpg"} for i in range(10)]}
+    with playwright.sync_playwright() as api:
+        browser = api.chromium.launch(executable_path=chromium, headless=True, args=["--no-sandbox"])
+        try:
+            page = browser.new_page(); errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            def serve(route):
+                path = urlsplit(route.request.url).path
+                if path == "/crm/bot-management/test": route.fulfill(status=200, content_type="text/html", body=html)
+                elif path == "/crm/bot-management/api/simulate": route.fulfill(status=200, json=preview)
+                elif path.startswith("/static/"):
+                    response = client.get(path); route.fulfill(status=response.status_code, body=response.content,
+                        content_type=response.headers.get("content-type", "text/plain"))
+                else: route.fulfill(status=200, body="")
+            page.route("**/*", serve)
+            page.goto("https://simulator.test/crm/bot-management/test")
+            page.locator('[data-simulator-preset="bag"]').click()
+            page.locator("#bot-simulation-run").click()
+            page.locator("#bot-simulation-status").filter(has_text="AI preview generated").wait_for()
+            assert page.locator("#bot-simulation-products img").count() == 10
+            assert page.locator("#bot-simulation-products a").count() == 10
+            assert page.locator("#bot-simulation-products").inner_text().count("LKR 1500.00") == 10
+            assert not errors and not calls
+        finally:
+            browser.close()

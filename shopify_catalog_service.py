@@ -119,9 +119,9 @@ class ShopifyCatalogClient:
 PRODUCT_QUERY = """
 query SearchProducts($first: Int!, $query: String!) {
   products(first: $first, query: $query, sortKey: RELEVANCE) {
-    nodes { id title handle productType vendor tags status
+    nodes { id title handle description productType vendor tags status publishedAt
       featuredImage { url }
-      variants(first: 50) { nodes { id title sku price taxable availableForSale
+      variants(first: 50) { nodes { id title sku price taxable availableForSale image { url }
         inventoryQuantity inventoryItem { tracked }
         selectedOptions { name value }
       } }
@@ -179,7 +179,7 @@ query BicycleCollectionProducts($id: ID!, $first: Int!) {
   collection(id: $id) {
     id title handle
     products(first: $first, sortKey: BEST_SELLING) {
-      nodes { id title handle productType vendor tags status
+      nodes { id title handle description productType vendor tags status publishedAt
         featuredImage { url }
         variants(first: 50) { nodes { id title sku price availableForSale
           inventoryQuantity inventoryItem { tracked }
@@ -504,13 +504,16 @@ def _normalize_product(node: dict, filters: dict, *, available_only: bool = Fals
                          "price": str(raw.get("price")), "currency": "LKR",
                          "available": bool(raw.get("availableForSale")),
                          "inventory_quantity": quantity,
+                         **({"image": raw["image"]["url"]} if (raw.get("image") or {}).get("url") else {}),
                          "inventory_tracked": tracked, "selected_options": options})
     if not variants:
         return None
     handle = node.get("handle")
     return {"id": node.get("id"), "title": node.get("title"), "handle": handle,
+            "description": str(node.get("description") or "")[:2000],
             "product_type": node.get("productType"), "vendor": node.get("vendor"),
             "tags": node.get("tags") or [], "status": node.get("status"),
+            "published": bool(node.get("publishedAt")),
             "featured_image": (node.get("featuredImage") or {}).get("url"),
             "featured_image_verified": bool((node.get("featuredImage") or {}).get("url")),
             "url": f"{STOREFRONT_ROOT}/products/{handle}" if handle else None,
@@ -562,9 +565,26 @@ def search_products(query: str, limit: int = 5) -> list[dict]:
         normalized = _normalize_product(node, filters)
         if normalized:
             products.append(normalized)
-        if len(products) >= min(max(limit, 0), 5):
+        if len(products) >= min(max(limit, 0), 10):
             break
     return products
+
+
+def search_available_products(query: str, limit: int = 20) -> list[dict]:
+    """Bounded candidate search; filter unavailable variants before applying the limit."""
+    from product_recommendation_service import eligible_catalog
+    intent = parse_search_intent(query)
+    if not intent["terms"]:
+        return []  # Never let an empty/model-invalid query browse unrelated products.
+    data = client.graphql(PRODUCT_QUERY, {"first": MAX_CANDIDATES,
+                                         "query": _shopify_search_query(query)})
+    products = []
+    for node in data.get("products", {}).get("nodes", []):
+        if _matches_product_terms(node, intent["terms"]):
+            product = _normalize_product(node, intent["filters"])
+            if product:
+                products.append(product)
+    return eligible_catalog(products)[:min(max(limit, 0), 20)]
 
 
 def get_product_by_handle(handle: str) -> dict | None:

@@ -2,7 +2,7 @@
 <section id="bot-simulator" data-csrf="{{ simulation_csrf_token|e }}" data-can-run="{{ 'true' if user and user.role in ['ADMIN','SALES_MANAGER'] else 'false' }}">
  <form id="bot-simulation-form" class="bot-card">
   <h2>General AI simulator</h2>
-  <p class="helper">Test product questions across your Shopify categories, greetings, delivery, returns and other customer-service questions. One billable AI request per run. No WhatsApp messages or customer records are created.</p>
+  <p class="helper">Test product questions across your Shopify categories, greetings, delivery, returns and other customer-service questions. One billable AI request normally; up to two when automatic product attachments are enabled. No WhatsApp messages or customer records are created.</p>
   <div class="simulator-fields"><label>Configuration<select name="mode"><option value="draft">Current DRAFT — preview changes</option><option value="live">Current LIVE — published configuration</option></select></label><label>Shopify lookup<select name="catalog_mode"><option value="auto">Automatically search for product questions</option><option value="off">No catalog lookup for this test</option></select></label></div>
   <div class="simulator-presets"><span>Fill a sample:</span><button type="button" data-simulator-preset="greeting">Greeting</button><button type="button" data-simulator-preset="bag">School bags</button><button type="button" data-simulator-preset="toy">Toys</button><button type="button" data-simulator-preset="gift">Gifts</button><button type="button" data-simulator-preset="delivery">Delivery</button><button type="button" data-simulator-preset="returns">Returns</button></div>
   <label>Simulated customer question<textarea name="message" required maxlength="2000" rows="3" placeholder="For example: Do you have school bags?"></textarea></label>
@@ -18,4 +18,4 @@
   <details><summary>Simulation trace</summary><pre id="bot-simulation-trace"></pre></details>
   <p id="bot-simulation-notice" class="helper"></p>
  </section>
-</section><script src="/static/bot_simulation.js?v=1"></script>
+</section><script src="/static/bot_simulation.js?v=2"></script>
