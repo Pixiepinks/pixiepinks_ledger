@@ -116,7 +116,7 @@ from order_intent_service import (
 from bot_configuration_service import (
     HARD_GUARDRAILS, ensure_configuration, get_snapshot, publish as publish_bot_config,
     recommended_size as configured_bicycle_size, restore_as_draft, save_draft, vision_settings,
-    service_charge as configured_service_charge, validate_snapshot,
+    service_charge as configured_service_charge, validate_snapshot, draft_change_summary,
 )
 from sales_order_service import (
     ORDER_STATUSES, InvalidOrderTransition, SalesOrderValidationError, create_draft,
@@ -959,9 +959,12 @@ def _reply_to_text_message(
             # or product answer after the customer has switched intent.
             routing_context = [] if ignored_stale_context else context
             with SessionLocal() as config_db:
-                response_snapshot, _ = get_snapshot(config_db)
+                response_snapshot, response_version = get_snapshot(config_db)
             automatic_enabled = (response_snapshot.get("global", {}).get("automatic_product_attachments", False)
                                  and response_snapshot["global"].get("send_product_images", True))
+            logger.info("WhatsApp configuration version=%s automatic_products=%s product_images=%s bicycle_route=%s",
+                        response_version, response_snapshot.get("global", {}).get("automatic_product_attachments", False),
+                        response_snapshot["global"].get("send_product_images", True), bicycle_related)
 
             if automatic_enabled and not bicycle_related:
                 from product_recommendation_service import recommend
@@ -974,6 +977,9 @@ def _reply_to_text_message(
                 recommendation = recommend(response_snapshot, text_body, routing_context, seen_handles=seen_handles)
                 reply = recommendation.reply
                 automatic_delivery = recommendation.products
+                # This turn is handled. Do not let the later legacy catalog /
+                # text chain overwrite its clarification or verified selection.
+                raise StopIteration
             elif is_product_image_request(text_body):
                 # Reconstruct the last result intent, then fetch Shopify again;
                 # assistant prose is never treated as current product data.
@@ -1709,6 +1715,7 @@ def _bot_page_context(request: Request, db: Session, active: str, **extra) -> di
         "errors": errors, "warnings": warnings, "versions": versions, "audits": audits,
         "guardrails": HARD_GUARDRAILS, "collection_options": cached_collections,
         "last_shopify_refresh": last_refresh,
+        "suggested_change_summary": draft_change_summary(config.published_snapshot or {}, config.draft_snapshot or {}),
         "simulation_csrf_token": _csrf_token(request) if active == "test" else None,
     }
     context.update(extra)
@@ -3443,7 +3450,7 @@ def bot_add_entry(
 
 
 @app.post("/crm/bot-management/publish")
-def bot_publish(confirm: str = Form(""), change_summary: str = Form(...),
+def bot_publish(confirm: str = Form(""), change_summary: str = Form(""),
                 db: Session = Depends(get_db), user: User = Depends(require_user)):
     if confirm != "PUBLISH":
         raise HTTPException(400, "Explicit publish confirmation is required")
@@ -3467,7 +3474,7 @@ def bot_publish(confirm: str = Form(""), change_summary: str = Form(...),
             if action.get("type") == "CHOOSE_COLLECTION" and action.get("collection_reference") not in active_collections:
                 raise HTTPException(400, f"Rule {rule.get('name', '')} has no valid Shopify target collection")
     try:
-        publish_bot_config(db, user.username, change_summary.strip() or "Published configuration changes")
+        publish_bot_config(db, user.username, change_summary)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     return RedirectResponse("/crm/bot-management/versions", status_code=303)
