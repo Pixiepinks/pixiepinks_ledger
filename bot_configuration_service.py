@@ -51,6 +51,20 @@ def simulation_preferences(snapshot: dict) -> dict:
     return values
 
 
+def published_response_preferences() -> dict | None:
+    """Read only published preferences; never initialize configuration or read drafts."""
+    from database import SessionLocal
+    from sqlalchemy import text
+
+    with SessionLocal() as db:
+        if db.bind.dialect.name == "postgresql":
+            db.execute(text("SET LOCAL statement_timeout = '1000ms'"))
+        config = db.query(BotConfiguration).first()
+        if config is None or not config.published_snapshot:
+            return None
+        return simulation_preferences(config.published_snapshot)
+
+
 def default_snapshot() -> dict:
     return {
         "global": {

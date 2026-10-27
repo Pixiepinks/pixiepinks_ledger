@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event
 
 import ai_service
+import database
 import bot_simulation_service as service
 import learning_runtime
 import main
@@ -27,6 +28,7 @@ PATH = "/crm/bot-management/api/simulate"
 @pytest.fixture
 def simulator(inbox, monkeypatch):
     client, sessions, ids, _, login, csrf = inbox
+    monkeypatch.setattr(database, "SessionLocal", sessions)
     live = default_snapshot(); draft = copy.deepcopy(live)
     live["global"]["instructions"] = "Reply politely in English."
     draft["global"]["instructions"] = "Always reply in friendly Singlish using Latin letters, even when the customer writes English."
@@ -194,7 +196,8 @@ def test_live_reply_during_simulation_does_not_receive_draft_instructions(simula
         result = pool.submit(run)
         assert reached.wait(timeout=10)
         ai_service.generate_customer_reply("Live question")
-        assert "Singlish" not in calls[1]["instructions"] and "APPROVED BUSINESS RESPONSE PREFERENCES" not in calls[1]["instructions"]
+        assert "Singlish" not in calls[1]["instructions"]
+        assert "Reply politely in English." in calls[1]["instructions"]
         release.set(); assert result.result().status_code == 200
     assert not settings.LEARNING_RETRIEVAL_ENABLED
 

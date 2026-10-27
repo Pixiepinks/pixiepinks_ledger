@@ -14,11 +14,11 @@ The old HTML form POST remains a deterministic, clearly labelled **Legacy
 rule-only trace** for compatibility. It does not call the AI. The new UI uses
 the separate authenticated JSON simulator endpoint.
 
-This is a simulator upgrade. It does **not** change live customer reply-language
-routing, enable learned retrieval, publish settings or execute customer actions.
-Published Global Instructions are not newly wired into all production reply
-paths by this change. An operator must not assume a successful preview alone
-changes live AI or existing deterministic text/audio/image/workflow replies.
+The simulator does not publish settings or execute customer actions. Live generated
+AI replies now read published Global Instructions using the same response-preference
+prompt as this preview. DRAFT remains preview-only. Fixed workflow, fallback,
+text/audio/image messages retain their existing wording; publishing does not
+translate those messages. Learning retrieval does not need to be enabled.
 
 ## Using the simulator
 
@@ -60,7 +60,7 @@ that a model response is fluent Singlish: inspect the actual output.
 No publication is needed to preview DRAFT. Lesson comparisons also receive the
 published Global Instructions in **both** comparison arms, so language settings
 are held constant when evaluating a learned example. Learning retrieval can stay
-off throughout. This does not activate that policy in live customer routing.
+off throughout. Only published preferences affect live generated AI replies.
 
 ## Configuration and knowledge scope
 
