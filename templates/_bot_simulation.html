@@ -1,0 +1,21 @@
+<link rel="stylesheet" href="/static/bot_simulation.css?v=1">
+<section id="bot-simulator" data-csrf="{{ simulation_csrf_token|e }}" data-can-run="{{ 'true' if user and user.role in ['ADMIN','SALES_MANAGER'] else 'false' }}">
+ <form id="bot-simulation-form" class="bot-card">
+  <h2>General AI simulator</h2>
+  <p class="helper">Test product questions across your Shopify categories, greetings, delivery, returns and other customer-service questions. One billable AI request per run. No WhatsApp messages or customer records are created.</p>
+  <div class="simulator-fields"><label>Configuration<select name="mode"><option value="draft">Current DRAFT — preview changes</option><option value="live">Current LIVE — published configuration</option></select></label><label>Shopify lookup<select name="catalog_mode"><option value="auto">Automatically search for product questions</option><option value="off">No catalog lookup for this test</option></select></label></div>
+  <div class="simulator-presets"><span>Fill a sample:</span><button type="button" data-simulator-preset="greeting">Greeting</button><button type="button" data-simulator-preset="bag">School bags</button><button type="button" data-simulator-preset="toy">Toys</button><button type="button" data-simulator-preset="gift">Gifts</button><button type="button" data-simulator-preset="delivery">Delivery</button><button type="button" data-simulator-preset="returns">Returns</button></div>
+  <label>Simulated customer question<textarea name="message" required maxlength="2000" rows="3" placeholder="For example: Do you have school bags?"></textarea></label>
+  <div class="simulator-fields"><label>Optional synthetic previous context<textarea name="context_text" maxlength="2000" rows="3" placeholder="Describe a hypothetical previous exchange; no customer details."></textarea></label><label>Optional exact Shopify product handle<input name="product_handle" maxlength="200" placeholder="product-handle-only" autocomplete="off"><small>A handle is verified read-only against Shopify. Descriptions and search results alone do not prove which item an image or ad referred to.</small></label></div>
+  <p class="helper">For Singlish, save your preference in DRAFT Global Instructions and select DRAFT here. This simulator applies that style only to this preview; it does not change live customer reply-language routing. Learning retrieval can remain off. Use synthetic samples; inputs are privacy-filtered.</p>
+  <button id="bot-simulation-run" type="submit" disabled>Run AI simulation</button>
+  <p id="bot-simulation-status" role="status" aria-live="polite">Loading simulator controls…</p>
+ </form>
+ <section id="bot-simulation-results" class="bot-card" hidden aria-labelledby="bot-simulation-response-title">
+  <h2 id="bot-simulation-response-title">Proposed AI response</h2><pre id="bot-simulation-reply"></pre>
+  <p id="bot-simulation-usage" class="helper"></p><p id="bot-simulation-warnings" role="status"></p>
+  <h3>Verified Shopify matches</h3><div id="bot-simulation-products"></div>
+  <details><summary>Simulation trace</summary><pre id="bot-simulation-trace"></pre></details>
+  <p id="bot-simulation-notice" class="helper"></p>
+ </section>
+</section><script src="/static/bot_simulation.js?v=1"></script>

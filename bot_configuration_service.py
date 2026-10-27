@@ -36,6 +36,21 @@ def vision_settings(snapshot: dict) -> dict:
     return {**VISION_DEFAULTS, **snapshot.get("vision", {})}
 
 
+def simulation_preferences(snapshot: dict) -> dict:
+    """Bound saved response preferences for explicit, request-local AI previews."""
+    raw = snapshot.get("global") or {}
+    defaults = default_snapshot()["global"]
+    values = {key: raw.get(key, value) for key, value in defaults.items()}
+    instructions = values["instructions"]
+    if not isinstance(instructions, str) or not 0 < len(instructions.strip()) <= 4000:
+        raise ValueError("Saved Global Instructions must contain 1–4,000 characters for an AI preview.")
+    if type(values["maximum_products"]) is not int or not 1 <= values["maximum_products"] <= 5:
+        raise ValueError("Maximum recommended products must be between 1 and 5.")
+    if any(type(values[key]) is not bool for key, default in defaults.items() if type(default) is bool):
+        raise ValueError("Saved response preference switches must be boolean values.")
+    return values
+
+
 def default_snapshot() -> dict:
     return {
         "global": {

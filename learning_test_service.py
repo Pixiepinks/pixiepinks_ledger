@@ -111,8 +111,13 @@ def compare(db, actor, values):
         if values.context_kind != "none":
             context = [{"direction": "inbound", "message_text":
                 f"Synthetic {values.context_kind}; unverified description, not product authority: " + sanitize(values.context_text)}]
-        before = ai_service.ReplyTestContext(learned_payload=baseline)
-        after = ai_service.ReplyTestContext(learned_payload=treatment)
+        preferences = {}
+        if snapshot.get("global"):
+            from bot_configuration_service import simulation_preferences
+            try: preferences = simulation_preferences(snapshot)
+            except ValueError as error: raise LessonTestError(str(error)) from None
+        before = ai_service.ReplyTestContext(learned_payload=baseline, business_preferences=preferences)
+        after = ai_service.ReplyTestContext(learned_payload=treatment, business_preferences=preferences)
         before_text = ai_service.generate_customer_reply(message, recent_context=context,
             catalog_results=catalog, test_context=before)
         # Recheck current publication after a provider wait. No evaluations,

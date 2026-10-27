@@ -1662,6 +1662,7 @@ def _bot_page_context(request: Request, db: Session, active: str, **extra) -> di
         "errors": errors, "warnings": warnings, "versions": versions, "audits": audits,
         "guardrails": HARD_GUARDRAILS, "collection_options": cached_collections,
         "last_shopify_refresh": last_refresh,
+        "simulation_csrf_token": _csrf_token(request) if active == "test" else None,
     }
     context.update(extra)
     return context
@@ -3290,7 +3291,8 @@ def bot_management(request: Request, section: str = "overview", db: Session = De
                 ShopifyCollectionReference.handle.ilike(f"%{query}%")))
         collections = collection_query.order_by(ShopifyCollectionReference.title).limit(100).all()
     return templates.TemplateResponse("bot_management.html", _bot_page_context(
-        request, db, section, collections=collections, catalog_error=catalog_error))
+        request, db, section, collections=collections, catalog_error=catalog_error, user=user),
+        headers={"Cache-Control":"private, no-store"} if section == "test" else None)
 
 
 @app.post("/crm/bot-management/settings")
@@ -3454,7 +3456,7 @@ def bot_test(request: Request, message: str = Form(...), mode: str = Form("live"
     else:
         response = "Simulation identified a general enquiry. No external message or business record was created."
     return templates.TemplateResponse("bot_management.html", _bot_page_context(
-        request, db, "test", simulation={"message": message, "response": response, "trace": trace}))
+        request, db, "test", user=user, simulation={"message": message, "response": response, "trace": trace}))
 
 
 @app.post("/crm/bot-management/catalog/refresh")
@@ -4113,3 +4115,7 @@ app.include_router(build_shopify_collection_router(
     lambda phone, image, body: send_whatsapp_image(phone, image, body, return_outcome=True),
     _staff_product_caption, _record_staff_product,
 ))
+
+
+from bot_simulation_routes import build_router as build_bot_simulation_router
+app.include_router(build_bot_simulation_router(get_db, require_user, _require_csrf, needs_product_catalog))
