@@ -1,0 +1,11 @@
+<link rel="stylesheet" href="/static/saved_voices.css?v=1">
+<dialog id="saved-voice-dialog" aria-labelledby="saved-voice-heading">
+<header><h2 id="saved-voice-heading">Saved Voices</h2><button id="saved-voice-close" type="button" class="btn btn-secondary" aria-label="Close saved voices">×</button></header>
+<p id="saved-voice-recipient"></p><p>Read the words or listen, then choose a recording. Only Send Voice sends it to this customer.</p>
+<a href="/crm/saved-voices" target="_blank" rel="noopener">Open voice library</a>
+<label>Search titles or spoken words<input id="saved-voice-search" type="search" maxlength="100" autocomplete="off"></label>
+<p id="saved-voice-status" role="status" aria-live="polite"></p>
+<div id="saved-voice-list" class="voice-library-grid"></div><button id="saved-voice-more" class="btn btn-secondary" type="button" hidden>Load more</button>
+<section id="saved-voice-selection" hidden><h3>Selected recording</h3><strong id="saved-voice-selected-title"></strong><p id="saved-voice-selected-transcript"></p><audio id="saved-voice-selected-audio" controls preload="none"></audio></section>
+<footer><button id="saved-voice-send" type="button" class="btn btn-primary" disabled>Send Voice</button><button id="saved-voice-check" type="button" class="btn btn-secondary" hidden>Check send status</button></footer>
+</dialog><script src="/static/saved_voices.js?v=1"></script>
