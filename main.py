@@ -908,6 +908,11 @@ def _reply_to_text_message(
                 # derive the pending question from the turn immediately before it.
                 state_context = context[:-1]
             preference, age, bicycle_stage = infer_guided_state(state_context)
+            from product_requirements import requirements
+            shopping_topic = requirements("", state_context)["category"]
+            if shopping_topic and shopping_topic != "bicycle" and not persisted_state:
+                # Generic English age questions must not create a bicycle flow.
+                preference, age, bicycle_stage = None, None, None
             if persisted_state == AWAITING_BICYCLE_AGE:
                 preference, age, bicycle_stage = persisted_gender, persisted_age, "age"
             elif persisted_state == SHOWING_PRODUCTS and persisted_age is not None:

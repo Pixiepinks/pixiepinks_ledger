@@ -15,6 +15,7 @@ import ai_service
 from bot_configuration_service import simulation_preferences, relevant_entries
 from shopify_collection_service import safe_image
 from settings import settings
+from product_requirements import requirements, repeat_clarification
 
 
 class Discovery(BaseModel):
@@ -122,7 +123,9 @@ def recommend(snapshot, message, context=(), *, search=None, seen_handles=(), ca
         return Recommendation(ai_service.FALLBACK_REPLY, status="NOT_CONFIGURED")
     history = [{"direction": item.get("direction"), "text": ai_service._clean_text(item.get("message_text"), 2000)}
                for item in list(context)[-8:]]
+    known = requirements(message, context)
     data = {"customer_message": ai_service._clean_text(message, 2000), "recent_conversation": history,
+            "customer_requirements": known,
             "approved_policy_data": _policies(snapshot, message)}
     system = _system(prefs)
     try:
@@ -131,6 +134,10 @@ def recommend(snapshot, message, context=(), *, search=None, seen_handles=(), ca
             "Before searching, narrow down the actual requirement using information already supplied. "
             "For children's bags/toys/gifts/bicycles ask age and boys/girls/unisex preference when relevant "
             "to selecting the item. Ask one or two short questions at a time; never ask again for known information. "
+            "customer_requirements contains details extracted from the customer's answers. A bare number "
+            "after an age question is the age in years, not an incomplete answer or a product size. "
+            "When category, preference and age are known, proceed to catalog search unless a distinct "
+            "essential detail is missing. Do not just repeat/acknowledge those facts or promise to recommend later. "
             "Ask size, budget or colour only if useful, not as a compulsory checklist. "
             "A precise named product does not require demographic questions. Don't infer age or gender from names. "
             "Return action clarify with the question if necessary, reply for nonshopping questions, or search "
@@ -142,6 +149,8 @@ def recommend(snapshot, message, context=(), *, search=None, seen_handles=(), ca
         reply = ai_service._plain_whatsapp_text(discovery.reply)
         if not reply:
             raise ValueError("Empty discovery reply")
+        if repeat_clarification(discovery, known):
+            discovery.action, discovery.query = "search", known["category"]
         if discovery.action != "search" or not catalog_enabled:
             return Recommendation(reply, stage=discovery.action, tokens=tokens)
         if not discovery.query.strip():
@@ -171,6 +180,9 @@ def recommend(snapshot, message, context=(), *, search=None, seen_handles=(), ca
             "Choose only suitable products from the server-verified positive-stock catalog in JSON. "
             "Respect the customer's age, preference, size and budget. Do not invent age/fit claims from colours "
             "or names; ask for clarification when suitability cannot be established. "
+            "Do not ask again for category, age or preference already present in customer_requirements. "
+            "Return suitable selections now, ask a specific different essential question, or clearly explain "
+            "that no suitable available matches were found. Never merely echo known requirements. "
             f"Return at most {prefs['maximum_products']} distinct products, one exact available variant each. "
             "Never select unrelated products to fill the limit. Zero matches means no products; offer to refine "
             "the request, without inventing availability or restock promises. "

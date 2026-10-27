@@ -307,3 +307,69 @@ def test_live_requirement_question_is_not_overwritten_by_legacy_reply(store, pro
     monkeypatch.setattr(main, "send_whatsapp_image", lambda *a, **k: pytest.fail("Sent product before clarification"))
     main._reply_to_text_message(PHONE, "clarify-bags", "Do you have school bags?", None)
     assert texts == ["Daruwage wayasa keeyada?"] and len(calls) == 1
+
+
+@pytest.mark.parametrize("age_answer", ["6", "6 years", "age 6", "awurudu 6"])
+@pytest.mark.parametrize("action", ["clarify", "reply"])
+def test_answered_age_moves_to_catalog_even_if_model_repeats_question(provider, age_answer, action):
+    queue, calls = provider
+    queue.extend([{"action": action, "reply": "Age eka kiyanna puluwan da?", "query": ""},
+        {"reply": "Me galapena bottles balanna.", "products": [{"product_index": 0,
+            "variant_id": "gid://shopify/ProductVariant/1"}]}])
+    context = [
+        {"direction": "inbound", "message_text": "Do you have water bottle"},
+        {"direction": "outbound", "message_text": "Kids lata da? Boys, girls, unisex da?"},
+        {"direction": "inbound", "message_text": "Boy"},
+        {"direction": "outbound", "message_text": "Boys kids lata water bottle ekak? Age eka kiyanna puluwan da?"},
+    ]
+    queries = []
+    result = service.recommend(config(), age_answer, context,
+        search=lambda query, **kwargs: queries.append(query) or [product()])
+    assert queries == ["water bottle"] and len(result.products) == 1
+    assert result.reply == "Me galapena bottles balanna."
+    for call in calls:
+        known = json.loads(call["input"][0]["content"])["customer_requirements"]
+        assert known["category"] == "water bottle" and known["age_years"] == 6 and known["preference"] == "boy"
+
+
+def test_budget_answer_is_not_an_age_and_a_distinct_question_can_remain(provider):
+    from product_requirements import requirements
+    context = [{"direction": "inbound", "message_text": "Water bottle for a boy"},
+               {"direction": "outbound", "message_text": "What is your budget?"}]
+    assert requirements("6", context)["age_years"] is None
+    assert requirements("size 6", context)["age_years"] is None
+    queue, _ = provider
+    queue.append({"action": "clarify", "reply": "Capacity eka 500ml da 750ml da?", "query": ""})
+    context = [{"direction": "inbound", "message_text": "Water bottle for a boy"},
+               {"direction": "outbound", "message_text": "Daruwage wayasa keeyada?"}]
+    result = service.recommend(config(), "6", context, search=lambda *a, **k: pytest.fail("Ignored distinct missing detail"))
+    assert result.stage == "clarify" and not result.products
+
+
+def test_cancellation_is_not_overridden_by_completed_requirements(provider):
+    queue, _ = provider
+    queue.append({"action": "reply", "reply": "Hari, nawaththannam.", "query": ""})
+    context = [{"direction": "inbound", "message_text": "Water bottle for a boy age 6"},
+               {"direction": "outbound", "message_text": "Age eka kiyanna puluwan da?"}]
+    result = service.recommend(config(), "No need, age 6", context,
+        search=lambda *a, **k: pytest.fail("Searched after cancellation"))
+    assert result.stage == "reply" and not result.products
+
+
+@pytest.mark.parametrize("question", ["Age eka kiyanna puluwan da?", "How old is he?"])
+def test_live_bare_age_in_water_bottle_flow_never_becomes_a_bicycle_request(store, provider, monkeypatch, question):
+    queue, _ = provider
+    queue.extend([{"action": "clarify", "reply": "Age eka kiyanna puluwan da?", "query": ""},
+                  {"reply": "Galapena available bottles hambune naha.", "products": []}])
+    with store() as db:
+        for direction, text in [("inbound", "Do you have water bottle"), ("outbound", "Boy, girl or unisex?"),
+                                ("inbound", "Boy"), ("outbound", question)]:
+            db.add(WhatsAppConversationMessage(phone_number=PHONE, direction=direction, message_text=text))
+        db.commit()
+    import shopify_catalog_service
+    queries, texts = [], []
+    monkeypatch.setattr(shopify_catalog_service, "search_available_products", lambda query, **k: queries.append(query) or [])
+    monkeypatch.setattr(main, "search_bicycles_by_collection", lambda *a, **k: pytest.fail("Interpreted bottle age as bicycle sizing"))
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: texts.append(a[1]) or "wamid.none")
+    main._reply_to_text_message(PHONE, "age-six", "6", None)
+    assert queries == ["water bottle"] and texts == ["Galapena available bottles hambune naha."]
