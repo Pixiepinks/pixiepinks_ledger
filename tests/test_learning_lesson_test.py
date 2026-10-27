@@ -164,6 +164,17 @@ def test_no_private_evidence_in_model_calls_and_same_authority_in_both_arms(less
     assert calls[0]["instructions"] == calls[1]["instructions"]
 
 
+def test_both_lesson_comparison_arms_receive_published_not_draft_language_preferences(lesson):
+    _, sessions, _, _, write, cid, _, _, calls = lesson
+    with sessions() as db:
+        db.add(BotConfiguration(published_snapshot={"global":{"instructions":"Always reply in Singlish using Latin letters."}},
+            draft_snapshot={"global":{"instructions":"Unpublished draft wording."}})); db.commit()
+    assert write("/lesson-test", body(cid)).status_code == 200
+    assert all("Always reply in Singlish" in call["instructions"] for call in calls)
+    assert all("Unpublished draft wording" not in call["instructions"] for call in calls)
+    assert not settings.LEARNING_RETRIEVAL_ENABLED
+
+
 def test_provider_failure_is_not_reported_as_a_success_or_real_reply(lesson, monkeypatch, caplog):
     _, _, _, _, write, cid, _, _, _ = lesson
     def fail(**kwargs): raise RuntimeError("private token and provider response")
