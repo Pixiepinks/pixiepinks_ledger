@@ -50,6 +50,7 @@
     const manage=["ADMIN","SALES_MANAGER"].includes(role);element("learning-review-actions").querySelectorAll("button").forEach(node=>node.disabled=!manage);element("learning-restore").disabled=!manage;
     element("learning-detail-content").disabled=element("learning-edit-title").disabled=!manage;
     element("learning-restore-version").replaceChildren(...data.versions.filter(row=>row.content).map(row=>new Option(`Version ${row.version_number} · ${row.publication_status}`,row.id)));
+    root.dispatchEvent(new CustomEvent("learning-test-selection",{detail:{candidate_id:selected.id,title:selected.title,published:selected.publication_status==="PUBLISHED",manage,csrf_token:csrf}}));
     element("learning-detail").scrollIntoView({block:"nearest"});
   }
   function runText(job){
