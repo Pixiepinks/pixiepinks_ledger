@@ -44,8 +44,8 @@ def simulation_preferences(snapshot: dict) -> dict:
     instructions = values["instructions"]
     if not isinstance(instructions, str) or not 0 < len(instructions.strip()) <= 4000:
         raise ValueError("Saved Global Instructions must contain 1–4,000 characters for an AI preview.")
-    if type(values["maximum_products"]) is not int or not 1 <= values["maximum_products"] <= 5:
-        raise ValueError("Maximum recommended products must be between 1 and 5.")
+    if type(values["maximum_products"]) is not int or not 1 <= values["maximum_products"] <= 10:
+        raise ValueError("Maximum recommended products must be between 1 and 10.")
     if any(type(values[key]) is not bool for key, default in defaults.items() if type(default) is bool):
         raise ValueError("Saved response preference switches must be boolean values.")
     return values
@@ -72,6 +72,7 @@ def default_snapshot() -> dict:
             "reply_in_customer_language": True, "ask_one_question": True,
             "moderate_emojis": True, "concise": True, "send_product_images": True,
             "maximum_products": 3,
+            "automatic_product_attachments": False,
         },
         "bicycle": {
             "age_rules": [
@@ -177,8 +178,10 @@ def validate_snapshot(snapshot: dict) -> tuple[list[str], list[str]]:
     if not isinstance(minimum, int) or not isinstance(maximum, int) or minimum < 0 or minimum > maximum:
         errors.append("Delivery working-day range is invalid.")
     maximum_products = snapshot.get("global", {}).get("maximum_products")
-    if not isinstance(maximum_products, int) or not 1 <= maximum_products <= 5:
-        errors.append("Maximum recommended products must be between 1 and 5.")
+    if type(maximum_products) is not int or not 1 <= maximum_products <= 10:
+        errors.append("Maximum recommended products must be between 1 and 10.")
+    if type(snapshot.get("global", {}).get("automatic_product_attachments", False)) is not bool:
+        errors.append("Automatic product attachments must be a boolean value.")
     instruction = snapshot.get("global", {}).get("instructions", "")
     if not str(instruction).strip():
         errors.append("Global instructions cannot be empty.")

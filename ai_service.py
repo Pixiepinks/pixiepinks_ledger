@@ -101,7 +101,7 @@ def generate_customer_reply(
     user_content = message
     if catalog_results is not None:
         safe_results = []
-        for product in catalog_results[:5]:
+        for product in catalog_results[:10]:
             safe_product = {key: value for key, value in product.items()
                             if key not in ("id", "variants")}
             safe_product["variants"] = [

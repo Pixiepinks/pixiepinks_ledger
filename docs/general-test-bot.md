@@ -78,7 +78,7 @@ and applicable verified product handles accompany the context so facts are not
 silently detached from their scope. Failed membership lookup excludes scoped
 content and produces a warning. It does not broaden the entry to GLOBAL.
 
-At most five products are returned, further restricted by selected maximum-products
+At most ten products are returned, further restricted by selected maximum-products
 settings. Shopify search results verify those products' data, not the identity
 of a product referred to by a generic message, photo or advertisement. Catalog
 unavailability is distinguished from a successful search with no match.
@@ -110,13 +110,19 @@ model request; business preferences are explicitly lower priority. A synthetic
 description is never labelled verified catalog data. Model guardrails are not
 an automatic guarantee of correct replies; staff review remains necessary.
 
-One run makes at most one model request using the configured `OPENAI_MODEL`,
+With automatic product attachments disabled, one run makes at most one model request using the configured `OPENAI_MODEL`,
 with a 300-output-token limit, 12-second model timeout, SDK retries disabled
 and Responses `store=false`. Provider retention policies still apply. The UI
 does not auto-retry and reports failures without presenting a fallback as a
 successful generated answer. Tokens come from provider usage; no billed-cost
 estimate is fabricated. Manual previews do not increment learning-worker job
 cost/history counters; use provider billing for actual costs.
+
+With automatic product attachments enabled, the simulator previews the shared
+requirement-discovery and product-selection service, using up to two model requests
+and displaying selected images/prices without sending messages. See
+[automatic product attachments](automatic-product-attachments.md) for its distinct
+selection, inventory, scope and provider limits.
 
 Limits: 20 admitted attempts per manager per hour per web process, two concurrent
 previews per process, 2,000-character questions/context, 200-character handles,

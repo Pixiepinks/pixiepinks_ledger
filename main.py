@@ -495,7 +495,7 @@ def _set_bicycle_workflow(phone: str, state: str | None, *, gender: str | None =
 def _is_explicit_category_switch(message: str) -> bool:
     """Allow an unambiguous new category request to supersede discovery."""
     normalized = message.casefold()
-    return any(term in normalized for term in ("chocolate", "chocolates", "toy", "toys"))
+    return any(term in normalized for term in ("chocolate", "toy", "school bag", "stationery", "gift"))
 
 
 def _store_product_message(message_id: str | None, phone: str, product: dict) -> None:
@@ -749,6 +749,8 @@ def _reply_to_text_message(
     """Generate and send after Meta has already received its HTTP 200 acknowledgement."""
     bicycle_delivery = None
     product_image_delivery = None
+    automatic_delivery = None
+    automatic_enabled = False
     with SessionLocal() as db:
         conversation = _conversation_for_phone(db, sender)
         if conversation and conversation.mode == "HUMAN":
@@ -883,6 +885,8 @@ def _reply_to_text_message(
                     db.query(WhatsAppConversationMessage)
                     .filter(
                         WhatsAppConversationMessage.phone_number == sender,
+                        or_(WhatsAppConversationMessage.response_kind.is_(None),
+                            WhatsAppConversationMessage.response_kind != "ai_product"),
                         or_(
                             WhatsAppConversationMessage.whatsapp_message_id.is_(None),
                             WhatsAppConversationMessage.whatsapp_message_id != message_id,
@@ -954,8 +958,23 @@ def _reply_to_text_message(
             # Do not pass a stale guided bicycle transcript into the general AI
             # or product answer after the customer has switched intent.
             routing_context = [] if ignored_stale_context else context
+            with SessionLocal() as config_db:
+                response_snapshot, _ = get_snapshot(config_db)
+            automatic_enabled = (response_snapshot.get("global", {}).get("automatic_product_attachments", False)
+                                 and response_snapshot["global"].get("send_product_images", True))
 
-            if is_product_image_request(text_body):
+            if automatic_enabled and not bicycle_related:
+                from product_recommendation_service import recommend
+                with SessionLocal() as seen_db:
+                    seen_handles = [row[0] for row in seen_db.query(WhatsAppConversationMessage.product_handle).filter(
+                        WhatsAppConversationMessage.phone_number == sender,
+                        WhatsAppConversationMessage.direction == "outbound",
+                        WhatsAppConversationMessage.product_handle.is_not(None),
+                    ).order_by(WhatsAppConversationMessage.id.desc()).limit(100)]
+                recommendation = recommend(response_snapshot, text_body, routing_context, seen_handles=seen_handles)
+                reply = recommendation.reply
+                automatic_delivery = recommendation.products
+            elif is_product_image_request(text_body):
                 # Reconstruct the last result intent, then fetch Shopify again;
                 # assistant prose is never treated as current product data.
                 if bicycle_stage == "results" and preference and (age is not None or prior_result_size):
@@ -1052,8 +1071,12 @@ def _reply_to_text_message(
                         products = []
                     else:
                         products = result["products"]
+                    if automatic_enabled:
+                        from product_recommendation_service import eligible_catalog
+                        products = eligible_catalog(products)
                     matches = available_bicycle_matches(
-                        products, preference, limit=5 if bicycle_stage == "results" else 3,
+                        products, preference, limit=(response_snapshot["global"]["maximum_products"]
+                            if automatic_enabled else 5 if bicycle_stage == "results" else 3),
                         cheapest="cheaper" in text_body.casefold(),
                     )
                     if bicycle_stage == "results":
@@ -1069,7 +1092,8 @@ def _reply_to_text_message(
                         matches = [product for product in matches
                                    if has_available_variant([product])]
                         intro += "\nHere are some available options from our live Shopify collection:"
-                        bicycle_delivery = (intro, matches[:3])
+                        bicycle_delivery = (intro, matches[:response_snapshot["global"]["maximum_products"]]
+                                            if automatic_enabled else matches[:3])
                         reply = intro
                         _set_bicycle_workflow(sender, SHOWING_PRODUCTS, gender=preference,
                                               age=age, size=size)
@@ -1113,6 +1137,29 @@ def _reply_to_text_message(
     if bicycle_delivery:
         if image_reply_language and not _image_can_reply(sender):
             return
+        intro, products = bicycle_delivery
+        if automatic_enabled:
+            from product_recommendation_service import eligible_catalog
+            automatic_delivery = []
+            for product in eligible_catalog(products):
+                variant = product["variants"][0]
+                automatic_delivery.append({**product, "selected_variant_id": variant["id"]})
+            reply = intro
+            bicycle_delivery = None
+    if automatic_delivery is not None:
+        # The generator's prose is not an action: only the server's allowlisted
+        # selections may reach the attachment transport.
+        from automatic_product_delivery import can_deliver
+        if can_deliver(SessionLocal, sender):
+            reply_id = _send_text_with_id(sender, reply)
+            _store_conversation_message(sender, "outbound", reply, whatsapp_message_id=_real_message_id(reply_id),
+                                        customer_name=profile_name, response_kind="ai")
+            if automatic_delivery:
+                from automatic_product_delivery import deliver
+                deliver(SessionLocal, sender, message_id, automatic_delivery, resolve_inbox_product,
+                    lambda phone, image, body: send_whatsapp_image(phone, image, body, return_outcome=True))
+        return
+    if bicycle_delivery:
         intro, products = bicycle_delivery
         if image_reply_language:
             with SessionLocal() as db:
@@ -3300,7 +3347,8 @@ def bot_save_settings(
     request: Request, instructions: str = Form(...), maximum_products: int = Form(...),
     reply_in_customer_language: bool = Form(False), ask_one_question: bool = Form(False),
     moderate_emojis: bool = Form(False), concise: bool = Form(False),
-    send_product_images: bool = Form(False), db: Session = Depends(get_db),
+    send_product_images: bool = Form(False), automatic_product_attachments: bool = Form(False),
+    db: Session = Depends(get_db),
     user: User = Depends(require_user),
 ):
     snapshot, _ = get_snapshot(db, draft=True)
@@ -3309,6 +3357,7 @@ def bot_save_settings(
         "reply_in_customer_language": reply_in_customer_language,
         "ask_one_question": ask_one_question, "moderate_emojis": moderate_emojis,
         "concise": concise, "send_product_images": send_product_images,
+        "automatic_product_attachments": automatic_product_attachments,
     })
     save_draft(db, snapshot, user.username, "Updated response settings and global instructions")
     return RedirectResponse("/crm/bot-management/instructions", status_code=303)

@@ -23,7 +23,7 @@
     body.product_handle = body.product_handle.trim();
     running = true; results.hidden = true;
     form.querySelectorAll("input,textarea,select,button").forEach(node => node.disabled = true);
-    status.textContent = "Loading the selected configuration, verifying any Shopify context and generating one AI reply…";
+    status.textContent = "Loading configuration and generating a preview; automatic recommendations may use two AI calls…";
     const controller = new AbortController(), timeout = setTimeout(() => controller.abort(), 60000);
     try {
       const response = await fetch("/crm/bot-management/api/simulate", {method:"POST",credentials:"same-origin",cache:"no-store",
@@ -37,7 +37,16 @@
       const products = document.getElementById("bot-simulation-products"); products.replaceChildren();
       for (const product of data.products) { const row = document.createElement("p"), link = document.createElement("a");
         link.textContent = product.title; link.href = `https://www.pixiepinks.shop/products/${encodeURIComponent(product.handle)}`;
-        link.target = "_blank"; link.rel = "noopener noreferrer"; row.append(link); products.append(row); }
+        link.target = "_blank"; link.rel = "noopener noreferrer"; row.append(link);
+        if (product.image) { const img = document.createElement("img");
+          const url = new URL(product.image);
+          if (url.protocol === "https:" && (url.hostname === "cdn.shopify.com" || url.hostname.endsWith(".myshopify.com"))) {
+            img.src = url.href; img.alt = product.title; img.width = 100; img.loading = "lazy"; row.prepend(img);
+          }
+        }
+        if (product.price != null) { const price = document.createElement("span");
+          price.textContent = ` · ${product.currency || "LKR"} ${product.price}`; row.append(price); }
+        products.append(row); }
       if (!data.products.length) products.textContent = "No products verified for this preview.";
       results.hidden = false;
       status.textContent = data.status === "GENERATED" ? "AI preview generated. Review its language and facts; no customer action occurred." : "The provider did not generate a reply. This is not a successful simulation.";
