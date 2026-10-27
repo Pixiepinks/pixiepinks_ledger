@@ -192,6 +192,78 @@ def test_business_rules_never_become_automatic(content,expected):
     category,risk=classify(content,'communication');assert category==expected and risk!='LOW'
 
 
+def test_manager_can_correct_product_classification_with_neutral_communication_revision(learning,monkeypatch):
+    import ai_service
+    client,sessions,engine,_,_,write=learning;enable(sessions,monkeypatch);source(sessions)
+    worker.tick(engine,sessions,extractor)
+    with sessions() as db:cid=db.query(LearningCandidate).one().id
+    for action,body in [('approve',{'verified':True}),('publish',{})]:
+        assert write(f'/candidates/{cid}/{action}',body).status_code==200
+    # Reproduce the user's wording: mentioning a product reclassifies the edit.
+    first='Could you clarify which product you mean?'
+    assert write(f'/candidates/{cid}/edit',{'content':first}).status_code==200
+    for action,body in [('approve',{'verified':True}),('publish',{})]:
+        assert write(f'/candidates/{cid}/{action}',body).status_code==200
+    monkeypatch.setattr(settings,'OPENAI_API_KEY','isolated-key')
+    monkeypatch.setattr(ai_service,'generate_customer_reply',lambda *a,**kw:pytest.fail('Unscoped product reached AI'))
+    blocked=write('/lesson-test',{'candidate_id':cid,'message':'Which item?','mode':'forced'})
+    assert blocked.status_code==409 and 'no linked product scope' in blocked.json()['detail']
+    # The manager's neutral replacement must be classified on its new content,
+    # not pinned to the previous product category.
+    neutral=('Clarification is useful when the customer\'s intended item is unclear. '
+             'When existing context already identifies the item, a helpful reply answers '
+             'the customer\'s question about that item without repeating the identification question.')
+    assert write(f'/candidates/{cid}/edit',{'content':neutral}).status_code==200
+    with sessions() as db:
+        revised=db.get(LearningCandidate,cid)
+        assert (revised.category,revised.risk_level,revised.publication_status)==('communication','REVIEW','DRAFT')
+        assert revised.review_required and revised.product_handle is None
+        assert db.query(LearningKnowledgeVersion).count()==2
+    assert write(f'/candidates/{cid}/publish',{}).status_code==409  # No approval bypass.
+    assert write('/lesson-test',{'candidate_id':cid,'message':'Which item?','mode':'forced'}).status_code==409
+    for action,body in [('approve',{'verified':True}),('publish',{})]:
+        assert write(f'/candidates/{cid}/{action}',body).status_code==200
+    def reply(*args,test_context=None,**kwargs):
+        test_context.status='GENERATED'
+        return 'Understood.'
+    monkeypatch.setattr(ai_service,'generate_customer_reply',reply)
+    assert write('/lesson-test',{'candidate_id':cid,'message':'Which item?','mode':'forced'}).json()['lesson_supplied']
+    with sessions() as db:
+        entry=db.query(BotKnowledgeEntry).one()
+        assert entry.topic=='communication' and entry.scope=='GLOBAL'
+        versions=db.query(LearningKnowledgeVersion).order_by(LearningKnowledgeVersion.id).all()
+        assert len(versions)==3 and versions[1].content==first and versions[2].content==neutral
+    assert settings.LEARNING_RETRIEVAL_ENABLED is False
+
+
+@pytest.mark.parametrize('text,expected',[('Bicycle price is Rs. 15000','product'),
+    ('Ask for rider height before age matching','product'),('Delivery takes two days','policy')])
+def test_revised_business_facts_keep_fact_classification_and_fresh_review(learning,monkeypatch,text,expected):
+    _,sessions,engine,_,_,write=learning;enable(sessions,monkeypatch);source(sessions)
+    worker.tick(engine,sessions,extractor)
+    with sessions() as db:cid=db.query(LearningCandidate).one().id
+    assert write(f'/candidates/{cid}/edit',{'content':text}).status_code==200
+    with sessions() as db:
+        row=db.get(LearningCandidate,cid)
+        assert row.category==expected and row.risk_level=='HIGH' and row.publication_status=='DRAFT'
+
+
+def test_neutral_revision_does_not_remove_an_existing_product_binding(learning,monkeypatch):
+    import shopify_catalog_service
+    _,sessions,engine,_,_,write=learning;enable(sessions,monkeypatch);source(sessions)
+    worker.tick(engine,sessions,extractor)
+    with sessions() as db:
+        row=db.query(LearningCandidate).one();cid=row.id;row.category='product';row.product_handle='red-bicycle';db.commit()
+    assert write(f'/candidates/{cid}/edit',{'content':'Clarification is useful when the intended item is unclear.'}).status_code==200
+    with sessions() as db:assert db.get(LearningCandidate,cid).product_handle=='red-bicycle'
+    monkeypatch.setattr(shopify_catalog_service,'get_product_by_handle',lambda handle:{'handle':handle})
+    for action,body in [('approve',{'verified':True}),('publish',{})]:
+        assert write(f'/candidates/{cid}/{action}',body).status_code==200
+    with sessions() as db:
+        entry=db.query(BotKnowledgeEntry).one()
+        assert entry.scope=='PRODUCT' and entry.scope_reference=='red-bicycle'
+
+
 def test_no_customer_queries_when_retrieval_disabled(monkeypatch):
     monkeypatch.setattr(settings,'LEARNING_RETRIEVAL_ENABLED',False)
     monkeypatch.setattr(learning_runtime,'_bounded',lambda *a:pytest.fail('Disabled retrieval touched database'))

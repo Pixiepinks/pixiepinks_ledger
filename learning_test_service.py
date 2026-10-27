@@ -95,6 +95,8 @@ def compare(db, actor, values):
         if not message.strip():
             raise LessonTestError("Enter a non-sensitive synthetic sample question.")
         rows = [(entry, version)]
+        if entry.topic == "product" and (entry.scope != "PRODUCT" or not entry.scope_reference):
+            raise LessonTestError("This lesson is classified as product knowledge but has no linked product scope. A handle in this test cannot fix that. For general communication guidance, revise the lesson without product facts, save and revalidate, then approve and publish again. Do not use an unrelated product handle.")
         forced = select_examples(message, catalog, rows, snapshot, force_ids={entry.id})
         if forced is None:
             raise LessonTestError("This lesson needs matching, server-verified Shopify product context. Enter its product handle; force preview does not bypass product scope.")

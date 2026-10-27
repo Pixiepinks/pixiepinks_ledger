@@ -252,7 +252,11 @@ def review(db,cid,action,actor,body):
             raise LearningError('Bounded content and title are required')
         if prohibited(content+' '+title) or sanitize(content)!=content or sanitize(title)!=title:raise LearningError('Sensitive/instructional content cannot be published')
         candidate.proposed_content=content;candidate.title=title
-        candidate.category,candidate.risk_level=classify(content,candidate.category)
+        # A manager revision is new content: re-evaluate it rather than pinning
+        # neutral communication text to a previous product/correction category.
+        # Product/policy facts are still detected from the revised wording and
+        # every edit still returns to DRAFT and requires fresh review.
+        candidate.category,candidate.risk_level=classify(content)
         candidate.content_hash=content_hash(content,candidate.language,candidate.product_handle)
         candidate.publication_status='DRAFT';candidate.review_required=True
         evaluate(db,candidate,configuration(db))
