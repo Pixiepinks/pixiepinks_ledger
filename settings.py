@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
     WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
     META_APP_SECRET: Optional[str] = None
+    SAVED_VOICES_DIR: str = "/data/saved-voices"
     OPENAI_API_KEY: Optional[str] = None
     LEARNING_ENABLED: bool = False
     LEARNING_RETRIEVAL_ENABLED: bool = False

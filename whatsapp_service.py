@@ -164,13 +164,14 @@ def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str
     return media_id if isinstance(media_id, str) and media_id.strip() else None
 
 
-def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True) -> str | None:
+def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True,
+                        return_outcome: bool = False) -> str | None | tuple[str, str | None]:
     """Send previously uploaded Meta media as an audio message/voice note."""
     access_token = settings.META_WHATSAPP_ACCESS_TOKEN
     phone_number_id = settings.META_WHATSAPP_PHONE_NUMBER_ID
     if not access_token or not phone_number_id or not media_id:
         logger.error("WhatsApp audio send skipped reason=missing_configuration_or_media")
-        return None
+        return ("FAILED", None) if return_outcome else None
     version = settings.META_GRAPH_API_VERSION.strip().lstrip("/") or "v26.0"
     audio = {"id": media_id}
     if voice:
@@ -186,8 +187,10 @@ def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True) ->
     except httpx.HTTPError as exc:
         status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
         logger.error("WhatsApp audio send failed status_code=%s error_type=%s", status, type(exc).__name__)
-        return None
-    return _message_id(response)
+        state = "FAILED" if status and 400 <= status < 500 and status not in {408, 429} else "UNKNOWN"
+        return (state, None) if return_outcome else None
+    message_id = _message_id(response)
+    return (("SENT", message_id) if message_id else ("UNKNOWN", None)) if return_outcome else message_id
 
 
 def download_whatsapp_media(media_id: str) -> tuple[bytes, str] | None:

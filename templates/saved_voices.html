@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<link rel="stylesheet" href="/static/saved_voices.css?v=1">
+<section id="saved-voice-library" data-csrf="{{ csrf_token|e }}" data-manage="{{ 'true' if can_manage else 'false' }}">
+<h1>Saved Voices</h1><p>Choose recordings by their title and written words. Previewing never sends a message.</p>
+{% if can_manage %}
+<form id="saved-voice-form" class="voice-library-card">
+<h2 id="saved-voice-editor-title">Upload a recording</h2>
+<label>Title<input name="title" maxlength="100" required placeholder="Delivery explanation"></label>
+<label>Category<input name="category" maxlength="80" required placeholder="Delivery"></label>
+<label>Language<select name="language"><option value="singlish">Singlish</option><option value="si">Sinhala</option><option value="en">English</option></select></label>
+<label>Written transcript<textarea name="transcript" rows="4" maxlength="2000" required placeholder="Type the words spoken in this recording"></textarea></label>
+<label id="saved-voice-file-label">Recording<input name="audio" type="file" accept="audio/mpeg,audio/wav,audio/ogg,audio/mp4,audio/webm,.mp3,.wav,.ogg,.m4a,.webm" required></label>
+<audio id="saved-voice-upload-preview" controls preload="none" hidden></audio>
+<small>Up to 16 MB and 10 minutes. Converted to a WhatsApp voice note; your recorded voice is retained. The transcript helps staff choose the recording and is not sent as a text message.</small>
+<div><button id="saved-voice-save" type="submit" class="btn btn-primary">Upload recording</button><button id="saved-voice-cancel" type="button" class="btn btn-secondary" hidden>Cancel edit</button></div>
+</form>
+{% endif %}
+<div class="voice-library-filters"><label>Search titles or spoken words<input id="saved-voice-search" maxlength="100" type="search"></label>
+{% if can_manage %}<label><input id="saved-voice-inactive" type="checkbox"> Include inactive recordings</label>{% endif %}</div>
+<p id="saved-voice-status" role="status" aria-live="polite"></p>
+<div id="saved-voice-list" class="voice-library-grid"></div><button id="saved-voice-more" type="button" class="btn btn-secondary" hidden>Load more</button>
+</section><script src="/static/saved_voices.js?v=1"></script>
+{% endblock %}

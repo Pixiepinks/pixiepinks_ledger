@@ -2310,6 +2310,15 @@ def whatsapp_message_media(conversation_id: int, message_id: int, request: Reque
     ).one_or_none()
     if message is None or not message.media_id:
         raise HTTPException(status_code=404, detail="Audio message not found")
+    if message.response_kind == "staff_saved_voice":
+        quick_messages.authorize(user)
+        from models import SavedVoice, SavedVoiceSend
+        from saved_voice_service import read_audio
+        from saved_voice_routes import audio_response
+        voice = db.query(SavedVoice).join(SavedVoiceSend, SavedVoiceSend.voice_id == SavedVoice.id).filter(
+            SavedVoiceSend.conversation_id == conversation_id, SavedVoiceSend.message_id == message_id).one_or_none()
+        if voice is not None:
+            return audio_response(read_audio(voice), "audio/ogg", request)
     downloaded = download_whatsapp_media(message.media_id)
     if downloaded is None:
         raise HTTPException(status_code=502, detail="Audio is temporarily unavailable")
@@ -4180,3 +4189,8 @@ app.include_router(build_shopify_collection_router(
 
 from bot_simulation_routes import build_router as build_bot_simulation_router
 app.include_router(build_bot_simulation_router(get_db, require_user, _require_csrf, needs_product_catalog))
+
+from saved_voice_routes import build_router as build_saved_voice_router
+app.include_router(build_saved_voice_router(get_db, require_user, _require_csrf, _csrf_token, templates,
+    _get_conversation, lambda raw: upload_whatsapp_audio(raw),
+    lambda phone, media: send_whatsapp_audio(phone, media, voice=True, return_outcome=True)))

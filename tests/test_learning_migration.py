@@ -49,7 +49,7 @@ def test_migration_and_actual_concurrent_worker_publication(tmp_path,monkeypatch
             assert {(column['name'],column['nullable']) for column in actual.get_columns(table.name)}=={(column.name,column.nullable) for column in table.columns}
             assert len(actual.get_foreign_keys(table.name))==len(table.foreign_key_constraints)
         with engine.connect() as conn:
-            assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar()=='20261026_16'
+            assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar()=='20261027_17'
             assert conn.execute(text('SELECT message_text FROM whatsapp_conversation_messages')).scalar()=='Preserved original customer message'
         with sessions() as db:assert not configuration(db)['enabled'] and db.query(LearningLease).one().owner is None
         enable(sessions,monkeypatch)
