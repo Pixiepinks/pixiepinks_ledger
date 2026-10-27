@@ -275,3 +275,35 @@ def test_live_followup_uses_history_then_attaches_verified_products(store, provi
     monkeypatch.setattr(main, "send_whatsapp_image", lambda *a, **k: images.append(a) or ("SENT", "wamid.product"))
     main._reply_to_text_message(PHONE, "followup", "Girl age 7", None)
     assert len(images) == 1 and "1,500.00" in images[0][2] and len(texts) == 1
+    assert texts[0][1] == "Oyagen thorathuru anuwa me options balanna."
+    assert len(provider[1]) == 2
+
+
+def test_published_water_bottle_request_uses_automatic_route_not_legacy_links(store, provider, monkeypatch, caplog):
+    import shopify_catalog_service
+    queue, _ = provider
+    queue.extend([{"action": "search", "reply": "Hari", "query": "water bottle"},
+                  {"reply": "Galapena stock thiyena bottles hambune naha.", "products": []}])
+    unavailable = product(); unavailable["title"] = "Water bottle"
+    unavailable["variants"][0]["inventory_quantity"] = 0
+    monkeypatch.setattr(shopify_catalog_service, "search_available_products", lambda *a, **k: [unavailable])
+    monkeypatch.setattr(main, "_generate_with_learning", lambda *a: pytest.fail("Fell through to legacy text/links"))
+    texts = []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: texts.append(a[1]) or "wamid.no-stock")
+    monkeypatch.setattr(main, "send_whatsapp_image", lambda *a, **k: pytest.fail("Sent zero-stock product"))
+    with caplog.at_level("INFO"):
+        main._reply_to_text_message(PHONE, "water-bottle-turn", "Do you have water bottle", None)
+    assert texts == ["Galapena stock thiyena bottles hambune naha."]
+    assert "automatic_products=True product_images=True bicycle_route=False" in caplog.text
+
+
+def test_live_requirement_question_is_not_overwritten_by_legacy_reply(store, provider, monkeypatch):
+    queue, calls = provider
+    queue.append({"action": "clarify", "reply": "Daruwage wayasa keeyada?", "query": ""})
+    monkeypatch.setattr(main, "search_products", lambda *a, **k: pytest.fail("Searched before requirements were known"))
+    monkeypatch.setattr(main, "_generate_with_learning", lambda *a: pytest.fail("Overwrote clarification"))
+    texts = []
+    monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: texts.append(a[1]) or "wamid.question")
+    monkeypatch.setattr(main, "send_whatsapp_image", lambda *a, **k: pytest.fail("Sent product before clarification"))
+    main._reply_to_text_message(PHONE, "clarify-bags", "Do you have school bags?", None)
+    assert texts == ["Daruwage wayasa keeyada?"] and len(calls) == 1

@@ -123,6 +123,41 @@ def invalidate_cache() -> None:
         _cache = None
 
 
+def draft_change_summary(published: dict, draft: dict) -> str:
+    """Describe changed settings without copying instructions or policy contents."""
+    defaults = default_snapshot()
+    before = {**defaults["global"], **(published.get("global") or {})}
+    after = {**defaults["global"], **(draft.get("global") or {})}
+    labels = {
+        "instructions": "Global instructions", "maximum_products": "Maximum recommended products",
+        "reply_in_customer_language": "Reply in customer language", "ask_one_question": "One question at a time",
+        "moderate_emojis": "Moderate emojis", "concise": "Concise replies",
+        "send_product_images": "Product images", "automatic_product_attachments": "Automatic product attachments",
+    }
+    changes = []
+    for key, label in labels.items():
+        if before[key] == after[key]:
+            continue
+        if type(after[key]) is bool:
+            changes.append(f"{label}: {'enabled' if after[key] else 'disabled'}")
+        elif key == "maximum_products":
+            changes.append(f"{label}: {before[key]} → {after[key]}")
+        else:
+            changes.append(f"{label} updated")
+    for key, label in {
+        "bicycle": "Bicycle rules", "delivery": "Delivery settings", "vision": "Image understanding",
+        "policies": "Business policies", "knowledge": "Catalog knowledge", "faqs": "FAQs",
+        "guided_questions": "Guided questions", "guided_flows": "Guided flows",
+        "recommendation_rules": "Recommendation rules",
+    }.items():
+        old, new = published.get(key, defaults[key]), draft.get(key, defaults[key])
+        if key == "vision":
+            old, new = vision_settings(published), vision_settings(draft)
+        if old != new:
+            changes.append(f"{label} updated")
+    return ("; ".join(changes) or "Republish current configuration")[:1000]
+
+
 def get_snapshot(db: Session, draft: bool = False) -> tuple[dict, int]:
     global _cache
     config = ensure_configuration(db)
@@ -285,6 +320,7 @@ def save_draft(db: Session, snapshot: dict, actor: str, summary: str) -> BotConf
 
 def publish(db: Session, actor: str, summary: str) -> BotConfiguration:
     config = ensure_configuration(db)
+    summary = summary.strip() or draft_change_summary(config.published_snapshot or {}, config.draft_snapshot or {})
     errors, _ = validate_snapshot(config.draft_snapshot)
     if errors:
         raise ValueError(" ".join(errors))
