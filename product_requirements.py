@@ -33,8 +33,8 @@ def requirements(message, context=()):
         if category and category != known["category"]:
             known.update(category=category, age_years=None, preference=None)
         preference = next((label for label, pattern in {
-            "boy": r"\bboys?\b|\bputha\b|පුතා",
-            "girl": r"\bgirls?\b|\bduwa\b|දුව",
+            "boy": r"\bboys?\b|\bputha(?:ta|ge)?\b|පුතා",
+            "girl": r"\bgirls?\b|\bduwa(?:ta|ge)?\b|දුව",
             "unisex": r"\bunisex\b|\beither\b",
         }.items() if re.search(pattern, text)), None)
         if re.search(r"\b(?:not for|don't want|do not want)\b", text):
@@ -55,7 +55,7 @@ def requirements(message, context=()):
             if re.search(r"\b(?:stop|cancel|no need|not interested|no thanks|not now|epa)\b|එපා", text):
                 known["current_answer"] = False
         pending_age = False
-    known["ready_for_catalog"] = (known["category"] in {"water bottle", "school bag", "toy", "gift"}
+    known["ready_for_catalog"] = (known["category"] in {"water bottle", "school bag", "toy", "gift", "bicycle"}
         and known["age_years"] is not None and known["preference"] is not None)
     return known
 
