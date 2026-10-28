@@ -373,3 +373,28 @@ def test_live_bare_age_in_water_bottle_flow_never_becomes_a_bicycle_request(stor
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: texts.append(a[1]) or "wamid.none")
     main._reply_to_text_message(PHONE, "age-six", "6", None)
     assert queries == ["water bottle"] and texts == ["Galapena available bottles hambune naha."]
+
+
+@pytest.mark.parametrize("answer, preference", [("Duwata", "girl"), ("Puthata", "boy")])
+def test_singlish_preference_answer_does_not_repeat_bicycle_discovery(provider, answer, preference):
+    from bicycle_recommendation import detect_bicycle_preference
+    queue, calls = provider
+    queue.extend([
+        {"action": "clarify", "reply": "Puthata da duwata da?", "query": ""},
+        {"reply": "Galapena available products hambune naha.", "products": []},
+    ])
+    context = [
+        {"direction": "inbound", "message_text": "Bicycle for 7 years"},
+        {"direction": "outbound", "message_text": "Puthata da, duwata da?"},
+    ]
+    queries = []
+    result = service.recommend(config(), answer, context,
+        search=lambda query, **kwargs: queries.append(query) or [])
+    assert detect_bicycle_preference(answer) == preference
+    assert queries == ["bicycle"]
+    assert result.reply == "Galapena available products hambune naha."
+    assert not result.products
+    for call in calls:
+        known = json.loads(call["input"][0]["content"])["customer_requirements"]
+        assert known["age_years"] == 7
+        assert known["preference"] == preference

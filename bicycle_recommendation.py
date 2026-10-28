@@ -7,8 +7,8 @@ from decimal import Decimal, InvalidOperation
 # Inclusive lower bounds make the overlapping ranges unambiguous and easy to edit.
 BICYCLE_SIZE_BY_MINIMUM_AGE = ((11, 26), (6, 20), (4, 16), (2, 12))
 
-BOY_TERMS = ("boy", "boys", "son", "පුතා")
-GIRL_TERMS = ("girl", "girls", "daughter", "දුව")
+BOY_TERMS = ("boy", "boys", "son", "putha", "puthata", "puthage", "පුතා")
+GIRL_TERMS = ("girl", "girls", "daughter", "duwa", "duwata", "duwage", "දුව")
 BICYCLE_TERMS = ("bicycle", "bicycles", "bike", "bikes", "බයිසික")
 RESULT_FOLLOW_UP_TERMS = (
     "show more", "another one", "another", "more options", "cheaper", "under ",
