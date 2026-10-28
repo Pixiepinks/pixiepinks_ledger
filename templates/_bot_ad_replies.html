@@ -1,0 +1,19 @@
+<div class="two">
+<form class="bot-card" method="post" action="/crm/bot-management/ad-reply">
+<h2>Ad-specific reply <span class="badge draft">DRAFT</span></h2>
+<p>The first text message carrying this exact ad reference receives the approved reply below. Follow-up chat keeps the gift-pack context.</p>
+<input type="hidden" name="csrf_token" value="{{ ad_csrf|e }}">
+<label>Ad ID<input name="source_id" required maxlength="32" pattern="[0-9]+" value="{{ ad_editor.source_id|e }}"></label>
+<label>Gift pack / campaign name<input name="title" required maxlength="100" value="{{ ad_editor.title|e }}"></label>
+<div class="two"><label>Advertised pack price (Rs.)<input name="pack_price" required type="number" min="0" max="1000000" step="0.01" value="{{ ad_editor.pack_price }}"></label>
+<label>Delivery charge (Rs.)<input name="delivery_price" required type="number" min="0" max="1000000" step="0.01" value="{{ ad_editor.delivery_price }}"></label></div>
+<label>Offer valid through (Sri Lanka date)<input name="expires_on" type="date" required value="{{ ad_editor.expires_on|e }}"></label>
+<label>First reply — sent exactly as written<textarea name="first_reply" required rows="5" maxlength="1200">{{ ad_editor.first_reply|e }}</textarea></label>
+<label>Approved pack contents<textarea name="contents" required rows="8" maxlength="2000">{{ ad_editor.contents|e }}</textarea></label>
+<label><input style="width:auto" name="enabled" type="checkbox" {{ 'checked' if ad_editor.enabled }}> Enable this ad reply when published</label>
+<button>Save Draft</button><p class="helper">Then publish in Versions / History. Keep prices in the reply and the price fields consistent. These are approved offer terms; no stock, order or payment is confirmed by this greeting.</p>
+</form>
+<section class="bot-card"><h2>Saved draft ad replies</h2>
+{% for rule in draft.ad_replies %}<div class="locked"><b>{{ rule.title|e }}</b><p>Ad {{ rule.source_id|e }} · {{ 'Enabled' if rule.enabled else 'Disabled' }} · Through {{ rule.expires_on|e }}</p><p style="white-space:pre-wrap">{{ rule.first_reply|e }}</p><a href="/crm/bot-management/ads?ad_id={{ rule.source_id|urlencode }}">Edit draft</a></div>{% else %}<p>No saved ad replies. The form is prefilled with your Baby Care Gift Pack offer; save and publish to activate it.</p>{% endfor %}
+<h2>Currently published</h2>{% for rule in live.ad_replies %}<p>{{ rule.title|e }} · Ad {{ rule.source_id|e }} · {{ 'Enabled' if rule.enabled else 'Disabled' }} · Rs. {{ rule.pack_price|e }} + Rs. {{ rule.delivery_price|e }} delivery · Through {{ rule.expires_on|e }}</p>{% else %}<p>No published ad replies.</p>{% endfor %}
+</section></div>

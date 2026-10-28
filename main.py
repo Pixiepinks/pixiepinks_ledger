@@ -757,6 +757,22 @@ def _reply_to_text_message(
             logger.info("WhatsApp route mode=HUMAN workflow_state=%s detected_route=store_only",
                         conversation.workflow_state)
             return
+        if not image_reply_language and not requests_human_handover(text_body) and conversation:
+            from ad_campaign_service import conversation_campaign, send_reply
+            try:
+                campaign = conversation_campaign(db, conversation.phone_number, message_id, text_body)
+                if campaign:
+                    send_reply(db, conversation, campaign, message_id, text_body, profile_name,
+                               _send_text_with_id, generate_customer_reply)
+                    return
+            except SQLAlchemyError:
+                db.rollback()
+                logger.warning("Ad campaign reply database unavailable; no automatic retry")
+                return
+            except HTTPException as exc:
+                if exc.status_code != 409: raise
+                logger.info("Ad campaign reply skipped: customer-service window unavailable")
+                return
         persisted_state = conversation.workflow_state if conversation else None
         persisted_gender = conversation.bicycle_gender if conversation else None
         persisted_age = conversation.bicycle_age if conversation else None
@@ -1693,6 +1709,8 @@ def _bot_page_context(request: Request, db: Session, active: str, **extra) -> di
     live["vision"] = vision_settings(live)
     draft.setdefault("guided_flows", [])
     live.setdefault("guided_flows", [])
+    draft.setdefault("ad_replies", [])
+    live.setdefault("ad_replies", [])
     if active in {"catalog", "policies", "faqs"}:
         product_entries = [entry for bucket in ("knowledge", "policies", "faqs")
                            for entry in draft.get(bucket, [])
@@ -1723,6 +1741,11 @@ def _bot_page_context(request: Request, db: Session, active: str, **extra) -> di
         "suggested_change_summary": draft_change_summary(config.published_snapshot or {}, config.draft_snapshot or {}),
         "simulation_csrf_token": _csrf_token(request) if active == "test" else None,
     }
+    if active == "ads":
+        from ad_campaign_service import EXAMPLE
+        selected = request.query_params.get("ad_id", "")
+        context["ad_editor"] = next((rule for rule in draft["ad_replies"] if rule.get("source_id") == selected), dict(EXAMPLE))
+        context["ad_csrf"] = _csrf_token(request)
     context.update(extra)
     return context
 
@@ -3346,9 +3369,11 @@ def bot_management(request: Request, section: str = "overview", db: Session = De
         authorize(user)
         return templates.TemplateResponse("learning_center.html", {"request":request,"user":user,
             "active":"learning","page_title":"AI Learning Center"},headers={"Cache-Control":"private, no-store"})
-    allowed = {"overview", "instructions", "policies", "catalog", "rules", "faqs", "test", "versions"}
+    allowed = {"overview", "instructions", "policies", "catalog", "rules", "faqs", "test", "versions", "ads"}
     if section not in allowed:
         raise HTTPException(status_code=404)
+    if section == "ads":
+        quick_messages.authorize(user, manage=True)
     collections, catalog_error = [], None
     if section == "catalog":
         query = str(request.query_params.get("q", "")).strip()
@@ -3360,7 +3385,7 @@ def bot_management(request: Request, section: str = "overview", db: Session = De
         collections = collection_query.order_by(ShopifyCollectionReference.title).limit(100).all()
     return templates.TemplateResponse("bot_management.html", _bot_page_context(
         request, db, section, collections=collections, catalog_error=catalog_error, user=user),
-        headers={"Cache-Control":"private, no-store"} if section == "test" else None)
+        headers={"Cache-Control":"private, no-store"} if section in {"test", "ads"} else None)
 
 
 @app.post("/crm/bot-management/settings")
@@ -3382,6 +3407,31 @@ def bot_save_settings(
     })
     save_draft(db, snapshot, user.username, "Updated response settings and global instructions")
     return RedirectResponse("/crm/bot-management/instructions", status_code=303)
+
+
+@app.post("/crm/bot-management/ad-reply")
+def bot_save_ad_reply(request: Request, source_id: str = Form(...), title: str = Form(...),
+    first_reply: str = Form(...), contents: str = Form(...), pack_price: str = Form(...),
+    delivery_price: str = Form(...), expires_on: str = Form(...), enabled: bool = Form(False),
+    csrf_token: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user)):
+    quick_messages.authorize(user, manage=True)
+    expected = request.session.get("csrf_token", "")
+    if not csrf_token or not expected or not hmac.compare_digest(csrf_token, expected):
+        raise HTTPException(403, "Invalid CSRF token")
+    from ad_campaign_service import validate_rules
+    rule = {"source_id": source_id.strip(), "title": title.strip(), "first_reply": first_reply.strip(),
+        "contents": contents.strip(), "pack_price": pack_price.strip(), "delivery_price": delivery_price.strip(),
+        "expires_on": expires_on.strip(), "enabled": enabled}
+    errors = validate_rules([rule])
+    if errors: raise HTTPException(422, " ".join(errors))
+    rule["pack_price"] = str(Decimal(rule["pack_price"]).quantize(Decimal("0.01")))
+    rule["delivery_price"] = str(Decimal(rule["delivery_price"]).quantize(Decimal("0.01")))
+    snapshot, _ = get_snapshot(db, draft=True)
+    snapshot["ad_replies"] = [item for item in snapshot.get("ad_replies", []) if item.get("source_id") != rule["source_id"]] + [rule]
+    errors = validate_rules(snapshot["ad_replies"])
+    if errors: raise HTTPException(422, " ".join(errors))
+    save_draft(db, snapshot, user.username, f"Updated ad reply: {rule['source_id']}")
+    return RedirectResponse("/crm/bot-management/ads?ad_id=" + rule["source_id"], status_code=303)
 
 
 @app.post("/crm/bot-management/vision")

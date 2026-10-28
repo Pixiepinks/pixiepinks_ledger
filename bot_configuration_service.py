@@ -93,7 +93,7 @@ def default_snapshot() -> dict:
         "delivery": {"minimum_working_days": 3, "maximum_working_days": 4,
                      "skip_weekends": True, "public_holidays_calculated": False},
         "knowledge": [], "policies": [], "faqs": [], "guided_questions": [], "guided_flows": [],
-        "recommendation_rules": [],
+        "recommendation_rules": [], "ad_replies": [],
         "vision": deepcopy(VISION_DEFAULTS),
     }
 
@@ -148,7 +148,7 @@ def draft_change_summary(published: dict, draft: dict) -> str:
         "bicycle": "Bicycle rules", "delivery": "Delivery settings", "vision": "Image understanding",
         "policies": "Business policies", "knowledge": "Catalog knowledge", "faqs": "FAQs",
         "guided_questions": "Guided questions", "guided_flows": "Guided flows",
-        "recommendation_rules": "Recommendation rules",
+        "recommendation_rules": "Recommendation rules", "ad_replies": "Ad replies",
     }.items():
         old, new = published.get(key, defaults[key]), draft.get(key, defaults[key])
         if key == "vision":
@@ -174,6 +174,8 @@ def get_snapshot(db: Session, draft: bool = False) -> tuple[dict, int]:
 
 def validate_snapshot(snapshot: dict) -> tuple[list[str], list[str]]:
     errors, warnings = [], []
+    from ad_campaign_service import validate_rules
+    errors.extend(validate_rules(snapshot.get("ad_replies", [])))
     vision = vision_settings(snapshot)
     if (type(vision["enabled"]) is not bool or not isinstance(vision["model"], str)
             or vision["model"] not in VISION_MODELS):
