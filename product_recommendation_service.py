@@ -3,6 +3,8 @@
 This module never sends messages or writes records. Selection IDs are allowlisted
 against server-fetched candidates; the transport must re-resolve every variant.
 """
+
+import global_ai_control
 import json
 import re
 from dataclasses import dataclass, field
@@ -89,6 +91,7 @@ def _system(preferences):
 
 
 def _request(model, instructions, data):
+    global_ai_control.checkpoint()
     client = ai_service.OpenAI(api_key=settings.OPENAI_API_KEY, timeout=12.0, max_retries=0)
     response = client.responses.create(model=settings.OPENAI_MODEL, instructions=instructions,
         input=[{"role": "user", "content": json.dumps(data, ensure_ascii=False, default=str)}],

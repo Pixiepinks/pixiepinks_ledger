@@ -1,3 +1,4 @@
+from ai_reply_test_support import reply_text
 import pytest
 
 import main
@@ -35,7 +36,7 @@ def _reply(monkeypatch, text, searches=None, products=None):
         ) or {"collection": {"title": f"{gender} {size}"}, "products": products or [],
               "reason": "ok"},
     )
-    main._reply_to_text_message("94771111111", "current", text, "Customer")
+    reply_text(main, "94771111111", "current", text, "Customer")
     return sent[0][1]
 
 
@@ -138,7 +139,7 @@ def test_complete_request_queries_and_preserves_live_values_with_max_three(monke
     monkeypatch.setattr(main, "search_bicycles_by_collection", lambda gender, size, query="", limit=5:
                         searches.append((gender, size, query)) or
                         {"collection": {"title": 'Boys Size 20"'}, "products": products})
-    main._reply_to_text_message("94771111111", "current", "I need a bicycle for my 7 year old boy", "Customer")
+    reply_text(main, "94771111111", "current", "I need a bicycle for my 7 year old boy", "Customer")
     assert searches == [("boy", 20, "")]
     combined = "\n".join(body for _, body in sent)
     assert "Live Bike 1" in combined and "Rs. 37,001" in combined
@@ -336,7 +337,7 @@ def test_boy_regression_only_collection_products_reach_image_sender(monkeypatch)
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
     monkeypatch.setattr(main, "send_whatsapp_image",
                         lambda _, url, caption: images.append((url, caption)) or True)
-    main._reply_to_text_message("94772222222", "regression", "bike for my 12 year old boy", None)
+    reply_text(main, "94772222222", "regression", "bike for my 12 year old boy", None)
     assert len(images) == 1 and images[0][0] == "https://cdn.shopify.com/boy.jpg"
     assert "Boys Racer" in images[0][1] and "Rs. 49,500" in images[0][1]
 
@@ -350,7 +351,7 @@ def test_unavailable_collection_does_not_send_an_image(monkeypatch):
                         {"collection": {"title": 'Girls Size 26"'}, "products": [product]})
     monkeypatch.setattr(main, "send_whatsapp_text", lambda _, body: sent.append(body) or True)
     monkeypatch.setattr(main, "send_whatsapp_image", lambda *args: images.append(args) or True)
-    main._reply_to_text_message("94773333333", "nostock", "girls size 26 bicycles", None)
+    reply_text(main, "94773333333", "nostock", "girls size 26 bicycles", None)
     assert images == []
     assert "currently shown as unavailable" in sent[0]
 

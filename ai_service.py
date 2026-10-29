@@ -1,5 +1,7 @@
 """Safe OpenAI-backed customer-service replies for WhatsApp."""
 
+import global_ai_control
+
 import logging
 import json
 import re
@@ -166,7 +168,9 @@ def generate_customer_reply(
                 "untracked or missing inventory quantities require confirmation.\n"
                 + json.dumps(preferences, ensure_ascii=False)
             )
-        client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=12.0, max_retries=0 if test_context is not None else 1)
+        client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=12.0,
+                        max_retries=0 if test_context is not None or global_ai_control.in_automatic_job() else 1)
+        global_ai_control.checkpoint()
         response = client.responses.create(
             model=settings.OPENAI_MODEL,
             instructions=instructions,

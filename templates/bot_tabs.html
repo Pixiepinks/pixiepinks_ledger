@@ -1,4 +1,4 @@
 <div class="bot-tabs">
-{% for key,label in [('overview','Overview'),('instructions','Global Instructions'),('ads','Ad Replies'),('policies','Business Policies'),('catalog','Catalog Knowledge'),('rules','Recommendation Rules'),('faqs','FAQs'),('test','Test Bot'),('versions','Versions / History'),('learning','AI Learning Center')] %}
+{% for key,label in [('overview','Overview'),('instructions','Global Instructions'),('settings','Settings'),('ads','Ad Replies'),('policies','Business Policies'),('catalog','Catalog Knowledge'),('rules','Recommendation Rules'),('faqs','FAQs'),('test','Test Bot'),('versions','Versions / History'),('learning','AI Learning Center')] %}
 <a class="{{ 'active' if active == key }}" href="/crm/bot-management/{{ key }}">{{ label }}</a>{% endfor %}
 </div>

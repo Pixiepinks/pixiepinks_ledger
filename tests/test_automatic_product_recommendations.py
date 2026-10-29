@@ -1,3 +1,4 @@
+from ai_reply_test_support import reply_text, deliver_products
 import copy
 import json
 import os
@@ -161,9 +162,9 @@ def test_ten_attachments_have_price_image_quote_mapping_and_no_replay(store):
         sends.append((phone, image, body)); return "SENT", f"wamid.{len(sends)}"
     def resolve(pid, vid): return resolved(int(pid.rsplit("/", 1)[1]))
     products = [product(i) for i in range(1, 13)]
-    assert len(delivery.deliver(store, PHONE, "inbound-1", products, resolve, send)) == 10
+    assert len(deliver_products(delivery, store, PHONE, "inbound-1", products, resolve, send)) == 10
     assert len(sends) == 10 and "Rs. 1,500.00" in sends[0][2]
-    assert delivery.deliver(store, PHONE, "inbound-1", products, resolve, send) == []
+    assert deliver_products(delivery, store, PHONE, "inbound-1", products, resolve, send) == []
     assert len(sends) == 10
     with store() as db:
         rows = db.query(WhatsAppConversationMessage).all()
@@ -191,16 +192,16 @@ def test_delivery_rechecks_and_stops_invalid_cards(store, change):
                 message_text="Stop, different product", whatsapp_message_id="newer"))
             db.commit()
         return fresh
-    assert not delivery.deliver(store, PHONE, "old", [product()], resolve,
+    assert not deliver_products(delivery, store, PHONE, "old", [product()], resolve,
         lambda *a: pytest.fail("Sent an invalid card"))
 
 
 def test_uncertain_provider_send_is_not_retried_or_fallen_back(store):
     calls = []
     def send(*args): calls.append(args); return "UNKNOWN", None
-    assert delivery.deliver(store, PHONE, "uncertain", [product(), product(2)], lambda *a: resolved(), send) == []
+    assert deliver_products(delivery, store, PHONE, "uncertain", [product(), product(2)], lambda *a: resolved(), send) == []
     assert len(calls) == 1
-    delivery.deliver(store, PHONE, "uncertain", [product()], lambda *a: resolved(), send)
+    deliver_products(delivery, store, PHONE, "uncertain", [product()], lambda *a: resolved(), send)
     assert len(calls) == 1
     with store() as db:
         assert db.query(WhatsAppManualSend).filter_by(status="UNKNOWN").count() == 1
@@ -210,7 +211,7 @@ def test_concurrent_batch_claim_sends_only_once(store):
     calls = []
     def send(*args): calls.append(args); return "SENT", "wamid.once"
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: delivery.deliver(store, PHONE, "concurrent", [product()], lambda *a: resolved(), send), range(2)))
+        results = list(pool.map(lambda _: deliver_products(delivery, store, PHONE, "concurrent", [product()], lambda *a: resolved(), send), range(2)))
     assert len(calls) == 1 and sum(len(value) for value in results) == 1
 
 
@@ -252,10 +253,10 @@ def test_database_failure_after_provider_send_never_replays(store):
         event.listen(engine, "before_cursor_execute", fail)
         return "SENT", "wamid.saved-by-provider"
     try:
-        delivery.deliver(store, PHONE, "db-outage", [product()], lambda *a: resolved(), send)
+        deliver_products(delivery, store, PHONE, "db-outage", [product()], lambda *a: resolved(), send)
     finally:
         event.remove(engine, "before_cursor_execute", fail)
-    delivery.deliver(store, PHONE, "db-outage", [product()], lambda *a: resolved(), send)
+    deliver_products(delivery, store, PHONE, "db-outage", [product()], lambda *a: resolved(), send)
     assert len(calls) == 1
 
 
@@ -273,7 +274,7 @@ def test_live_followup_uses_history_then_attaches_verified_products(store, provi
     texts, images = [], []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: texts.append(a) or "wamid.intro")
     monkeypatch.setattr(main, "send_whatsapp_image", lambda *a, **k: images.append(a) or ("SENT", "wamid.product"))
-    main._reply_to_text_message(PHONE, "followup", "Girl age 7", None)
+    reply_text(main, PHONE, "followup", "Girl age 7", None)
     assert len(images) == 1 and "1,500.00" in images[0][2] and len(texts) == 1
     assert texts[0][1] == "Oyagen thorathuru anuwa me options balanna."
     assert len(provider[1]) == 2
@@ -292,7 +293,7 @@ def test_published_water_bottle_request_uses_automatic_route_not_legacy_links(st
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: texts.append(a[1]) or "wamid.no-stock")
     monkeypatch.setattr(main, "send_whatsapp_image", lambda *a, **k: pytest.fail("Sent zero-stock product"))
     with caplog.at_level("INFO"):
-        main._reply_to_text_message(PHONE, "water-bottle-turn", "Do you have water bottle", None)
+        reply_text(main, PHONE, "water-bottle-turn", "Do you have water bottle", None)
     assert texts == ["Galapena stock thiyena bottles hambune naha."]
     assert "automatic_products=True product_images=True bicycle_route=False" in caplog.text
 
@@ -305,7 +306,7 @@ def test_live_requirement_question_is_not_overwritten_by_legacy_reply(store, pro
     texts = []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: texts.append(a[1]) or "wamid.question")
     monkeypatch.setattr(main, "send_whatsapp_image", lambda *a, **k: pytest.fail("Sent product before clarification"))
-    main._reply_to_text_message(PHONE, "clarify-bags", "Do you have school bags?", None)
+    reply_text(main, PHONE, "clarify-bags", "Do you have school bags?", None)
     assert texts == ["Daruwage wayasa keeyada?"] and len(calls) == 1
 
 
@@ -371,7 +372,7 @@ def test_live_bare_age_in_water_bottle_flow_never_becomes_a_bicycle_request(stor
     monkeypatch.setattr(shopify_catalog_service, "search_available_products", lambda query, **k: queries.append(query) or [])
     monkeypatch.setattr(main, "search_bicycles_by_collection", lambda *a, **k: pytest.fail("Interpreted bottle age as bicycle sizing"))
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: texts.append(a[1]) or "wamid.none")
-    main._reply_to_text_message(PHONE, "age-six", "6", None)
+    reply_text(main, PHONE, "age-six", "6", None)
     assert queries == ["water bottle"] and texts == ["Galapena available bottles hambune naha."]
 
 

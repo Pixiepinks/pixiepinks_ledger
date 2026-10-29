@@ -1,0 +1,6 @@
+<div class="global-ai-status" role="status" aria-live="polite" data-global-ai-status data-available="{{ 'true' if global_ai.available else 'false' }}" data-enabled="{{ 'true' if global_ai.enabled else 'false' }}" style="padding:{{ '.35rem .6rem' if compact|default(false) else '.75rem 1rem' }};margin-bottom:{{ '0' if compact|default(false) else '1rem' }};border:2px solid {{ '#258348' if global_ai.available and global_ai.enabled else '#ab2634' }};border-radius:.6rem;background:{{ '#edf9f0' if global_ai.available and global_ai.enabled else '#fff1f2' }}">
+  <strong data-global-ai-label>{{ 'AI ONLINE' if global_ai.available and global_ai.enabled else 'AI OFFLINE — HUMAN STAFF ONLY' if global_ai.available else 'AI STATE UNAVAILABLE — AUTOMATIC REPLIES BLOCKED' }}</strong>
+  <span>{% if not compact|default(false) %} · Global AI Auto Replies{% endif %} · <a href="/crm/bot-management/settings">Settings</a></span>
+  {% if not compact|default(false) %}<small style="display:block">Human staff messaging remains available. State refreshes every 10 seconds.</small>{% endif %}
+</div>
+<script src="/static/global_ai_control.js?v=1" defer></script>

@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON, UniqueConstraint, func
+from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON, UniqueConstraint, CheckConstraint, event, func
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
@@ -486,6 +486,9 @@ class ProcessedWhatsAppMessage(Base):
     message_type = Column(String(50), nullable=False)
     received_at = Column(DateTime, nullable=False)
     processed_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    # NULL means this receipt was never admitted for automatic replies. Never
+    # fill it retrospectively: OFF-period messages must not replay on re-enable.
+    ai_reply_generation = Column(Integer, nullable=True)
 
 
 class WhatsAppConversationMessage(Base):
@@ -662,6 +665,22 @@ class WhatsAppOrderIntent(Base):
 
 
 # ---------------------- AI Bot Management ----------------------
+class GlobalAIReplyControl(Base):
+    """Immediate operational setting, independent of draft/live and learning."""
+    __tablename__ = "global_ai_reply_control"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_global_ai_singleton"),)
+    id = Column(Integer, primary_key=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    generation = Column(Integer, nullable=False, default=0)
+    updated_by = Column(String(100))
+    updated_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
+@event.listens_for(GlobalAIReplyControl.__table__, "after_create")
+def _seed_global_ai_control(target, connection, **kw):
+    connection.execute(target.insert().values(id=1, enabled=True, generation=0))
+
+
 class BotConfiguration(Base):
     """The mutable draft and live pointer. Published history lives separately."""
 

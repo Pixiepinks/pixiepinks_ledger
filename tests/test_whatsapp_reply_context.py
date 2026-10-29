@@ -1,4 +1,6 @@
 """Quote capture, scoped historical resolution and authenticated UI regressions."""
+from ai_reply_test_support import reply_text
+
 import hashlib
 import hmac
 import json
@@ -192,7 +194,7 @@ def test_automated_text_reply_retains_provider_id_for_future_quote(inbox,monkeyp
     invalidate_cache()
     monkeypatch.setattr(main,'generate_customer_reply',lambda *args:'Automated reply with unchanged content.')
     try:
-        main._reply_to_text_message('94770012302','wamid.incoming','Hello','Customer')
+        reply_text(main, '94770012302','wamid.incoming','Hello','Customer')
         with sessions() as db:
             source=db.query(WhatsAppConversationMessage).filter_by(direction='outbound').one()
             assert source.whatsapp_message_id=='wamid.quick-1' and source.message_text=='Automated reply with unchanged content.'
