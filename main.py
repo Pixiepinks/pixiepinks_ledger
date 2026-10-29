@@ -1,3 +1,4 @@
+import global_ai_control
 import asyncio
 import threading
 import hashlib
@@ -515,6 +516,7 @@ def _store_product_message(message_id: str | None, phone: str, product: dict) ->
         logger.exception("Could not store outbound product mapping message_id=%s", message_id)
 
 
+@global_ai_control.automatic_send
 def _send_text_with_id(sender: str, text: str):
     """Use the existing sender while retaining real provider IDs for later quotes."""
     try:
@@ -527,26 +529,28 @@ def _real_message_id(result):
     return result if isinstance(result, str) and result.strip() else None
 
 
+@global_ai_control.automatic_send
+def _send_ai_image(*args, **kwargs):
+    return send_whatsapp_image(*args, **kwargs)
+
+
 def _send_product_message(sender: str, product: dict, text: str) -> str | None:
     """Send image (or text fallback) and return only a real Meta message ID."""
     result = None
     image_url = product.get("featured_image")
     if product.get("featured_image_verified") and image_url:
         try:
-            result = send_whatsapp_image(sender, image_url, text, return_message_id=True)
+            result = _send_ai_image(sender, image_url, text, return_message_id=True)
         except TypeError:  # compatibility with simple injected/test senders
             try:
-                result = send_whatsapp_image(sender, image_url, text)
+                result = _send_ai_image(sender, image_url, text)
             except Exception:
                 logger.exception("Unexpected WhatsApp product image failure sender=%s", sender)
                 result = None
         except Exception:
             logger.exception("Unexpected WhatsApp product image failure sender=%s", sender)
     if not result:
-        try:
-            result = send_whatsapp_text(sender, text, return_message_id=True)
-        except TypeError:
-            result = send_whatsapp_text(sender, text)
+        result = _send_text_with_id(sender, text)
     message_id = result if isinstance(result, str) else None
     _store_product_message(message_id, sender, product)
     return message_id
@@ -741,6 +745,7 @@ def _active_order_reply(sender: str, text_body: str) -> str | None:
                 "currently included. This is an estimate, not a guaranteed delivery date.")
 
 
+@global_ai_control.automatic_job(lambda: SessionLocal)
 def _reply_to_text_message(
     sender: str, message_id: str, text_body: str, profile_name: str | None,
     context_message_id: str | None = None,
@@ -1184,7 +1189,7 @@ def _reply_to_text_message(
             if automatic_delivery:
                 from automatic_product_delivery import deliver
                 deliver(SessionLocal, sender, message_id, automatic_delivery, resolve_inbox_product,
-                    lambda phone, image, body: send_whatsapp_image(phone, image, body, return_outcome=True))
+                    lambda phone, image, body: _send_ai_image(phone, image, body, return_outcome=True))
         return
     if bicycle_delivery:
         intro, products = bicycle_delivery
@@ -1297,6 +1302,7 @@ def _send_image_reply(sender: str, reply: str, profile_name: str | None, kind: s
         logger.warning("Image reply delivery unavailable")
 
 
+@global_ai_control.automatic_job(lambda: SessionLocal)
 @private_image_processing()
 def _reply_to_image_message(sender: str, message_id: str, profile_name: str | None) -> None:
     """At most one background task per committed Meta delivery; no vision retries."""
@@ -1409,7 +1415,8 @@ def _reply_to_image_message(sender: str, message_id: str, profile_name: str | No
                               profile_name, "image_fallback")
 
 
-def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
+@global_ai_control.automatic_job(lambda: SessionLocal, message_index=2)
+def _send_unsupported_reply(sender: str, profile_name: str | None, message_id: str | None = None) -> None:
     sent = _send_text_with_id(sender, UNSUPPORTED_MESSAGE_REPLY)
     logger.info("WhatsApp unsupported-message outbound result=%s sender=%s", sent, sender)
     _store_conversation_message(
@@ -1420,6 +1427,11 @@ def _send_unsupported_reply(sender: str, profile_name: str | None) -> None:
         response_kind="unsupported",
         whatsapp_message_id=_real_message_id(sent),
     )
+
+
+def _enqueue_ai_reply(tasks, callback, message_id, sender, *args):
+    if global_ai_control.message_job(SessionLocal, message_id, sender) is not None:
+        tasks.add_task(callback, sender, *args)
 
 
 # ---------------------- Meta WhatsApp Webhook ----------------------
@@ -1517,6 +1529,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     message_type=message_type,
                     received_at=received_at,
                     processed_at=datetime.utcnow(),
+                    ai_reply_generation=global_ai_control.admission(SessionLocal),
                 )
                 referral_metadata = extract_referral(message)
                 reply_id = extract_reply_id(message)
@@ -1546,9 +1559,9 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         human_owned = bool(conversation and conversation.mode == "HUMAN")
                     if not human_owned:
                         if message_type == "image":
-                            background_tasks.add_task(_reply_to_image_message, sender, message_id, profile_name)
+                            _enqueue_ai_reply(background_tasks, _reply_to_image_message, message_id, sender, message_id, profile_name)
                         else:
-                            background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
+                            _enqueue_ai_reply(background_tasks, _send_unsupported_reply, message_id, sender, profile_name, message_id)
                     continue
                 text_body = None
                 if message_type == "text" and isinstance(message.get("text"), dict):
@@ -1592,8 +1605,8 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     if not cleaned_body:
                         logger.info("Ignored empty WhatsApp text message message_id=%s", message_id)
                         continue
-                    background_tasks.add_task(
-                        _reply_to_text_message,
+                    _enqueue_ai_reply(
+                        background_tasks, _reply_to_text_message, message_id,
                         sender,
                         message_id,
                         cleaned_body,
@@ -1607,7 +1620,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         conversation = _conversation_for_phone(db, sender)
                         human_owned = bool(conversation and conversation.mode == "HUMAN")
                     if not human_owned:
-                        background_tasks.add_task(_send_unsupported_reply, sender, profile_name)
+                        _enqueue_ai_reply(background_tasks, _send_unsupported_reply, message_id, sender, profile_name, message_id)
 
     return {"status": "ok"}
 
@@ -1735,6 +1748,7 @@ def _bot_page_context(request: Request, db: Session, active: str, **extra) -> di
     context = {
         "request": request, "page_title": "AI Bot Management", "active": active,
         "config": config, "draft": draft, "live": live, "version": version,
+        "global_ai": global_ai_control.display_state(db), "global_ai_csrf": _csrf_token(request),
         "errors": errors, "warnings": warnings, "versions": versions, "audits": audits,
         "guardrails": HARD_GUARDRAILS, "collection_options": cached_collections,
         "last_shopify_refresh": last_refresh,
@@ -2076,12 +2090,13 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
     return templates.TemplateResponse("whatsapp_inbox.html", {
         "request": request, "initial_conversation_id": conversation, "unread_whatsapp": unread,
         "page_title": "WhatsApp Inbox", "user": user, "edit_order_id": edit_order,
+        "global_ai": global_ai_control.display_state(db),
         "sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
         "can_create_sales_order": settings.SALES_ORDERS_ENABLED and
             "create" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()),
         "can_approve_sales_discount": "approve_discount" in
             SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()),
-    })
+    }, headers={"Cache-Control": "private, no-store"})
 
 
 @app.get("/crm/whatsapp/api/conversations")
@@ -3369,7 +3384,7 @@ def bot_management(request: Request, section: str = "overview", db: Session = De
         authorize(user)
         return templates.TemplateResponse("learning_center.html", {"request":request,"user":user,
             "active":"learning","page_title":"AI Learning Center"},headers={"Cache-Control":"private, no-store"})
-    allowed = {"overview", "instructions", "policies", "catalog", "rules", "faqs", "test", "versions", "ads"}
+    allowed = {"overview", "instructions", "policies", "catalog", "rules", "faqs", "test", "versions", "ads", "settings"}
     if section not in allowed:
         raise HTTPException(status_code=404)
     if section == "ads":
@@ -3385,7 +3400,40 @@ def bot_management(request: Request, section: str = "overview", db: Session = De
         collections = collection_query.order_by(ShopifyCollectionReference.title).limit(100).all()
     return templates.TemplateResponse("bot_management.html", _bot_page_context(
         request, db, section, collections=collections, catalog_error=catalog_error, user=user),
-        headers={"Cache-Control":"private, no-store"} if section in {"test", "ads"} else None)
+        headers={"Cache-Control":"private, no-store"})
+
+
+@app.get("/crm/whatsapp/api/global-ai-state")
+def global_ai_state(response: Response, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    response.headers["Cache-Control"] = "private, no-store"
+    value = global_ai_control.display_state(db)
+    if not value["available"]:
+        response.status_code = 503
+    return value
+
+
+@app.post("/crm/bot-management/global-ai")
+def set_global_ai(request: Request, enabled: bool = Form(False),
+                  expected_generation: int = Form(...), confirm: str = Form(...),
+                  csrf_token: str = Form(...), db: Session = Depends(get_db),
+                  user: User = Depends(require_user)):
+    if user.role != "ADMIN":
+        raise HTTPException(403, "Only administrators can change global AI auto replies")
+    expected_token = request.session.get("csrf_token", "")
+    if not expected_token or not hmac.compare_digest(csrf_token, expected_token):
+        raise HTTPException(403, "Invalid CSRF token")
+    if confirm != "CONFIRM" or expected_generation < 0:
+        raise HTTPException(400, "Type CONFIRM to change the global AI state")
+    try:
+        global_ai_control.change(db, enabled=enabled, expected_generation=expected_generation, actor=user.username)
+        db.commit()
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from None
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(503, "Global AI state could not be confirmed. Reload Settings to check the state.") from None
+    return RedirectResponse("/crm/bot-management/settings", status_code=303)
 
 
 @app.post("/crm/bot-management/settings")

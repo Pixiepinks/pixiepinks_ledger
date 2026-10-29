@@ -1,4 +1,6 @@
 """Bounded visual observations, never authoritative catalogue or order facts."""
+
+import global_ai_control
 import base64
 import io
 import json
@@ -105,6 +107,7 @@ identified. Detect the customer's language from caption/history, not screenshot 
                    for item in context[-4:]]
         request = json.dumps({"caption": private_context(caption), "recent_context": history}, ensure_ascii=False)
         client = OpenAI(api_key=settings.OPENAI_API_KEY, timeout=options["timeout_seconds"], max_retries=0)
+        global_ai_control.checkpoint()
         response = client.responses.create(model=options["model"], instructions=instructions,
             input=[{"role": "user", "content": [
                 {"type": "input_text", "text": request},

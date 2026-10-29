@@ -42,7 +42,7 @@
     <div class="sidebar-user"><span class="avatar">{{ (request.session.get('user', {}).get('username', 'S'))[:1]|upper }}</span><span><strong>{{ request.session.get('user', {}).get('username', 'Staff') }}</strong><small>Staff account</small></span><a href="/logout" title="Log out">↪</a></div>
   </aside>
   <div class="app-shell">
-    <header class="topbar"><div><small>PixiePinks Workspace</small><h1>{{ page_title or 'Business Operations' }}</h1></div><div class="topbar-status"><span class="status-dot"></span> System online</div></header>
+    <header class="topbar"><div><small>PixiePinks Workspace</small><h1>{{ page_title or 'Business Operations' }}</h1></div>{% if global_ai is defined and request.url.path.startswith('/crm/whatsapp') %}{% with compact=true %}{% include '_global_ai_status.html' %}{% endwith %}{% else %}<div class="topbar-status"><span class="status-dot"></span> System online</div>{% endif %}</header>
     <main class="main-content">
 {% else %}
   <main>

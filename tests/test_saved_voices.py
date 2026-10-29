@@ -230,7 +230,7 @@ def test_postgresql_upgrade_and_concurrent_claim(tmp_path, monkeypatch):
         config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
         command.stamp(config, "20261026_16"); command.upgrade(config, "head"); command.upgrade(config, "head")
         with engine.connect() as conn:
-            assert conn.execute(text("select version_num from alembic_version")).scalar() == "20261027_17"
+            assert conn.execute(text("select version_num from alembic_version")).scalar() == "20261029_18"
             assert conn.execute(text("select count(*) from whatsapp_conversations")).scalar() == 1
         monkeypatch.setattr(settings, "SAVED_VOICES_DIR", str(tmp_path / "pg-volume"))
         raw, duration = normalize_voice_audio(wav(), "audio/wav")

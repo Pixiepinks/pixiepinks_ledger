@@ -1,0 +1,19 @@
+<section class="bot-card">
+<h2>Global AI Auto Replies</h2>
+<p>This switch takes effect immediately across all web instances and customer-reply jobs. It does not require publishing a draft.</p>
+<p>OFF blocks every automatic reply, including automatic product cards and fixed bot responses. Human replies, attachments, Quick Messages and orders remain available. Conversation modes and learning settings stay unchanged.</p>
+{% if user.role == 'ADMIN' and global_ai.available %}
+<form method="post" action="/crm/bot-management/global-ai">
+<input type="hidden" name="csrf_token" value="{{ global_ai_csrf|e }}">
+<input type="hidden" name="expected_generation" value="{{ global_ai.generation }}">
+<label style="font-size:1.1rem"><input type="checkbox" role="switch" name="enabled" style="width:auto" {{ 'checked' if global_ai.enabled }}> Enable global AI auto replies</label>
+<p>Uncheck to turn OFF; check to turn ON. Turning ON resumes the saved per-conversation behavior. Pending replies invalidated by OFF and messages received while OFF are never replayed.</p>
+<label>Type CONFIRM to apply your chosen state<input name="confirm" autocomplete="off" required pattern="CONFIRM" placeholder="CONFIRM"></label>
+<button type="submit">Apply global AI state</button>
+</form>
+<small>Last changed by {{ global_ai.updated_by or 'System (initial state)' }}{% if global_ai.updated_at %} · {{ global_ai.updated_at }} UTC{% endif %}</small>
+{% elif user.role != 'ADMIN' %}<p>Only administrators can change this switch.</p>
+{% else %}<p>The database state is unavailable. Reload this page before changing it.</p>{% endif %}
+<p>A send already submitted to Meta cannot be recalled. Saving OFF waits for sends already at the external-send boundary; Meta may deliver an accepted message later.</p>
+</section>
+<section class="bot-card"><h2>Recent administrator audit events</h2>{% for event in audits %}<p><b>{{ event.action }}</b> — {{ event.summary|e }}<br><small>{{ event.actor|e }} · {{ event.created_at }} UTC</small></p>{% else %}<p>No administrator changes yet.</p>{% endfor %}</section>

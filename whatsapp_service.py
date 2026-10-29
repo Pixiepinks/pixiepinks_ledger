@@ -1,3 +1,4 @@
+import global_ai_control
 import logging
 import json
 import re
@@ -43,6 +44,7 @@ def _message_id(response: httpx.Response) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
+@global_ai_control.transport_send
 def send_whatsapp_image(
     recipient: str, image_url: str, caption: str | None = None, *, return_message_id: bool = False,
     return_outcome: bool = False,
@@ -86,6 +88,7 @@ def send_whatsapp_image(
     return message_id if return_message_id else True
 
 
+@global_ai_control.transport_send
 def send_whatsapp_text(
     recipient: str, body: str, *, return_message_id: bool = False
 ) -> bool | str | None:
@@ -164,6 +167,7 @@ def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str
     return media_id if isinstance(media_id, str) and media_id.strip() else None
 
 
+@global_ai_control.transport_send
 def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True,
                         return_outcome: bool = False) -> str | None | tuple[str, str | None]:
     """Send previously uploaded Meta media as an audio message/voice note."""

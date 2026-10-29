@@ -1,3 +1,4 @@
+from ai_reply_test_support import reply_text, product_message
 import hashlib
 import hmac
 
@@ -300,7 +301,7 @@ def test_bicycle_images_use_shopify_url_cap_at_three_and_failure_falls_back(monk
     } for number in range(4)]
     monkeypatch.setattr(main, "search_bicycles_by_collection", lambda *args, **kwargs:
                         {"collection": {"title": 'Boys Size 26"'}, "products": products})
-    main._reply_to_text_message("94770000000", "wamid.images",
+    reply_text(main, "94770000000", "wamid.images",
                                 "bicycle for my 12 year old boy", "Customer")
     assert len(images) == 3
     assert images[0][0] == products[0]["featured_image"]
@@ -319,7 +320,7 @@ def test_missing_featured_image_uses_text_recommendation(monkeypatch):
         "featured_image": None, "featured_image_verified": False,
         "variants": [{"title": "26 inch", "price": "37100", "available": True}],
         }]})
-    main._reply_to_text_message("94770000000", "wamid.noimage",
+    reply_text(main, "94770000000", "wamid.noimage",
                                 "bicycle for my 12 year old boy", "Customer")
     assert any("Image-free Bike" in text and "Rs. 37,100" in text for text in texts)
 
@@ -352,7 +353,7 @@ def test_toy_picture_follow_up_requeries_shopify_caps_three_and_survives_failure
     monkeypatch.setattr(main, "search_bicycles_by_collection",
                         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError()))
 
-    main._reply_to_text_message("94770000000", "wamid.toy-pics", "pictures ewanna", "Customer")
+    reply_text(main, "94770000000", "wamid.toy-pics", "pictures ewanna", "Customer")
 
     assert searches == [("do you have toys", 3)]  # live re-verification uses original intent
     assert len(images) == 2
@@ -369,7 +370,7 @@ def test_bag_photo_follow_up_uses_bag_context(monkeypatch):
     monkeypatch.setattr(main, "search_products",
                         lambda query, limit=5: searches.append(query) or [])
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
-    main._reply_to_text_message("94770000000", "wamid.bag-pics", "send photos", "Customer")
+    reply_text(main, "94770000000", "wamid.bag-pics", "send photos", "Customer")
     assert searches == ["show me school bags"]
 
 
@@ -399,7 +400,7 @@ def test_handover_overrides_product_image_follow_up(monkeypatch):
                         lambda *args: (_ for _ in ()).throw(AssertionError()))
     sent = []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda _to, body: sent.append(body) or True)
-    main._reply_to_text_message("94770000000", "wamid.handover-pics",
+    reply_text(main, "94770000000", "wamid.handover-pics",
                                 "send pictures to a human agent", "Customer")
     assert sent == [main.HUMAN_HANDOVER_REPLY]
 
@@ -424,7 +425,7 @@ def test_complete_product_request_does_not_add_unrelated_history(monkeypatch):
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args: True)
     main._store_conversation_message("94770000000", "inbound", "Hello there")
 
-    main._reply_to_text_message(
+    reply_text(main,
         "94770000000", "wamid.clean-search", "Show me size 20 bicycles", "Customer"
     )
 
@@ -506,11 +507,11 @@ def test_invalid_pending_answers_remain_deterministic(monkeypatch):
     monkeypatch.setattr(main, "generate_customer_reply",
                         lambda *args: ai_calls.append(args) or "wrong")
     main._set_bicycle_workflow("94770000000", main.AWAITING_BICYCLE_GENDER)
-    main._reply_to_text_message("94770000000", "invalid-gender", "Bo", "Customer")
+    reply_text(main, "94770000000", "invalid-gender", "Bo", "Customer")
     with SessionLocal() as db:
         assert db.query(WhatsAppConversation).one().workflow_state == main.AWAITING_BICYCLE_GENDER
     main._set_bicycle_workflow("94770000000", main.AWAITING_BICYCLE_AGE, gender="boy")
-    main._reply_to_text_message("94770000000", "invalid-age", "not sure", "Customer")
+    reply_text(main, "94770000000", "invalid-age", "not sure", "Customer")
     with SessionLocal() as db:
         assert db.query(WhatsAppConversation).one().workflow_state == main.AWAITING_BICYCLE_AGE
     assert sent == ["Is it for a boy or a girl?", "Please tell me the child's age."]
@@ -595,7 +596,7 @@ def test_product_reply_price_availability_link_and_languages(monkeypatch):
     monkeypatch.setattr(main, "get_product_by_handle", lambda _handle: _live_product())
     monkeypatch.setattr(main, "send_whatsapp_text", lambda _to, body: sent.append(body) or True)
     for text in ("how much?", "is this available?", "send link", "මේක ඕන", "meka ona"):
-        main._reply_to_text_message("94770000000", f"in-{len(sent)}", text, "Customer",
+        reply_text(main, "94770000000", f"in-{len(sent)}", text, "Customer",
                                     "wamid.selected")
     assert "Rs. 16,400" in sent[0]
     assert "currently available" in sent[1]
@@ -615,8 +616,8 @@ def test_unavailable_reply_and_unknown_context_are_safe(monkeypatch):
                         lambda _handle: _live_product(available=False))
     monkeypatch.setattr(main, "generate_customer_reply", lambda *args: "Please clarify the product.")
     monkeypatch.setattr(main, "send_whatsapp_text", lambda _to, body: sent.append(body) or True)
-    main._reply_to_text_message("94770000000", "in-sold", "I want this", None, "wamid.sold")
-    main._reply_to_text_message("94770000000", "in-unknown", "I want this", None, "wamid.unknown")
+    reply_text(main, "94770000000", "in-sold", "I want this", None, "wamid.sold")
+    reply_text(main, "94770000000", "in-unknown", "I want this", None, "wamid.unknown")
     assert "currently unavailable" in sent[0]
     assert "Available" not in sent[0]
     assert sent[1] in ("Please clarify the product.", main.SHOPIFY_FALLBACK_REPLY)
@@ -626,7 +627,7 @@ def test_successful_product_send_maps_wamid_and_failed_send_does_not(monkeypatch
     product = _live_product()
     monkeypatch.setattr(main, "send_whatsapp_image",
                         lambda *args, **kwargs: "wamid.outbound-product")
-    assert main._send_product_message("94770000000", product, "caption") == "wamid.outbound-product"
+    assert product_message(main, "94770000000", product, "caption") == "wamid.outbound-product"
     with SessionLocal() as db:
         mapping = db.query(WhatsAppOutboundProductMessage).one()
         assert (mapping.whatsapp_message_id, mapping.shopify_product_handle) == (
@@ -635,7 +636,7 @@ def test_successful_product_send_maps_wamid_and_failed_send_does_not(monkeypatch
         db.commit()
     monkeypatch.setattr(main, "send_whatsapp_image", lambda *args, **kwargs: False)
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *args, **kwargs: False)
-    assert main._send_product_message("94770000000", product, "caption") is None
+    assert product_message(main, "94770000000", product, "caption") is None
     with SessionLocal() as db:
         assert db.query(WhatsAppOutboundProductMessage).count() == 0
 

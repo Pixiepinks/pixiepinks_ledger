@@ -3,6 +3,8 @@
 No retry after an ambiguous provider outcome. A claimed inbound batch is never
 replayed, including after a restart or database failure following a provider send.
 """
+
+import global_ai_control
 import hashlib
 import json
 import logging
@@ -54,6 +56,7 @@ def caption(product):
     return f"{product['title']}{extra}\nRs. {product['price']:,.2f}\n{product['url']}"
 
 
+@global_ai_control.automatic_job(None, message_index=2, sender_index=1, sessions_index=0)
 def deliver(sessions, phone, inbound_message_id, products, resolve, send_image):
     """Send up to ten cards; callers provide server-verified catalog selections."""
     key = "apb_" + hashlib.sha256(f"{phone}:{inbound_message_id}".encode()).hexdigest()
@@ -129,7 +132,12 @@ def deliver(sessions, phone, inbound_message_id, products, resolve, send_image):
                 attempt.message_text, attempt.status = body, "PROCESSING"
                 db.commit()  # Durable ambiguous state BEFORE irreversible provider I/O.
                 try:
-                    state, message_id = send_image(phone, fresh["image"], body)
+                    with global_ai_control.send_boundary(require_job=True):
+                        state, message_id = send_image(phone, fresh["image"], body)
+                except global_ai_control.AutoReplyBlocked:
+                    attempt.status = "SKIPPED"
+                    db.commit()
+                    break
                 except Exception:
                     state, message_id = "UNKNOWN", None
                 if state != "SENT" or not isinstance(message_id, str) or not message_id.strip():

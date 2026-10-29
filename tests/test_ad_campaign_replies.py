@@ -1,3 +1,4 @@
+from ai_reply_test_support import reply_text
 import copy
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
@@ -42,9 +43,9 @@ def campaign(store, monkeypatch):
 
 def test_exact_ad_first_reply_does_not_call_ai_or_create_order(campaign):
     sessions, texts = campaign; inbound(sessions, "ad-entry")
-    main._reply_to_text_message(PHONE, "ad-entry", "Hi", None)
+    reply_text(main, PHONE, "ad-entry", "Hi", None)
     assert texts == [EXAMPLE["first_reply"]]
-    main._reply_to_text_message(PHONE, "ad-entry", "Hi", None)
+    reply_text(main, PHONE, "ad-entry", "Hi", None)
     assert len(texts) == 1
     with sessions() as db:
         assert db.query(WhatsAppManualSend).one().status == "SENT"
@@ -54,12 +55,12 @@ def test_exact_ad_first_reply_does_not_call_ai_or_create_order(campaign):
 
 def test_followup_has_approved_prices_contents_without_raw_referral_data(campaign, monkeypatch):
     sessions, texts = campaign; inbound(sessions, "ad-entry")
-    main._reply_to_text_message(PHONE, "ad-entry", "Hi", None)
+    reply_text(main, PHONE, "ad-entry", "Hi", None)
     inbound(sessions, "ad-yes", "Ow", source=None)
     captured = {}
     def generate(*args, **kwargs): captured.update(kwargs); return "Hari dear, packs keeyakda one?"
     monkeypatch.setattr(main, "generate_customer_reply", generate)
-    main._reply_to_text_message(PHONE, "ad-yes", "Ow", None)
+    reply_text(main, PHONE, "ad-yes", "Ow", None)
     assert texts[-1] == "Hari dear, packs keeyakda one?"
     facts = captured["campaign_context"]
     assert facts["pack_price"] == "3750.00" and facts["delivery_price"] == "400.00" and facts["offer_total"] == "4150.00"
@@ -93,12 +94,12 @@ def test_human_takeover_and_closed_window_prevent_greeting(campaign):
     sessions, texts = campaign; inbound(sessions, "entry")
     with sessions() as db:
         conversation = db.query(WhatsAppConversation).one(); conversation.mode = "HUMAN"; db.commit()
-    main._reply_to_text_message(PHONE, "entry", "Hi", None)
+    reply_text(main, PHONE, "entry", "Hi", None)
     assert not texts
     with sessions() as db:
         conversation = db.query(WhatsAppConversation).one(); conversation.mode = "AI"
         conversation.last_customer_message_at = datetime.utcnow() - timedelta(hours=25); db.commit()
-    main._reply_to_text_message(PHONE, "entry", "Hi", None)
+    reply_text(main, PHONE, "entry", "Hi", None)
     assert not texts
 
 
@@ -106,8 +107,8 @@ def test_uncertain_send_is_not_retried(campaign, monkeypatch):
     sessions, _ = campaign; inbound(sessions, "entry")
     calls = []
     monkeypatch.setattr(main, "send_whatsapp_text", lambda *a, **k: calls.append(a) or None)
-    main._reply_to_text_message(PHONE, "entry", "Hi", None)
-    main._reply_to_text_message(PHONE, "entry", "Hi", None)
+    reply_text(main, PHONE, "entry", "Hi", None)
+    reply_text(main, PHONE, "entry", "Hi", None)
     assert len(calls) == 1
     with sessions() as db: assert db.query(WhatsAppManualSend).one().status == "UNKNOWN"
 
@@ -115,7 +116,7 @@ def test_uncertain_send_is_not_retried(campaign, monkeypatch):
 def test_concurrent_entry_only_sends_once(campaign):
     sessions, texts = campaign; inbound(sessions, "entry")
     with ThreadPoolExecutor(max_workers=2) as pool:
-        list(pool.map(lambda _: main._reply_to_text_message(PHONE, "entry", "Hi", None), range(2)))
+        list(pool.map(lambda _: reply_text(main, PHONE, "entry", "Hi", None), range(2)))
     assert len(texts) == 1
 
 
@@ -127,9 +128,9 @@ def test_database_failure_after_send_does_not_replay_greeting(campaign):
         if statement.startswith("INSERT INTO whatsapp_conversation_messages"):
             raise OperationalError(statement, {}, RuntimeError("simulated outage"))
     event.listen(engine, "before_cursor_execute", fail)
-    try: main._reply_to_text_message(PHONE, "entry", "Hi", None)
+    try: reply_text(main, PHONE, "entry", "Hi", None)
     finally: event.remove(engine, "before_cursor_execute", fail)
-    main._reply_to_text_message(PHONE, "entry", "Hi", None)
+    reply_text(main, PHONE, "entry", "Hi", None)
     assert texts == [EXAMPLE["first_reply"]]
 
 

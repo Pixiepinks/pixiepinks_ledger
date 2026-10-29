@@ -1,4 +1,6 @@
 """Published, exact-ad first replies and bounded follow-up campaign context."""
+
+import global_ai_control
 import hashlib
 import re
 from datetime import date, datetime, timedelta
@@ -95,6 +97,7 @@ def followup_context(campaign):
 
 def send_reply(db, conversation, campaign, inbound_id, message, profile_name, send_text, generate):
     """At-most-once campaign reply for this inbound, including AI follow-ups."""
+    global_ai_control.checkpoint(require_job=True)
     key = "adc_" + hashlib.sha256(f"{conversation.id}:{inbound_id}".encode()).hexdigest()
     if db.query(WhatsAppManualSend).filter_by(idempotency_key=key).first(): return
     require_reply_window(db, conversation)
@@ -122,8 +125,14 @@ def send_reply(db, conversation, campaign, inbound_id, message, profile_name, se
     current = rule_for_source(config.published_snapshot or {}, campaign["rule"]["source_id"]) if config else None
     if current != campaign["rule"]:
         attempt.status = "SKIPPED"; db.commit(); return
+    phone = conversation.phone_number
     attempt.message_text = reply
-    try: message_id = send_text(conversation.phone_number, reply)
+    db.commit()  # Persist PROCESSING body and release ORM transaction before send lock.
+    try:
+        with global_ai_control.send_boundary(require_job=True):
+            message_id = send_text(phone, reply)
+    except global_ai_control.AutoReplyBlocked:
+        attempt.status = "SKIPPED"; db.commit(); return
     except Exception: message_id = None
     if not isinstance(message_id, str) or not message_id.strip():
         attempt.status = "UNKNOWN"; db.commit(); return
