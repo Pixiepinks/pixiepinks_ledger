@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Voice Playback Compatibility Test — Owner Only</h1>
+<p><a href="/crm/bot-management/voice-diagnostics">Back to voice delivery diagnostics</a></p>
+<p>Prepare → Verify owner number → Review → Confirm two sends → Check WhatsApp phone → Record results.</p>
+<p>This comparison does not change AI settings or production voice encoding. HTTP acceptance and delivery do not prove playback.</p>
+{% if not enabled %}<p><strong>Disabled.</strong> Railway must enable the owner test feature and configure a verified owner-controlled number before preparation or sending.</p>{% endif %}
+{% if enabled %}
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/prepare">
+<input type="hidden" name="csrf_token" value="{{ csrf_token|e }}">
+<label>Ready Saved Voice <select name="voice_id" required>{% for voice in voices %}<option value="{{ voice.id }}">#{{ voice.id }} — {{ voice.title }} (revision {{ voice.revision }})</option>{% endfor %}</select></label>
+<label>Recording revision shown above <input type="number" name="revision" min="1" required></label>
+<label>Verify owner test number (international digits, no +) <input type="password" name="owner_number" autocomplete="off" required></label>
+<label><input type="checkbox" name="owner_confirm" required> I verified this is my authorized owner-controlled test phone.</label>
+<button>Prepare review — send nothing</button></form>
+{% endif %}
+{% if run %}
+<h2>Test {{ run.id }} — {{ run.status }}</h2>
+<audio controls preload="none" src="/crm/bot-management/voice-diagnostics/ab/{{ run.id }}/audio"></audio>
+<p>Both variants use this same immutable recording, the same configured business number and the same verified owner recipient. Separate media uploads use identical bytes.</p>
+<table><thead><tr><th>Variant</th><th>Audio object</th><th>Send status</th><th>Delivery</th></tr></thead><tbody>
+{% for variant in variants %}<tr><td>{{ variant.variant }} — {{ 'Ordinary audio' if variant.variant == 'A' else 'Native voice note' }}</td><td><code>{{ '{"id":"media_id"}' if variant.variant == 'A' else '{"id":"media_id","voice":true}' }}</code></td><td>{{ variant.status }}</td><td>{{ variant.delivery_status or 'Not reported' }} {{ variant.delivery_error_code or '' }}</td></tr>{% endfor %}
+</tbody></table>
+{% if run.status == 'REVIEW' and enabled %}
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/run">
+<input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}">
+<p><strong>This action sends exactly two WhatsApp messages when both stages succeed. A failure stops the test; partial sends are never automatically retried.</strong> The review expires in 15 minutes.</p>
+<label><input type="checkbox" name="confirm_two" required> I authorize these two test messages to the verified owner phone now.</label>
+<button>Run A/B Test — Send Two Messages</button></form>
+{% endif %}
+{% if run.status != 'REVIEW' %}
+<p>Refresh this page to see delivery updates. Interrupted/unknown sends must be investigated; do not resubmit them as new tests until verified.</p>
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/results">
+<input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}">
+{% for key,label in [('a','Test A — Ordinary Audio'),('b','Test B — Native Voice Note')] %}<label>{{ label }} <select name="{{ key }}">{% for value,text in [('not_tested','Not tested'),('plays','Plays successfully'),('fails','Cannot play')] %}<option value="{{ value }}" {% if run.playback and run.playback.get(key|upper)==value %}selected{% endif %}>{{ text }}</option>{% endfor %}</select></label>{% endfor %}
+<label>Client platform <select name="platform">{% for value in ['Android','iPhone','Web/Desktop','Other'] %}<option {% if run.playback and run.playback.platform==value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label>
+<label>Error description (optional) <select name="description"><option value="">None selected</option><option value="audio_unavailable">Audio unavailable / something wrong with file</option><option value="other_error">Other playback error (report separately without private data)</option></select></label>
+<button>Save actual playback results — send nothing</button></form>
+<p>{{ summary }}</p>
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/meta"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}"><label><input type="checkbox" name="owner_confirm" required> Retrieve existing test media from Meta to compare hashes; send nothing.</label><button>Inspect Meta media</button></form>
+{% endif %}
+<details><summary>Advanced evidence — no phone numbers or credentials</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ evidence_json|e }}</pre></details>
+{% endif %}
+<h2>Your recent tests</h2><ul>{% for item in recent %}<li><a href="/crm/bot-management/voice-diagnostics/ab?run_id={{ item.id }}">{{ item.id }}</a> — {{ item.status }}</li>{% endfor %}</ul>
+{% endblock %}

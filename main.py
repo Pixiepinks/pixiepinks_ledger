@@ -1519,6 +1519,9 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                             evidence=dict(voice_attempt.audio_trace)
                             evidence["delivery"]={"status":delivery_status,"error_code":code}
                             voice_attempt.audio_trace=evidence
+                    from models import VoicePlaybackVariant
+                    db.query(VoicePlaybackVariant).filter_by(whatsapp_message_id=outbound_id).update({
+                        "delivery_status":delivery_status,"delivery_error_code":code})
                     db.commit()
             messages = value.get("messages", [])
             if not isinstance(messages, list):
@@ -3404,6 +3407,10 @@ def fulfillment_shopify_reconcile(fulfillment_id:int,operation_id:str,request:Re
 
 from learning_routes import build_router as build_learning_router
 app.include_router(build_learning_router(get_db,require_user,_require_csrf,_csrf_token))
+
+
+from voice_playback_routes import build_router as build_voice_playback_router
+app.include_router(build_voice_playback_router(get_db, require_user, _csrf_token, templates))
 
 
 @app.get("/crm/bot-management", response_class=HTMLResponse)

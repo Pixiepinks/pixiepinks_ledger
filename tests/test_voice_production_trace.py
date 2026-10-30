@@ -127,7 +127,7 @@ def test_runtime_page_admin_only_no_cache_no_secrets_and_no_setting_writes(inbox
     with sessions() as db:db.get(GlobalAIReplyControl,1).enabled=False;db.commit()
     page=client.get('/crm/bot-management/voice-diagnostics')
     assert page.status_code==200 and page.headers['cache-control']=='private, no-store'
-    assert 'a'*40 in page.text and '20261030_20' in page.text
+    assert 'a'*40 in page.text and '20261030_21' in page.text
     assert 'private-secret-token' not in page.text and 'private-business-id' not in page.text and '94770012301' not in page.text
     assert 'normalization_version' in page.text and 'audio_self_check' in page.text
     with sessions() as db:assert db.get(GlobalAIReplyControl,1).enabled is False
@@ -190,7 +190,7 @@ def test_nullable_trace_migration_preserves_existing_data_and_global_off(tmp_pat
     with engine.connect() as conn:
         assert conn.execute(text('SELECT generation FROM global_ai_reply_control')).scalar()==7
         assert conn.execute(text('SELECT enabled FROM global_ai_reply_control')).scalar()==0
-        assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar()=='20261030_20'
+        assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar()=='20261030_21'
     engine.dispose()
 
 
