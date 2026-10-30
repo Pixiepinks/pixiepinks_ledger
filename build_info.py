@@ -7,7 +7,7 @@ import re
 import subprocess
 
 ROOT=Path(__file__).resolve().parent
-FILES=('audio_service.py','whatsapp_service.py','saved_voice_service.py','saved_voice_routes.py','main.py','voice_trace.py','voice_production_diagnostics.py','build_info.py','voice_playback_test.py','voice_playback_routes.py','voice_compatibility.py','voice_regression_diagnostics.py')
+FILES=('audio_service.py','whatsapp_service.py','saved_voice_service.py','saved_voice_routes.py','main.py','voice_trace.py','voice_production_diagnostics.py','build_info.py','voice_playback_test.py','voice_playback_routes.py','voice_compatibility.py','voice_regression_diagnostics.py','voice_diagnostic_tools.py','voice_encoding_experiment.py')
 
 
 def fingerprints():

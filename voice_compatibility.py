@@ -1,6 +1,7 @@
 """Offline Opus/OGG stream evidence, not a WhatsApp playback certification."""
 import struct
 import hashlib
+from collections import Counter
 from io import BytesIO
 import av
 from audio_service import validate_voice_audio
@@ -21,6 +22,10 @@ def _tags(packet):
         if position>len(packet):return result
     result['structure_valid']=True
     return result
+
+
+def _mode(config):
+    return 'CELT' if config>=16 else 'hybrid' if config>=12 else 'SILK'
 
 
 def inspect(raw):
@@ -69,7 +74,8 @@ def inspect(raw):
         'final_page_eos':bool(pages[-1]['flags']&4),'packet_duration_ms_unique':sorted(set(durations)),
         'encoded_packet_duration_ms_unique':sorted(set(coded_durations)),
         'encoded_toc_config_counts':{str(config):toc_configs.count(config) for config in sorted(set(toc_configs))},
-        'encoded_modes':sorted({'CELT' if config>=16 else 'hybrid' if config>=12 else 'SILK' for config in toc_configs}),
+        'encoded_modes':sorted({_mode(config) for config in toc_configs}),
+        'encoded_mode_counts':dict(Counter(_mode(config) for config in toc_configs)),
         'demux_duration_note':'Demux durations can be trimmed by pre-skip/EOS; they are not the encoded Opus frame durations.',
         'granule_duration_seconds':(granules[-1]-preskip)/48000 if granules else None,
         'pages':pages,

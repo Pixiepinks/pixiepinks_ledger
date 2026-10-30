@@ -82,6 +82,7 @@ def get_run(db, user, run_id):
 
 def execute(db, user, run_id, confirmed):
     run = get_run(db, user, run_id)
+    if run.evidence.get('kind')=='same_source_encoding':raise HTTPException(409,'Use the three-variant encoding confirmation workflow')
     recipient = configuration()
     if not confirmed:
         raise HTTPException(400, 'Explicit confirmation of two WhatsApp messages is required')
@@ -151,6 +152,7 @@ def execute(db, user, run_id, confirmed):
 
 def results(db, user, run_id, a, b, platform, description):
     run = get_run(db, user, run_id)
+    if run.evidence.get('kind')=='same_source_encoding':raise HTTPException(409,'Use the encoding playback form')
     if run.status == 'REVIEW':
         raise HTTPException(409, 'Run the reviewed test before recording playback')
     if a not in {'plays', 'fails', 'not_tested'} or b not in {'plays', 'fails', 'not_tested'} or platform not in {'Android', 'iPhone', 'Web/Desktop', 'Other'}:

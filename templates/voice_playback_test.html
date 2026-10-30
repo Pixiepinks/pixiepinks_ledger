@@ -14,6 +14,14 @@
 <label><input type="checkbox" name="owner_confirm" required> I verified this is my authorized owner-controlled test phone.</label>
 <button>Prepare review — send nothing</button></form>
 {% endif %}
+<h2>Same-source encoding experiment</h2>
+<p>Historical, current and independent FFmpeg profiles use one source and the same ordinary-audio message type. Actual packet modes are measured, not assumed. AAC live control is disabled pending official documentation verification.</p>
+{% if encoding_enabled %}
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/encoding/prepare"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}">
+<label>Owner-authorized source <select name="voice_id">{% for voice in voices %}<option value="{{ voice.id }}">#{{ voice.id }} — {{ voice.title }} (revision {{ voice.revision }})</option>{% endfor %}</select></label>
+<label>Source revision <input type="number" name="revision" min="1" required></label><label>Verify owner number <input type="password" name="owner_number" autocomplete="off" required></label>
+<label><input type="checkbox" name="owner_confirm" required> I authorize use of this recording for the owner test.</label><button>Prepare three encoding variants — send nothing</button></form>
+{% else %}<p>Disabled by default. Enable the separate encoding experiment feature only after reviewing the optional pinned independent decoder installation.</p>{% endif %}
 {% if run %}
 <h2>Test {{ run.id }} — {{ run.status }}</h2>
 <audio controls preload="none" src="/crm/bot-management/voice-diagnostics/ab/{{ run.id }}/audio"></audio>
