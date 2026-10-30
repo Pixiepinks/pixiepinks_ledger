@@ -346,7 +346,7 @@ def test_additive_migration_preserves_receipts_and_never_resets_switch(tmp_path,
         assert conn.execute(text("SELECT ai_reply_generation FROM processed_whatsapp_messages WHERE message_id='old-job'")).scalar() is None
         row=conn.execute(text("SELECT enabled,generation FROM global_ai_reply_control")).one()
         assert tuple(row) == ((0,5) if orm_first else (1,0))
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "20261030_19"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar() == "20261030_20"
     engine.dispose()
 
 

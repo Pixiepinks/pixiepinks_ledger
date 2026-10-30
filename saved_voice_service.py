@@ -1,4 +1,5 @@
 """Private persistent recordings and durable manual voice sends."""
+import voice_trace
 import hashlib
 import os
 import re
@@ -193,8 +194,16 @@ def send(db, user, conversation, values, key, upload, deliver):
         raise HTTPException(409, "Recording was normalized. Refresh, preview it, and choose it again before sending")
     raw = read_audio(voice)
     title, transcript, duration = voice.title, voice.transcript, voice.duration_seconds
+    trace=voice_trace.new("saved_voice")
+    trace["recording_id"]=voice.id
+    trace["recording_revision"]=voice.revision
+    trace["normalization_version"]=voice.normalization_version
+    trace["stages"]["storage_read"]=voice_trace.fingerprint(raw)
+    trace["stages"]["normalized_record"]={"sha256":voice.sha256,"size_bytes":voice.size_bytes}
+    source=(voice.audio_diagnostics or {}).get("source",{})
+    trace["stages"]["source_at_upload"]={k:source.get(k) for k in ("sha256","size_bytes","container","codec")}
     attempt = SavedVoiceSend(idempotency_key=key, conversation_id=conversation.id, staff_id=user.id,
-        voice_id=voice.id, voice_revision=voice.revision, status="UPLOADING")
+        voice_id=voice.id, voice_revision=voice.revision, status="UPLOADING",audio_trace=voice_trace.snapshot(trace))
     db.add(attempt)
     try:
         db.commit()  # Claim before any external I/O; retries can only read status.
@@ -204,10 +213,14 @@ def send(db, user, conversation, values, key, upload, deliver):
         if row and (row.voice_id, row.voice_revision) == (values.voice_id, values.revision):
             return status(row)
         raise HTTPException(409, "Voice send already claimed") from None
+    trace["attempt_id"]=attempt.id
     try:
-        media_id = upload(raw)
+        with voice_trace.capture(trace):
+            media_id = upload(raw)
     except Exception:
         media_id = None
+    trace["returned_media_id"]=media_id if isinstance(media_id,str) else None
+    attempt.audio_trace=voice_trace.snapshot(trace)
     if not isinstance(media_id, str) or not media_id.strip():
         attempt.status = "FAILED"  # Media upload alone cannot message a customer.
         db.commit()
@@ -215,6 +228,8 @@ def send(db, user, conversation, values, key, upload, deliver):
     db.expire_all()
     db.refresh(conversation)
     db.refresh(voice)
+    attempt.audio_trace=voice_trace.snapshot(trace)
+    attempt.media_id=media_id
     try:
         require_reply_window(db, conversation)
     except HTTPException:
@@ -224,9 +239,12 @@ def send(db, user, conversation, values, key, upload, deliver):
     attempt.media_id, attempt.status = media_id, "SENDING"
     db.commit()  # Ambiguous crash after this point must never be replayed.
     try:
-        outcome, message_id = deliver(conversation.phone_number, media_id)
+        with voice_trace.capture(trace):
+            outcome, message_id = deliver(conversation.phone_number, media_id)
     except Exception:
         outcome, message_id = "UNKNOWN", None
+    trace["returned_whatsapp_message_id"]=message_id if isinstance(message_id,str) else None
+    attempt.audio_trace=voice_trace.snapshot(trace)
     if outcome != "SENT" or not isinstance(message_id, str) or not message_id.strip():
         attempt.status = "FAILED" if outcome == "FAILED" else "UNKNOWN"
         db.commit()

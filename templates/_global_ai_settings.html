@@ -1,5 +1,6 @@
 <section class="bot-card">
 <h2>Global AI Auto Replies</h2>
+{% if user.role == 'ADMIN' %}<p><a href="/crm/bot-management/voice-diagnostics">Open read-only voice delivery diagnostics</a></p>{% endif %}
 <p>This switch takes effect immediately across all web instances and customer-reply jobs. It does not require publishing a draft.</p>
 <p>OFF blocks every automatic reply, including automatic product cards and fixed bot responses. Human replies, attachments, Quick Messages and orders remain available. Conversation modes and learning settings stay unchanged.</p>
 {% if user.role == 'ADMIN' and global_ai.available %}

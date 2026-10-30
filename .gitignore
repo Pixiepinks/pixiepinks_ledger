@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 .env
 ledger.db
+
+/build_revision.json

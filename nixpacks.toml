@@ -8,3 +8,7 @@ nixLibs = ["...", "gcc-unwrapped"]
 # incompatible system FFmpeg installation.
 [variables]
 PIP_ONLY_BINARY = "av"
+
+# Record provenance inside the built artifact; never infer deployment from a push.
+[phases.build]
+cmds = ["...", "python build_info.py --write"]

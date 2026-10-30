@@ -605,6 +605,7 @@ class WhatsAppManualSend(Base):
     __tablename__ = "whatsapp_manual_sends"
 
     id = Column(Integer, primary_key=True)
+    audio_trace = Column(JSON)
     idempotency_key = Column(String(100), unique=True, nullable=False, index=True)
     conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), nullable=False)
     quick_message_id = Column(Integer, ForeignKey("whatsapp_quick_messages.id", ondelete="RESTRICT"))
@@ -804,6 +805,7 @@ class SavedVoice(Base):
 class SavedVoiceSend(Base):
     __tablename__ = "saved_voice_sends"
     id = Column(Integer, primary_key=True)
+    audio_trace = Column(JSON)
     idempotency_key = Column(String(100), nullable=False, unique=True)
     conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id", ondelete="RESTRICT"), nullable=False)
     staff_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
