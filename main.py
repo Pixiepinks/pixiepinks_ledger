@@ -1,3 +1,4 @@
+import voice_trace
 import global_ai_control
 import asyncio
 import threading
@@ -86,7 +87,7 @@ from whatsapp_service import (
     send_whatsapp_text,
     upload_whatsapp_audio,
 )
-from audio_service import MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio
+from audio_service import NORMALIZATION_VERSION, MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
@@ -1512,6 +1513,12 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         "delivery_status":delivery_status,"delivery_error_code":code})
                     if updated:
                         logger.info("Saved voice delivery status=%s error_code=%s",delivery_status,code)
+                    for voice_attempt in db.query(WhatsAppManualSend).filter_by(
+                            whatsapp_message_id=outbound_id, message_text="Voice message").all():
+                        if voice_attempt.audio_trace:
+                            evidence=dict(voice_attempt.audio_trace)
+                            evidence["delivery"]={"status":delivery_status,"error_code":code}
+                            voice_attempt.audio_trace=evidence
                     db.commit()
             messages = value.get("messages", [])
             if not isinstance(messages, list):
@@ -1781,6 +1788,9 @@ def startup():
         Base.metadata.create_all(bind=engine)
 
     upgrade_database()
+    import build_info
+    voice_trace.record("runtime", {**build_info.runtime(),"normalization_version":NORMALIZATION_VERSION,
+        "process_instance":voice_trace.INSTANCE})
 
     ensure_item_sku_column()
     ensure_whatsapp_inbox_columns()
@@ -2748,9 +2758,14 @@ async def whatsapp_manual_audio_send(
     except VoiceAudioError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    trace=voice_trace.new("browser_recording")
+    trace["normalization_version"]=NORMALIZATION_VERSION
+    trace["stages"]["browser_upload"]=voice_trace.fingerprint(raw)
+    trace["stages"]["normalized_memory"]=voice_trace.fingerprint(voice_note)
+    trace["persistent_audio_storage"]="not_used_by_this_route"
     attempt = WhatsAppManualSend(
         idempotency_key=key, conversation_id=conversation.id,
-        message_text="Voice message", sent_by=user.username,
+        message_text="Voice message", sent_by=user.username,audio_trace=voice_trace.snapshot(trace),
     )
     db.add(attempt)
     try:
@@ -2759,18 +2774,26 @@ async def whatsapp_manual_audio_send(
         db.rollback()
         return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
 
+    trace["attempt_id"]=attempt.id
     try:
-        media_id = upload_whatsapp_audio(voice_note)
+        with voice_trace.capture(trace):
+            media_id = upload_whatsapp_audio(voice_note)
     except Exception:
         media_id = None
+    trace["returned_media_id"]=media_id if isinstance(media_id,str) else None
+    attempt.audio_trace=voice_trace.snapshot(trace)
     if not media_id:
         attempt.status = "FAILED"
         db.commit()
         return JSONResponse({"ok": False, "error": "Meta could not upload this voice message."}, status_code=502)
+    db.commit()  # Preserve the upload evidence before the existing send call.
     try:
-        outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=True)
+        with voice_trace.capture(trace):
+            outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=True)
     except Exception:
         outbound_id = None
+    trace["returned_whatsapp_message_id"]=outbound_id if isinstance(outbound_id,str) else None
+    attempt.audio_trace=voice_trace.snapshot(trace)
     if not outbound_id:
         attempt.status = "FAILED"
         db.commit()
@@ -3387,6 +3410,25 @@ app.include_router(build_learning_router(get_db,require_user,_require_csrf,_csrf
 @app.get("/crm/bot-management/{section}", response_class=HTMLResponse)
 def bot_management(request: Request, section: str = "overview", db: Session = Depends(get_db),
                    user: User = Depends(require_user)):
+    if section == "voice-diagnostics":
+        if user.role != "ADMIN":raise HTTPException(403,"Administrator access required")
+        from voice_production_diagnostics import runtime_report, attempt_report, recent_attempts, lookup_saved_message
+        route=request.query_params.get("route","saved")
+        if route not in {"saved","browser"}:raise HTTPException(422,"Choose saved or browser route")
+        attempt_id=request.query_params.get("attempt_id")
+        if attempt_id is not None and (not attempt_id.isdigit() or len(attempt_id)>10 or int(attempt_id)<1):
+            raise HTTPException(422,"Use a positive internal attempt ID")
+        message_id=request.query_params.get("message_id")
+        recording_id=request.query_params.get("recording_id")
+        for value in (message_id,recording_id):
+            if value is not None and (not value.isdigit() or len(value)>10 or int(value)<1):raise HTTPException(422,"Use positive internal IDs")
+        if message_id and (attempt_id or route!='saved'):raise HTTPException(422,"Use message lookup for saved route without attempt ID")
+        report=lookup_saved_message(db,int(message_id),int(recording_id) if recording_id else None) if message_id else attempt_report(db,route,int(attempt_id)) if attempt_id else None
+        return templates.TemplateResponse("voice_diagnostics.html",{"request":request,"user":user,
+            "page_title":"Voice delivery diagnostics","runtime_json":json.dumps(runtime_report(db,context="web"),indent=2,default=str),
+            "trace_json":json.dumps(report,indent=2,default=str) if report else None,
+            "recent_json":json.dumps(recent_attempts(db),indent=2,default=str),
+            "diagnostic_csrf":_csrf_token(request),"selected_attempt":report if report and report.get("attempt_id") else None},headers={"Cache-Control":"private, no-store"})
     if section == "learning":
         from learning_routes import authorize
         authorize(user)
@@ -3409,6 +3451,27 @@ def bot_management(request: Request, section: str = "overview", db: Session = De
     return templates.TemplateResponse("bot_management.html", _bot_page_context(
         request, db, section, collections=collections, catalog_error=catalog_error, user=user),
         headers={"Cache-Control":"private, no-store"})
+
+
+@app.post("/crm/bot-management/voice-diagnostics/meta", response_class=HTMLResponse)
+def inspect_owner_voice_media(request: Request, route: str = Form(...), attempt_id: int = Form(...,ge=1),
+                              owner_confirm: bool = Form(False), csrf_token: str = Form(...),
+                              db: Session = Depends(get_db), user: User = Depends(require_user)):
+    if user.role != "ADMIN":raise HTTPException(403,"Administrator access required")
+    expected=request.session.get("csrf_token","")
+    if not expected or not hmac.compare_digest(csrf_token,expected):raise HTTPException(403,"Invalid CSRF token")
+    if not owner_confirm:raise HTTPException(400,"Confirm this is the owner-authorized test media")
+    if route not in {"saved","browser"}:raise HTTPException(422,"Choose saved or browser route")
+    from voice_production_diagnostics import runtime_report, attempt_report, recent_attempts, retrieve_meta, expected_upload, same_fingerprints
+    report=attempt_report(db,route,attempt_id)
+    if report.get("error"):raise HTTPException(404,"Voice attempt not found")
+    report["meta_retrieval"]=retrieve_meta(report.get("meta_media_id"),expected_upload(report))
+    current=report.get("current_stored_bytes");download=report["meta_retrieval"].get("downloaded")
+    report["current_saved_file_matches_downloaded_meta_media"]=same_fingerprints(current,download)
+    return templates.TemplateResponse("voice_diagnostics.html",{"request":request,"user":user,
+        "page_title":"Voice delivery diagnostics","runtime_json":json.dumps(runtime_report(db,context="web"),indent=2,default=str),
+        "trace_json":json.dumps(report,indent=2,default=str),"recent_json":json.dumps(recent_attempts(db),indent=2,default=str),
+        "diagnostic_csrf":_csrf_token(request),"selected_attempt":report},headers={"Cache-Control":"private, no-store"})
 
 
 @app.get("/crm/whatsapp/api/global-ai-state")

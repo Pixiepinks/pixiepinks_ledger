@@ -1,3 +1,5 @@
+import voice_trace
+import hashlib
 import global_ai_control
 import logging
 import json
@@ -152,6 +154,7 @@ def _audio_diagnostic(stage, response):
             subcode=error.get("error_subcode") if type(error.get("error_subcode")) is int else None
     except (ValueError,AttributeError):pass
     logger.info("WhatsApp audio result stage=%s http_status=%s error_code=%s error_subcode=%s",stage,response.status_code,code,subcode)
+    return {"http_status":response.status_code,"error_code":code,"error_subcode":subcode}
 
 
 def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str | None:
@@ -161,6 +164,8 @@ def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str
     except VoiceAudioError:
         logger.warning("WhatsApp audio upload blocked reason=invalid_ogg_opus")
         return None
+    voice_trace.record("upload_validated", voice_trace.fingerprint(audio))
+    voice_trace.record("upload_codec", info)
     logger.info("WhatsApp audio upload input codec=opus container=ogg duration_seconds=%s size_bytes=%s", info["duration_seconds"],len(audio))
     access_token = settings.META_WHATSAPP_ACCESS_TOKEN
     phone_number_id = settings.META_WHATSAPP_PHONE_NUMBER_ID
@@ -168,6 +173,8 @@ def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str
         logger.error("WhatsApp audio upload skipped reason=missing_configuration")
         return None
     version = settings.META_GRAPH_API_VERSION.strip().lstrip("/") or "v26.0"
+    voice_trace.record("multipart_file", {**voice_trace.fingerprint(audio),"mime_type":"audio/ogg",
+        "phone_id_sha256":hashlib.sha256(phone_number_id.encode()).hexdigest(),"graph_version":voice_trace.graph_version(version)})
     try:
         response = httpx.post(
             f"https://graph.facebook.com/{version}/{phone_number_id}/media",
@@ -175,14 +182,16 @@ def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str
             data={"messaging_product": "whatsapp", "type": "audio/ogg"},
             files={"file": (filename, audio, "audio/ogg")}, timeout=30.0,
         )
-        _audio_diagnostic("upload",response)
+        voice_trace.record("upload_http", _audio_diagnostic("upload",response))
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError, TypeError) as exc:
         status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        voice_trace.record("upload_exception", {"http_status":status,"error_type":type(exc).__name__})
         logger.error("WhatsApp audio upload failed status_code=%s error_type=%s", status, type(exc).__name__)
         return None
     media_id = payload.get("id") if isinstance(payload, dict) else None
+    voice_trace.record("upload_result", {"media_id":media_id if isinstance(media_id,str) else None})
     logger.info("WhatsApp audio upload media_id_present=%s",bool(isinstance(media_id,str) and media_id.strip()))
     return media_id if isinstance(media_id, str) and media_id.strip() else None
 
@@ -200,6 +209,8 @@ def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True,
     audio = {"id": media_id}
     if voice:
         audio["voice"] = True
+    voice_trace.record("send_payload", {"type":"audio","audio":dict(audio),
+        "phone_id_sha256":hashlib.sha256(phone_number_id.encode()).hexdigest(),"graph_version":voice_trace.graph_version(version)})
     try:
         response = httpx.post(
             f"https://graph.facebook.com/{version}/{phone_number_id}/messages",
@@ -207,14 +218,16 @@ def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True,
             json={"messaging_product": "whatsapp", "to": recipient, "type": "audio", "audio": audio},
             timeout=15.0,
         )
-        _audio_diagnostic("send",response)
+        voice_trace.record("send_http", _audio_diagnostic("send",response))
         response.raise_for_status()
     except httpx.HTTPError as exc:
         status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+        voice_trace.record("send_exception", {"http_status":status,"error_type":type(exc).__name__})
         logger.error("WhatsApp audio send failed status_code=%s error_type=%s", status, type(exc).__name__)
         state = "FAILED" if status and 400 <= status < 500 and status not in {408, 429} else "UNKNOWN"
         return (state, None) if return_outcome else None
     message_id = _message_id(response)
+    voice_trace.record("send_result", {"whatsapp_message_id":message_id})
     logger.info("WhatsApp audio send accepted=%s voice_note=%s",bool(message_id),voice)
     return (("SENT", message_id) if message_id else ("UNKNOWN", None)) if return_outcome else message_id
 

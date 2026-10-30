@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Voice delivery diagnostics</h1>
+<p>Administrator-only, read-only evidence. Loading this page sends no messages, contacts no Meta API, and changes no settings. The explicitly confirmed button below can read existing Meta media only.</p>
+<p>Runtime provenance must be compared with Railway’s deployment details. A GitHub push and a successful codec check do not prove WhatsApp phone playback.</p>
+<h2>Running process and database</h2><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ runtime_json|e }}</pre>
+<h2>Trace an owner test attempt</h2>
+<form method="get" action="/crm/bot-management/voice-diagnostics"><label>Route <select name="route"><option value="saved">Saved Voices</option><option value="browser">Record Voice Message</option></select></label>
+<label>Internal send-attempt ID <input name="attempt_id" type="number" min="1" required></label><button>Read trace</button></form>
+<form method="get" action="/crm/bot-management/voice-diagnostics"><input name="route" type="hidden" value="saved"><label>Local CRM message ID <input name="message_id" type="number" min="1" required></label><label>Recording ID (optional) <input name="recording_id" type="number" min="1"></label><button>Look up Saved Voices message</button></form>
+<p>Use the failed owner-authorized test only. No customer names, phone numbers, transcripts, credentials or signed URLs are shown.</p>
+{% if selected_attempt %}
+<form method="post" action="/crm/bot-management/voice-diagnostics/meta">
+<input type="hidden" name="csrf_token" value="{{ diagnostic_csrf|e }}"><input type="hidden" name="route" value="{{ selected_attempt.route|e }}"><input type="hidden" name="attempt_id" value="{{ selected_attempt.attempt_id }}">
+<label><input type="checkbox" name="owner_confirm" required> I confirm this is the owner-authorized test message. Retrieve and compare its existing media; send nothing.</label><button>Inspect existing Meta media — no send</button>
+</form>{% endif %}
+{% if trace_json %}<pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ trace_json|e }}</pre>{% endif %}
+<h2>Recent attempt IDs</h2><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ recent_json|e }}</pre>
+<p>Older sends have no historical hash trace. Current file hashes are not proof of the bytes uploaded for an earlier message.</p>
+{% endblock %}
