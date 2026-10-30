@@ -11,11 +11,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
-from audio_service import MAX_AUDIO_BYTES, normalize_voice_audio, VoiceAudioError
+from audio_service import (MAX_AUDIO_BYTES, NORMALIZATION_VERSION, normalize_voice_audio,
+    validate_voice_audio, source_audio_info, VoiceAudioError)
 from learning_routes import read_body
 from models import SavedVoice
 from quick_message_service import authorize, MANAGER_ROLES
-from saved_voice_service import Edit, Send, metadata, public, read_audio, write_audio, storage_path, send, scoped_attempt, status
+from saved_voice_service import Edit, Send, metadata, public, read_audio, write_audio, storage_path, send, scoped_attempt, status, prepare
 
 UPLOAD_SLOTS = threading.BoundedSemaphore(2)
 SEND_SLOTS = threading.BoundedSemaphore(4)
@@ -73,7 +74,22 @@ def build_router(get_db, require_user, require_csrf, csrf, templates, get_conver
         authorize(user)
         row = db.query(SavedVoice).filter_by(id=voice_id).one_or_none()
         if not row: raise HTTPException(404, "Recording not found")
+        if row.processing_status != "READY" or row.normalization_version != NORMALIZATION_VERSION:
+            raise HTTPException(409, "Prepare and validate this recording before previewing or sending")
         return audio_response(read_audio(row), "audio/ogg", request)
+
+    @router.post("/crm/saved-voices/api/{voice_id}/prepare")
+    async def prepare_recording(voice_id: int, request: Request, db=Depends(get_db), user=Depends(require_user)):
+        authorize(user); require_csrf(request)
+        row=db.query(SavedVoice).filter_by(id=voice_id).one_or_none()
+        if not row:raise HTTPException(404,"Recording not found")
+        if not UPLOAD_SLOTS.acquire(blocking=False):raise HTTPException(429,"Voice processing is busy")
+        try:
+            await run_in_threadpool(prepare,db,row,retry=True)
+            return JSONResponse({"voice":public(row)},headers=HEADERS)
+        except SQLAlchemyError:
+            db.rollback();raise HTTPException(503,"Recording processing status could not be saved") from None
+        finally:UPLOAD_SLOTS.release()
 
     @router.post("/crm/saved-voices/api")
     async def create(request: Request, db=Depends(get_db), user=Depends(require_user)):
@@ -98,16 +114,25 @@ def build_router(get_db, require_user, require_csrf, csrf, templates, get_conver
             raw = await audio.read(MAX_AUDIO_BYTES + 1)
             mime = audio.content_type or ""
             if mime.split(";", 1)[0].casefold() == "audio/x-m4a": mime = "audio/mp4"
+            source = await run_in_threadpool(source_audio_info, raw)
+            source["sha256"] = hashlib.sha256(raw).hexdigest()
             normalized, duration = await run_in_threadpool(normalize_voice_audio, raw, mime)
+            diagnostics={"source":source,"normalized":validate_voice_audio(normalized)}
+            original = await run_in_threadpool(write_audio, raw, original=True)
             stored = await run_in_threadpool(write_audio, normalized)
             row = SavedVoice(**values, storage_name=stored, sha256=hashlib.sha256(normalized).hexdigest(),
                 size_bytes=len(normalized), duration_seconds=duration, active=True, revision=1,
+                original_storage_name=original, normalization_version=NORMALIZATION_VERSION,
+                processing_status="READY", audio_diagnostics=diagnostics,
                 created_by=user.username, updated_by=user.username)
             db.add(row); db.commit()
             stored = None
             db.refresh(row)
             return JSONResponse({"voice": public(row)}, status_code=201, headers=HEADERS)
-        except (VoiceAudioError, ValidationError, ValueError):
+        except VoiceAudioError as exc:
+            db.rollback()
+            raise HTTPException(422, "Conversion failed: " + str(exc)) from None
+        except (ValidationError, ValueError):
             db.rollback()
             raise HTTPException(422, "Use a valid audio recording (up to 16 MB / 10 minutes), title, category and transcript") from None
         except TimeoutError:

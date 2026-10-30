@@ -26,11 +26,31 @@
       const card = text("article", ""); card.className = "voice-library-card"; card.dataset.selected = String(chosen?.id === row.id);
       card.append(text("h3", row.title), text("small", `${row.category} · ${row.language} · ${clock(row.duration_seconds)}${row.active ? "" : " · Inactive"}`));
       const audio = document.createElement("audio"); audio.controls = true; audio.preload = "none"; audio.src = `/crm/saved-voices/api/${row.id}/audio`;
+      const ready = row.validation_current === true;
+      const state = ready ? "Ready to send · OGG/Opus" : row.processing_status === "PROCESSING" ? "Processing" : row.processing_status === "FAILED" ? "Conversion failed" : "Needs validation";
+      card.append(text("strong", state));
+      if (!ready) {
+        audio.removeAttribute("src");
+        if (row.normalization_error) card.append(text("p",row.normalization_error));
+        const prepare = text("button", "Prepare recording"); prepare.type = "button"; prepare.disabled = busy;
+        prepare.onclick = async () => {
+          if (busy) return; busy = true; status.textContent = "Processing recording…"; render();
+          try { await api(`/crm/saved-voices/api/${row.id}/prepare`, {method:"POST",headers:{"X-CSRF-Token":csrf}}); status.textContent = "Ready to send. Preview the normalized recording before choosing it."; }
+          catch (error) { status.textContent = error.message; }
+          finally { busy = false; await load(); }
+        }; card.append(prepare);
+      }
+      if (row.audio_diagnostics?.source && row.audio_diagnostics?.normalized) {
+        const detail = document.createElement("details"), summary = text("summary", "Audio details");
+        const source = row.audio_diagnostics.source, output = row.audio_diagnostics.normalized;
+        detail.append(summary, text("small", `${source.container} / ${source.codec} → ${output.container} / ${output.codec} · ${output.channels} channel · ${output.sample_rate} Hz · ${output.duration_seconds}s · ${output.size_bytes} bytes`));
+        card.append(detail);
+      }
       card.append(audio, text("p", row.transcript));
       if (dialog) {
         const choose = text("button", "Choose recording"); choose.type = "button"; choose.className = "btn btn-secondary";
-        choose.disabled = busy; choose.onclick = () => {
-          if (busy) return; pause(); chosen = {...row};
+        choose.disabled = busy || row.ready_to_send !== true; choose.onclick = () => {
+          if (busy || row.ready_to_send !== true) return; pause(); chosen = {...row};
           document.getElementById("saved-voice-selection").hidden = false;
           document.getElementById("saved-voice-selected-title").textContent = row.title;
           document.getElementById("saved-voice-selected-transcript").textContent = row.transcript;
@@ -96,7 +116,7 @@
       event.preventDefault(); if (busy) return;
       const payload = new FormData(form), values = Object.fromEntries(payload); busy = true;
       form.querySelectorAll("input,textarea,select,button").forEach(node => node.disabled = true);
-      status.textContent = edit ? "Saving details…" : "Uploading and preparing voice note…";
+      status.textContent = edit ? "Saving details…" : "Processing recording…";
       try {
         if (edit) await saveDetails(edit, edit.active, values);
         else await api("/crm/saved-voices/api", {method:"POST",headers:{"X-CSRF-Token":csrf},body:payload});
@@ -128,14 +148,15 @@
       if (outcome?.status === "SENT" || outcome?.status === "FAILED") sessionStorage.removeItem(slot);
       if (target === cid && dialog.open) {
         status.textContent = !outcome ? "This attempt was not accepted. Click Send Voice to send it." :
-          outcome.status === "SENT" ? "Voice message sent. The transcript was not sent as text." :
+          outcome.delivery_status === "failed" ? `WhatsApp reported delivery failed${outcome.delivery_error_code ? ` (code ${outcome.delivery_error_code})` : ""}. Review before sending again.` :
+          outcome.status === "SENT" ? "Submitted to WhatsApp. Confirm playback on the recipient phone. The transcript was not sent as text." :
           outcome.status === "FAILED" ? "The voice was not sent. You may try again with Send Voice." :
           outcome.status === "UNKNOWN" ? "Delivery is uncertain. Check the customer's chat before sending this recording again. No automatic retry was made." :
           "Voice send is in progress. Use Check send status; do not send again.";
       }
       if (outcome?.status === "SENT") inbox.dispatchEvent(new CustomEvent("saved-voice-sent"));
     } catch (error) {
-      if (error.status === 409 && error.message.startsWith("This recording changed")) {
+      if (error.status === 422 || (error.status === 409 && (error.message.startsWith("This recording changed") || error.message.startsWith("Recording was normalized")))) {
         sessionStorage.removeItem(slot); chosen = null;
         document.getElementById("saved-voice-selection").hidden = true; load();
       }

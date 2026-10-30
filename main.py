@@ -1504,6 +1504,14 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     db.query(WhatsAppConversationMessage).filter_by(
                         whatsapp_message_id=outbound_id
                     ).update({"send_status": delivery_status})
+                    from models import SavedVoiceSend
+                    errors = delivery.get("errors")
+                    code = errors[0].get("code") if isinstance(errors,list) and errors and isinstance(errors[0],dict) else None
+                    code = code if type(code) is int else None
+                    updated = db.query(SavedVoiceSend).filter_by(whatsapp_message_id=outbound_id).update({
+                        "delivery_status":delivery_status,"delivery_error_code":code})
+                    if updated:
+                        logger.info("Saved voice delivery status=%s error_code=%s",delivery_status,code)
                     db.commit()
             messages = value.get("messages", [])
             if not isinstance(messages, list):
