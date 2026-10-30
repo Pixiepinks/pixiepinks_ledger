@@ -9,8 +9,10 @@ from uuid import uuid4
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_
 
-from audio_service import MAX_AUDIO_BYTES
+from audio_service import (MAX_AUDIO_BYTES, NORMALIZATION_VERSION, VoiceAudioError,
+    normalize_voice_audio, validate_voice_audio, source_audio_info)
 from models import SavedVoice, SavedVoiceSend, WhatsAppConversationMessage
 from quick_message_service import authorize, require_reply_window
 from settings import settings
@@ -45,18 +47,21 @@ def metadata(values):
 
 
 def public(row):
-    return {key: getattr(row, key) for key in ("id", "title", "category", "transcript", "language", "active",
-        "revision", "duration_seconds", "size_bytes")}
+    value = {key: getattr(row, key) for key in ("id", "title", "category", "transcript", "language", "active",
+        "revision", "duration_seconds", "size_bytes", "processing_status", "normalization_error", "audio_diagnostics")}
+    value["validation_current"] = bool(row.processing_status == "READY" and row.normalization_version == NORMALIZATION_VERSION)
+    value["ready_to_send"] = value["validation_current"] and bool(row.active)
+    return value
 
 
 def storage_path(name):
-    if not re.fullmatch(r"[a-f0-9]{32}\.ogg", name or ""):
+    if not re.fullmatch(r"[a-f0-9]{32}\.(?:ogg|source)", name or ""):
         raise HTTPException(503, "The saved recording is unavailable")
     return Path(settings.SAVED_VOICES_DIR).resolve() / name
 
 
-def write_audio(raw):
-    name = uuid4().hex + ".ogg"
+def write_audio(raw, *, original=False):
+    name = uuid4().hex + (".source" if original else ".ogg")
     path = storage_path(name)
     try:
         path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -72,17 +77,85 @@ def write_audio(raw):
     return name
 
 
-def read_audio(row):
-    path = storage_path(row.storage_name)
+def _read_file(name):
+    path = storage_path(name)
     try:
         descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(descriptor, "rb") as file:
             raw = file.read(MAX_AUDIO_BYTES + 1)
     except OSError:
         raise HTTPException(503, "The saved recording is missing from persistent storage") from None
+    return raw
+
+
+def _read_original(row):
+    raw = _read_file(row.storage_name)
     if len(raw) != row.size_bytes or hashlib.sha256(raw).hexdigest() != row.sha256:
         raise HTTPException(503, "The saved recording failed its integrity check")
     return raw
+
+
+def read_audio(row):
+    raw = _read_original(row)
+    try:
+        validate_voice_audio(raw)
+    except VoiceAudioError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return raw
+
+
+def prepare(db, row, *, retry=False):
+    """Validate ready files, or claim and normalize a legacy file exactly once.
+
+    Originals are retained permanently. A fencing token prevents a late worker
+    overwriting a subsequent prepare after a crash/expired two-minute lease.
+    """
+    if row.normalization_version == NORMALIZATION_VERSION and row.processing_status == "READY":
+        try:
+            read_audio(row)
+        except HTTPException as exc:
+            row.processing_status = "FAILED"
+            row.normalization_error = "Stored audio failed validation. Prepare again or upload a replacement."
+            db.commit()
+            raise exc
+        return row
+    if row.processing_status == "FAILED" and not retry:
+        raise HTTPException(422, row.normalization_error or "Conversion failed. Prepare the recording before sending.")
+    now=datetime.utcnow(); token=uuid4().hex; voice_id=row.id
+    changed=db.query(SavedVoice).filter(SavedVoice.id==voice_id, SavedVoice.revision==row.revision,
+        SavedVoice.normalization_version==row.normalization_version,
+        or_(SavedVoice.processing_status != "PROCESSING", SavedVoice.normalization_started_at < now-timedelta(minutes=2)))        .update({"processing_status":"PROCESSING","normalization_token":token,
+                 "normalization_started_at":now,"normalization_error":None},synchronize_session=False)
+    if not changed:
+        db.rollback();raise HTTPException(409,"Recording is processing. Refresh its status before sending.")
+    db.commit();db.refresh(row)
+    try:
+        raw=_read_file(row.original_storage_name) if retry and row.original_storage_name else _read_original(row)
+        expected_source=(row.audio_diagnostics or {}).get("source",{}).get("sha256") if retry and row.original_storage_name else None
+        if expected_source and hashlib.sha256(raw).hexdigest() != expected_source:
+            raise HTTPException(503,"The retained source failed its integrity check")
+        source=source_audio_info(raw)
+        source["sha256"]=hashlib.sha256(raw).hexdigest()
+        normalized,duration=normalize_voice_audio(raw,"application/octet-stream")
+        output=validate_voice_audio(normalized)
+        stored=write_audio(normalized)
+        original=row.original_storage_name or row.storage_name
+        changed=db.query(SavedVoice).filter_by(id=voice_id,normalization_token=token).update({
+            "original_storage_name":original,"storage_name":stored,"sha256":hashlib.sha256(normalized).hexdigest(),
+            "size_bytes":len(normalized),"duration_seconds":duration,"normalization_version":NORMALIZATION_VERSION,
+            "processing_status":"READY","normalization_error":None,"normalization_token":None,
+            "normalization_started_at":None,"audio_diagnostics":{"source":source,"normalized":output},
+            "revision":SavedVoice.revision+1},synchronize_session=False)
+        if not changed:db.rollback();raise HTTPException(409,"Another worker prepared this recording. Refresh before sending.")
+        db.commit();db.refresh(row);return row
+    except (VoiceAudioError,HTTPException) as exc:
+        error=str(exc) if isinstance(exc,VoiceAudioError) else "Stored recording is unavailable or failed integrity validation. Upload a replacement."
+        db.query(SavedVoice).filter_by(id=voice_id,normalization_token=token).update({
+            "processing_status":"FAILED","normalization_error":error[:200],"normalization_token":None,
+            "normalization_started_at":None},synchronize_session=False)
+        db.commit()
+        if isinstance(exc,HTTPException):raise
+        raise HTTPException(422,error) from None
 
 
 def status(row):
@@ -90,7 +163,7 @@ def status(row):
     if state in {"UPLOADING", "SENDING"} and datetime.utcnow() - row.updated_at > timedelta(minutes=2):
         state = "UNKNOWN"  # Read-only presentation after a crash; never replay the claim.
     return {"id": row.id, "status": state, "voice_id": row.voice_id, "revision": row.voice_revision,
-            "ok": row.status == "SENT"}
+            "ok": row.status == "SENT", "delivery_status":row.delivery_status, "delivery_error_code":row.delivery_error_code}
 
 
 def scoped_attempt(db, key, cid, user):
@@ -115,6 +188,9 @@ def send(db, user, conversation, values, key, upload, deliver):
         raise HTTPException(404, "This recording is unavailable")
     if voice.revision != values.revision:
         raise HTTPException(409, "This recording changed. Refresh and review it before sending")
+    prepare(db, voice)
+    if voice.revision != values.revision:
+        raise HTTPException(409, "Recording was normalized. Refresh, preview it, and choose it again before sending")
     raw = read_audio(voice)
     title, transcript, duration = voice.title, voice.transcript, voice.duration_seconds
     attempt = SavedVoiceSend(idempotency_key=key, conversation_id=conversation.id, staff_id=user.id,

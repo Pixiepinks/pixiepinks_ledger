@@ -8,6 +8,7 @@ from urllib.parse import urlparse
 import httpx
 
 from settings import settings
+from audio_service import validate_voice_audio, VoiceAudioError
 
 
 logger = logging.getLogger(__name__)
@@ -142,8 +143,25 @@ def send_whatsapp_text(
     return message_id if return_message_id else True
 
 
+def _audio_diagnostic(stage, response):
+    code=subcode=None
+    try:
+        error=response.json().get("error",{})
+        if isinstance(error,dict):
+            code=error.get("code") if type(error.get("code")) is int else None
+            subcode=error.get("error_subcode") if type(error.get("error_subcode")) is int else None
+    except (ValueError,AttributeError):pass
+    logger.info("WhatsApp audio result stage=%s http_status=%s error_code=%s error_subcode=%s",stage,response.status_code,code,subcode)
+
+
 def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str | None:
     """Upload an OGG/Opus voice recording to Meta and return only its media ID."""
+    try:
+        info=validate_voice_audio(audio)
+    except VoiceAudioError:
+        logger.warning("WhatsApp audio upload blocked reason=invalid_ogg_opus")
+        return None
+    logger.info("WhatsApp audio upload input codec=opus container=ogg duration_seconds=%s size_bytes=%s", info["duration_seconds"],len(audio))
     access_token = settings.META_WHATSAPP_ACCESS_TOKEN
     phone_number_id = settings.META_WHATSAPP_PHONE_NUMBER_ID
     if not access_token or not phone_number_id:
@@ -157,6 +175,7 @@ def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str
             data={"messaging_product": "whatsapp", "type": "audio/ogg"},
             files={"file": (filename, audio, "audio/ogg")}, timeout=30.0,
         )
+        _audio_diagnostic("upload",response)
         response.raise_for_status()
         payload = response.json()
     except (httpx.HTTPError, ValueError, TypeError) as exc:
@@ -164,6 +183,7 @@ def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str
         logger.error("WhatsApp audio upload failed status_code=%s error_type=%s", status, type(exc).__name__)
         return None
     media_id = payload.get("id") if isinstance(payload, dict) else None
+    logger.info("WhatsApp audio upload media_id_present=%s",bool(isinstance(media_id,str) and media_id.strip()))
     return media_id if isinstance(media_id, str) and media_id.strip() else None
 
 
@@ -187,6 +207,7 @@ def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True,
             json={"messaging_product": "whatsapp", "to": recipient, "type": "audio", "audio": audio},
             timeout=15.0,
         )
+        _audio_diagnostic("send",response)
         response.raise_for_status()
     except httpx.HTTPError as exc:
         status = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
@@ -194,6 +215,7 @@ def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True,
         state = "FAILED" if status and 400 <= status < 500 and status not in {408, 429} else "UNKNOWN"
         return (state, None) if return_outcome else None
     message_id = _message_id(response)
+    logger.info("WhatsApp audio send accepted=%s voice_note=%s",bool(message_id),voice)
     return (("SENT", message_id) if message_id else ("UNKNOWN", None)) if return_outcome else message_id
 
 

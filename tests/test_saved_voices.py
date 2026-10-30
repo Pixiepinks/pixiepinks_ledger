@@ -53,7 +53,7 @@ def test_real_upload_private_preview_transcript_search_and_no_customer_send(voic
     assert response.status_code == 201, response.text
     row = response.json()["voice"]
     assert 0.25 <= row["duration_seconds"] <= 1 and row["size_bytes"] > 0
-    assert set(path.suffix for path in v.directory.iterdir()) == {".ogg"}
+    assert set(path.suffix for path in v.directory.iterdir()) == {".ogg", ".source"}
     assert "storage_name" not in row and "sha256" not in row
     listed = v.client.get(BASE, params={"q": "islandwide"})
     assert listed.json()["voices"][0]["transcript"] == row["transcript"]
@@ -121,14 +121,15 @@ def test_bad_uploads_do_not_create_recordings(voices, raw, mime):
 
 def test_missing_tampered_or_symlinked_storage_never_sends(voices):
     v = voices; row = v.create().json()["voice"]
-    path = next(v.directory.iterdir()); original = path.read_bytes()
+    with v.sessions() as db: path = service.storage_path(db.get(SavedVoice,row["id"]).storage_name)
+    original = path.read_bytes()
     path.write_bytes(b"tampered")
     assert v.send(row).status_code == 503 and not v.uploads
     path.unlink(); outside = v.directory.parent / "outside.ogg"; outside.write_bytes(original)
     path.symlink_to(outside)
-    assert v.send(row).status_code == 503 and not v.uploads
+    assert v.send(row).status_code == 422 and not v.uploads
     path.unlink()
-    assert v.client.get(f"{BASE}/{row['id']}/audio").status_code == 503
+    assert v.client.get(f"{BASE}/{row['id']}/audio").status_code == 409
 
 
 def test_closed_window_and_changed_library_during_upload_stop_delivery(voices, monkeypatch):
@@ -230,7 +231,7 @@ def test_postgresql_upgrade_and_concurrent_claim(tmp_path, monkeypatch):
         config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
         command.stamp(config, "20261026_16"); command.upgrade(config, "head"); command.upgrade(config, "head")
         with engine.connect() as conn:
-            assert conn.execute(text("select version_num from alembic_version")).scalar() == "20261029_18"
+            assert conn.execute(text("select version_num from alembic_version")).scalar() == "20261030_19"
             assert conn.execute(text("select count(*) from whatsapp_conversations")).scalar() == 1
         monkeypatch.setattr(settings, "SAVED_VOICES_DIR", str(tmp_path / "pg-volume"))
         raw, duration = normalize_voice_audio(wav(), "audio/wav")
@@ -238,7 +239,7 @@ def test_postgresql_upgrade_and_concurrent_claim(tmp_path, monkeypatch):
         with sessions() as db:
             row = SavedVoice(title="Greeting", category="Greeting", transcript="Ayubowan", language="singlish", active=True,
                 revision=1, storage_name=name, sha256=hashlib.sha256(raw).hexdigest(), size_bytes=len(raw), duration_seconds=duration,
-                created_by="voice-test", updated_by="voice-test")
+                normalization_version=1, processing_status="READY", created_by="voice-test", updated_by="voice-test")
             db.add(row); db.commit(); voice_id = row.id
         uploads, sends = [], []
         def submit():
@@ -289,7 +290,7 @@ def test_chromium_library_preview_selection_and_lost_ack_recovery(voices):
             page.locator("#saved-voice-status").filter(has_text="Check send status").wait_for()
             assert len(v.sends) == 1
             page.locator("#saved-voice-check").click()
-            page.locator("#saved-voice-status").filter(has_text="Voice message sent").wait_for()
+            page.locator("#saved-voice-status").filter(has_text="Submitted to WhatsApp").wait_for()
             assert len(v.sends) == 1
             assert sum(method == "POST" and path.endswith("/send-saved-voice") for method,path in requests) == 1
             page.locator("#saved-voice-close").click()

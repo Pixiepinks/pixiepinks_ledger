@@ -158,7 +158,9 @@ def test_meta_audio_upload_and_voice_send(monkeypatch):
         return Response()
 
     monkeypatch.setattr(whatsapp_service.httpx, "post", post)
-    assert whatsapp_service.upload_whatsapp_audio(b"OggS") == "media-1"
+    from test_audio_service import wav_recording
+    normalized, _ = main.normalize_voice_audio(wav_recording(), "audio/wav")
+    assert whatsapp_service.upload_whatsapp_audio(normalized) == "media-1"
     assert whatsapp_service.send_whatsapp_audio("94770000000", "media-1") == "wamid.voice"
     assert requests[0][1]["files"]["file"][2] == "audio/ogg"
     assert requests[1][1]["json"]["audio"] == {"id": "media-1", "voice": True}
