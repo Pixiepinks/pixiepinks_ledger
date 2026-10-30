@@ -39,6 +39,21 @@
 <p>{{ summary }}</p>
 <form method="post" action="/crm/bot-management/voice-diagnostics/ab/meta"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}"><label><input type="checkbox" name="owner_confirm" required> Retrieve existing test media from Meta to compare hashes; send nothing.</label><button>Inspect Meta media</button></form>
 {% endif %}
+{% if enabled %}
+<h2>Compare existing owner media — sends nothing</h2>
+<p>Retrieve a known-working owner reference and a failed owner reference from Meta. This creates no new messages. Both attempts must belong to the configured owner test number. Confirm Android playback separately from Inbox playback.</p>
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/pair"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}">
+<label>Working reference route <select name="working_route"><option value="saved">Saved Voices</option><option value="browser">Browser recording</option></select></label><label>Working reference attempt ID <input name="working_attempt_id" type="number" min="1" required></label>
+<label>Failed reference route <select name="failed_route"><option value="saved">Saved Voices</option><option value="browser">Browser recording</option></select></label><label>Failed reference attempt ID <input name="failed_attempt_id" type="number" min="1" required></label>
+<label><input type="checkbox" name="owner_confirm" required> I authorize read-only retrieval and analysis of these two owner test messages.</label><button>Compare existing owner media — send nothing</button></form>
+<h2>Offline regression comparison — sends nothing</h2>
+<p>Compare the retained source using current settings, historical encoder defaults and AAC/M4A. An independent FFmpeg CLI comparison runs only if installed. No generated variant is uploaded or sent. Recordings must be at most 30 seconds.</p>
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/offline"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}"><label><input type="checkbox" name="owner_confirm" required> I authorize offline analysis of this owner test recording.</label><button>Analyze offline — send nothing</button></form>
+{% endif %}
+{% if run.evidence.get('offline_comparison') %}
+<p><strong>Offline comparison completed. No test variants were uploaded or sent.</strong> Decoder success does not prove Android WhatsApp playback.</p>
+<table><thead><tr><th>Candidate</th><th>Codec</th><th>Independent decode</th></tr></thead><tbody>{% for name,value in run.evidence.offline_comparison.variants.items() %}<tr><td>{{ name }}</td><td>{{ value.get('format',{}).get('codec','Unavailable') }}</td><td>{% set decoder=value.get('independent',{}).get('ffmpeg',{}) %}{{ 'Passed' if decoder.get('returncode')==0 else 'Not available or failed — see evidence' }}</td></tr>{% endfor %}</tbody></table>
+{% endif %}
 <details><summary>Advanced evidence — no phone numbers or credentials</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ evidence_json|e }}</pre></details>
 {% endif %}
 <h2>Your recent tests</h2><ul>{% for item in recent %}<li><a href="/crm/bot-management/voice-diagnostics/ab?run_id={{ item.id }}">{{ item.id }}</a> — {{ item.status }}</li>{% endfor %}</ul>

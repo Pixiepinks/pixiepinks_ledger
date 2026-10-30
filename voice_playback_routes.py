@@ -69,6 +69,61 @@ def build_router(get_db, require_user, csrf, templates):
         guard(request,user,csrf_token)
         return render(request,db,user,service.results(db,user,run_id,a,b,platform,description))
 
+    @router.post(BASE + '/pair')
+    def pair(request:Request, run_id:str=Form(...), working_route:str=Form(...), working_attempt_id:int=Form(...,ge=1),
+             failed_route:str=Form(...), failed_attempt_id:int=Form(...,ge=1), owner_confirm:bool=Form(False),
+             csrf_token:str=Form(...), db=Depends(get_db), user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        recipient=service.configuration()
+        run=service.get_run(db,user,run_id)
+        if not owner_confirm:raise HTTPException(400,'Confirm read-only owner media comparison')
+        if working_route not in {'saved','browser'} or failed_route not in {'saved','browser'}:
+            raise HTTPException(422,'Choose a valid recording route')
+        from models import SavedVoiceSend, WhatsAppManualSend, WhatsAppConversation
+        # Resolve both references and verify the destination BEFORE any Meta GET.
+        for route,attempt_id in [(working_route,working_attempt_id),(failed_route,failed_attempt_id)]:
+            attempt=db.get(SavedVoiceSend if route=='saved' else WhatsAppManualSend,attempt_id)
+            conversation=db.get(WhatsAppConversation,attempt.conversation_id) if attempt else None
+            if not conversation or conversation.phone_number!=recipient:
+                raise HTTPException(404,'Both references must belong to the configured owner test recipient')
+        from voice_regression_diagnostics import compare_meta_attempts
+        import tempfile
+        with tempfile.TemporaryDirectory(prefix='voice-reference-pair-') as directory:
+            report=compare_meta_attempts(db,working_route,working_attempt_id,failed_route,failed_attempt_id,directory)
+        evidence=dict(run.evidence);evidence['reference_pair']=report;run.evidence=evidence
+        db.commit()
+        return render(request,db,user,run)
+
+    @router.post(BASE + '/offline')
+    def offline(request:Request, run_id:str=Form(...), owner_confirm:bool=Form(False), csrf_token:str=Form(...),
+                db=Depends(get_db), user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        service.configuration()  # Existing experimental feature switch also gates offline generation.
+        run=service.get_run(db,user,run_id)
+        if not owner_confirm:raise HTTPException(400,'Confirm owner-authorized offline analysis')
+        from voice_regression_diagnostics import compare
+        from audio_service import VoiceAudioError
+        import tempfile
+        voice=db.get(SavedVoice,run.voice_id)
+        if not voice:raise HTTPException(409,'Original recording is unavailable')
+        source=_read_file(voice.original_storage_name or voice.storage_name)
+        if voice_trace.fingerprint(source)!=run.evidence['source']:
+            raise HTTPException(409,'Retained source differs from this test; original review cannot be reconstructed')
+        failed=_read_file(run.storage_name)
+        if voice_trace.fingerprint(failed)!=run.evidence['normalized']:
+            raise HTTPException(409,'Snapshot integrity check failed')
+        try:
+            with tempfile.TemporaryDirectory(prefix='voice-offline-') as directory:
+                report=compare(source,directory,actual_failed=failed)
+        except (ValueError,VoiceAudioError):
+            raise HTTPException(422,'Offline analysis requires a valid recording of 0.25 to 30 seconds') from None
+        report['reviewed_snapshot']=report.pop('actual_failed')
+        report['reviewed_snapshot']['provenance']='Immutable A/B snapshot; failure is not inferred from bytes'
+        report['reported_phone_playback']=run.playback
+        evidence=dict(run.evidence);evidence['offline_comparison']=report;run.evidence=evidence
+        db.commit()
+        return render(request,db,user,run)
+
     @router.post(BASE + '/meta')
     def meta(request:Request, run_id:str=Form(...), owner_confirm:bool=Form(False), csrf_token:str=Form(...),
              db=Depends(get_db), user=Depends(require_user)):
