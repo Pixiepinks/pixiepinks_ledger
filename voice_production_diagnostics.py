@@ -172,7 +172,7 @@ def _metadata_error(response):
     except (ValueError,AttributeError):return {}
 
 
-def retrieve_meta(media_id, expected=None, *, transport=None):
+def retrieve_meta(media_id, expected=None, *, transport=None, offline_inspector=None):
     """Explicit operator-only GET/download; bytes and signed URLs never returned."""
     if not isinstance(media_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,255}',media_id):return {'error':'Invalid media ID'}
     version=settings.META_GRAPH_API_VERSION.strip().lstrip('/')
@@ -195,7 +195,7 @@ def retrieve_meta(media_id, expected=None, *, transport=None):
                     raw.extend(chunk)
                     if len(raw)>audio_service.MAX_AUDIO_BYTES:return {'error':'Meta media exceeds size limit'}
             actual=voice_trace.fingerprint(raw);declared=_hash(metadata.get('sha256'))
-            mime=metadata.get('mime_type');mime=mime if isinstance(mime,str) and re.fullmatch(r'audio/[A-Za-z0-9.+-]{1,40}',mime) else 'unrecognized'
+            mime=metadata.get('mime_type');mime=mime if isinstance(mime,str) and (re.fullmatch(r'audio/[A-Za-z0-9.+-]{1,40}',mime) or re.fullmatch(r'audio/ogg;\s*codecs=\"?opus\"?',mime,re.IGNORECASE)) else 'unrecognized'
             result={'downloaded':actual,'metadata':{'sha256':declared,'size_bytes':size,'mime_type':mime},
                 'metadata_hash_matches':declared==actual['sha256'] if declared else None,
                 'metadata_size_matches':size==len(raw) if size is not None else None,
@@ -206,6 +206,8 @@ def retrieve_meta(media_id, expected=None, *, transport=None):
             except audio_service.VoiceAudioError:result['downloaded_format']={'recognized':False}
             try:result['ogg_opus_validation']={'passed':True,**audio_service.validate_voice_audio(bytes(raw))}
             except audio_service.VoiceAudioError as exc:result['ogg_opus_validation']={'passed':False,'reason':str(exc)}
+            if offline_inspector is not None:
+                result['offline_inspection']=offline_inspector(bytes(raw))
             return result
     except (httpx.HTTPError,ValueError,AttributeError):return {'error':'Meta retrieval failed; no credentials or response content included'}
 
