@@ -221,7 +221,7 @@ def test_postgresql_upgrade_and_concurrent_claim(tmp_path, monkeypatch):
     with admin.begin() as conn: conn.execute(text(f'CREATE SCHEMA "{schema}"'))
     engine = create_engine(url, connect_args={"options": "-csearch_path=" + schema})
     try:
-        Base.metadata.create_all(engine, tables=[t for t in Base.metadata.sorted_tables if t.name not in {"saved_voices", "saved_voice_sends"}])
+        Base.metadata.create_all(engine, tables=[t for t in Base.metadata.sorted_tables if t.name not in {"saved_voices", "saved_voice_sends", "voice_playback_tests", "voice_playback_variants"}])
         sessions = sessionmaker(bind=engine, autoflush=False)
         with sessions() as db:
             db.add(User(id=1, username="voice-test", password_hash="not-a-login", role="STAFF"))
@@ -231,7 +231,7 @@ def test_postgresql_upgrade_and_concurrent_claim(tmp_path, monkeypatch):
         config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
         command.stamp(config, "20261026_16"); command.upgrade(config, "head"); command.upgrade(config, "head")
         with engine.connect() as conn:
-            assert conn.execute(text("select version_num from alembic_version")).scalar() == "20261030_20"
+            assert conn.execute(text("select version_num from alembic_version")).scalar() == "20261030_21"
             assert conn.execute(text("select count(*) from whatsapp_conversations")).scalar() == 1
         monkeypatch.setattr(settings, "SAVED_VOICES_DIR", str(tmp_path / "pg-volume"))
         raw, duration = normalize_voice_audio(wav(), "audio/wav")

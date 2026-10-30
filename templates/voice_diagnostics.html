@@ -3,6 +3,7 @@
 <h1>Voice delivery diagnostics</h1>
 <p>Administrator-only, read-only evidence. Loading this page sends no messages, contacts no Meta API, and changes no settings. The explicitly confirmed button below can read existing Meta media only.</p>
 <p>Runtime provenance must be compared with Railway’s deployment details. A GitHub push and a successful codec check do not prove WhatsApp phone playback.</p>
+<p><a href="/crm/bot-management/voice-diagnostics/ab">Voice Playback Compatibility Test — Owner Only</a> (disabled by default; no sends on opening)</p>
 <h2>Running process and database</h2><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ runtime_json|e }}</pre>
 <h2>Trace an owner test attempt</h2>
 <form method="get" action="/crm/bot-management/voice-diagnostics"><label>Route <select name="route"><option value="saved">Saved Voices</option><option value="browser">Record Voice Message</option></select></label>

@@ -844,3 +844,35 @@ from learning_models import (LearningSettings, LearningLease, LearningSource, Le
     LearningKnowledgeVersion, LearningAudit, LearningAction, LearningFeedback)
 from learning_models import LearningReservation
 from learning_models import LearningRegressionCase
+
+
+class VoicePlaybackTest(Base):
+    """Owner-only immutable A/B review and durable single execution claim."""
+    __tablename__ = "voice_playback_tests"
+    id = Column(String(32), primary_key=True)
+    staff_id = Column(Integer, ForeignKey("users.id", ondelete="RESTRICT"), nullable=False)
+    voice_id = Column(Integer, ForeignKey("saved_voices.id", ondelete="RESTRICT"), nullable=False)
+    voice_revision = Column(Integer, nullable=False)
+    storage_name = Column(String(40), nullable=False)
+    recipient_hash = Column(String(64), nullable=False)
+    status = Column(String(24), nullable=False, default="REVIEW")
+    evidence = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    confirmed_at = Column(DateTime)
+    results_at = Column(DateTime)
+    results_by = Column(Integer)
+    playback = Column(JSON)
+
+
+class VoicePlaybackVariant(Base):
+    __tablename__ = "voice_playback_variants"
+    id = Column(Integer, primary_key=True)
+    run_id = Column(String(32), ForeignKey("voice_playback_tests.id", ondelete="RESTRICT"), nullable=False)
+    variant = Column(String(1), nullable=False)
+    status = Column(String(24), nullable=False, default="NOT_STARTED")
+    audio_trace = Column(JSON)
+    media_id = Column(String(255))
+    whatsapp_message_id = Column(String(255), index=True)
+    delivery_status = Column(String(24))
+    delivery_error_code = Column(Integer)
+    __table_args__ = (UniqueConstraint("run_id", "variant", name="uq_voice_playback_variant"),)
