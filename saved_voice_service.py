@@ -196,13 +196,27 @@ def send(db, user, conversation, values, key, upload, deliver):
     if voice.revision != values.revision:
         raise HTTPException(409, "Recording was normalized. Refresh, preview it, and choose it again before sending")
     raw = read_audio(voice)
+    from audio_service import ffmpeg_encoder_enabled
+    staff_variant_c=ffmpeg_encoder_enabled()
+    if staff_variant_c:
+        source_raw=_read_file(voice.original_storage_name) if voice.original_storage_name else raw
+        expected_source=(voice.audio_diagnostics or {}).get('source',{}).get('sha256') if voice.original_storage_name else voice.sha256
+        if expected_source and hashlib.sha256(source_raw).hexdigest()!=expected_source:
+            raise HTTPException(409,'Saved Voice source integrity check failed')
+        try:raw,converted_duration=normalize_voice_audio(source_raw)
+        except VoiceAudioError as exc:raise HTTPException(422,str(exc)) from None
     title, transcript, duration = voice.title, voice.transcript, voice.duration_seconds
+    if staff_variant_c:duration=converted_duration
     trace=voice_trace.new("saved_voice")
     trace["recording_id"]=voice.id
     trace["recording_revision"]=voice.revision
     trace["normalization_version"]=voice.normalization_version
     trace["stages"]["storage_read"]=voice_trace.fingerprint(raw)
     trace["stages"]["normalized_record"]={"sha256":voice.sha256,"size_bytes":voice.size_bytes}
+    if staff_variant_c:
+        trace['staff_audio_profile']='variant_c_ordinary'
+        trace['library_record_unchanged']=True
+        trace['stages']['normalized_record']=voice_trace.fingerprint(raw)
     source=(voice.audio_diagnostics or {}).get("source",{})
     trace["stages"]["source_at_upload"]={k:source.get(k) for k in ("sha256","size_bytes","container","codec")}
     attempt = SavedVoiceSend(idempotency_key=key, conversation_id=conversation.id, staff_id=user.id,
@@ -218,6 +232,10 @@ def send(db, user, conversation, values, key, upload, deliver):
         raise HTTPException(409, "Voice send already claimed") from None
     trace["attempt_id"]=attempt.id
     try:
+        if staff_variant_c:
+            name=write_audio(raw)
+            trace['staff_output_snapshot']={'storage_name':name,**voice_trace.fingerprint(raw)}
+            attempt.audio_trace=voice_trace.snapshot(trace);db.commit()
         with voice_trace.capture(trace):
             media_id = upload(raw)
     except Exception:

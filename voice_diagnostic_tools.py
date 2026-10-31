@@ -183,24 +183,6 @@ def worker(operation):
     elif operation in {'encode','decode','production_encode','production_decode','remux'}:
         seconds=PRODUCTION_SECONDS+1 if operation.startswith('production_') else 31
         input_options=['-protocol_whitelist','pipe','-i','pipe:0']
-        if operation=='production_encode':
-            # M4A with a trailing moov atom needs seeks. FFmpeg's fd protocol
-            # supports a sealed anonymous descriptor without permitting file or
-            # network protocols, unlike a temporary path/cache URL.
-            import fcntl
-            raw=sys.stdin.buffer.read(MAX_BYTES+1)
-            if len(raw)>MAX_BYTES:raise ValueError('Input exceeds limit')
-            descriptor=os.memfd_create('voice-candidate-source',os.MFD_ALLOW_SEALING)
-            with os.fdopen(os.dup(descriptor),'wb') as source:source.write(raw)
-            os.lseek(descriptor,0,os.SEEK_SET)
-            # Linux UAPI constants are not exported by every CPython build.
-            add_seals=getattr(fcntl,'F_ADD_SEALS',1033)
-            get_seals=getattr(fcntl,'F_GET_SEALS',1034)
-            seals=0x0001|0x0002|0x0004|0x0008  # SEAL, SHRINK, GROW, WRITE
-            fcntl.fcntl(descriptor,add_seals,seals)
-            if fcntl.fcntl(descriptor,get_seals)&seals!=seals:raise ValueError('Input sealing failed')
-            os.set_inheritable(descriptor,True)
-            input_options=['-protocol_whitelist','fd,pipe','-fd',str(descriptor),'-i','fd:']
         args = [binary,'-v','error','-nostdin','-threads','1',*input_options,
             '-map','0:a:0','-vn','-sn','-dn','-t',str(seconds),'-threads','1']
         if operation=='remux':

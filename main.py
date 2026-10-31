@@ -87,7 +87,7 @@ from whatsapp_service import (
     send_whatsapp_text,
     upload_whatsapp_audio,
 )
-from audio_service import NORMALIZATION_VERSION, MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio
+from audio_service import NORMALIZATION_VERSION, MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio, ffmpeg_encoder_enabled
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
@@ -1513,11 +1513,22 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         "delivery_status":delivery_status,"delivery_error_code":code})
                     if updated:
                         logger.info("Saved voice delivery status=%s error_code=%s",delivery_status,code)
+                        for staff_attempt in db.query(SavedVoiceSend).filter_by(whatsapp_message_id=outbound_id).with_for_update().all():
+                            trace=dict(staff_attempt.audio_trace or {})
+                            if trace.get('staff_audio_profile')=='variant_c_ordinary':
+                                from voice_delivery_errors import errors as safe_delivery_errors
+                                trace['delivery']={'status':delivery_status,'errors':safe_delivery_errors(errors)}
+                                if delivery_status=='failed':trace['delivery_failure']=trace['delivery']
+                                staff_attempt.audio_trace=trace
                     for voice_attempt in db.query(WhatsAppManualSend).filter_by(
                             whatsapp_message_id=outbound_id, message_text="Voice message").all():
                         if voice_attempt.audio_trace:
                             evidence=dict(voice_attempt.audio_trace)
                             evidence["delivery"]={"status":delivery_status,"error_code":code}
+                            if evidence.get('staff_audio_profile')=='variant_c_ordinary':
+                                from voice_delivery_errors import errors as safe_delivery_errors
+                                evidence['delivery']['errors']=safe_delivery_errors(errors)
+                                if delivery_status=='failed':evidence['delivery_failure']=evidence['delivery']
                             voice_attempt.audio_trace=evidence
                     from models import VoicePlaybackVariant
                     callback=delivery.get('biz_opaque_callback_data')
@@ -2389,8 +2400,15 @@ def whatsapp_message_media(conversation_id: int, message_id: int, request: Reque
     if message.response_kind == "staff_saved_voice":
         quick_messages.authorize(user)
         from models import SavedVoice, SavedVoiceSend
-        from saved_voice_service import read_audio
+        from saved_voice_service import read_audio, _read_file
         from saved_voice_routes import audio_response
+        attempt=db.query(SavedVoiceSend).filter_by(conversation_id=conversation_id,message_id=message_id).one_or_none()
+        snapshot=(attempt.audio_trace or {}).get('staff_output_snapshot') if attempt else None
+        if snapshot:
+            raw=_read_file(snapshot['storage_name'])
+            if voice_trace.fingerprint(raw)!={k:snapshot.get(k) for k in ('sha256','size_bytes')}:
+                raise HTTPException(409,'Sent audio snapshot failed integrity validation')
+            return audio_response(raw,'audio/ogg',request)
         voice = db.query(SavedVoice).join(SavedVoiceSend, SavedVoiceSend.voice_id == SavedVoice.id).filter(
             SavedVoiceSend.conversation_id == conversation_id, SavedVoiceSend.message_id == message_id).one_or_none()
         if voice is not None:
@@ -2779,6 +2797,7 @@ async def whatsapp_manual_audio_send(
         raise HTTPException(status_code=422, detail=str(exc))
 
     trace=voice_trace.new("browser_recording")
+    if ffmpeg_encoder_enabled():trace['staff_audio_profile']='variant_c_ordinary'
     trace["normalization_version"]=NORMALIZATION_VERSION
     trace["stages"]["browser_upload"]=voice_trace.fingerprint(raw)
     trace["stages"]["normalized_memory"]=voice_trace.fingerprint(voice_note)
@@ -2809,7 +2828,7 @@ async def whatsapp_manual_audio_send(
     db.commit()  # Preserve the upload evidence before the existing send call.
     try:
         with voice_trace.capture(trace):
-            outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=True)
+            outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=not ffmpeg_encoder_enabled())
     except Exception:
         outbound_id = None
     trace["returned_whatsapp_message_id"]=outbound_id if isinstance(outbound_id,str) else None
@@ -4386,4 +4405,4 @@ app.include_router(build_bot_simulation_router(get_db, require_user, _require_cs
 from saved_voice_routes import build_router as build_saved_voice_router
 app.include_router(build_saved_voice_router(get_db, require_user, _require_csrf, _csrf_token, templates,
     _get_conversation, lambda raw: upload_whatsapp_audio(raw),
-    lambda phone, media: send_whatsapp_audio(phone, media, voice=True, return_outcome=True)))
+    lambda phone, media: send_whatsapp_audio(phone, media, voice=not ffmpeg_encoder_enabled(), return_outcome=True)))
