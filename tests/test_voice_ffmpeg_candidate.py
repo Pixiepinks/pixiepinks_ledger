@@ -206,7 +206,7 @@ def test_flag_on_does_not_prepare_or_reencode_historical_records(voices,monkeypa
     assert before=={p.name:p.read_bytes() for p in v.directory.iterdir()}
 
 
-def test_m4a_with_trailing_metadata_uses_sealed_seekable_input(monkeypatch):
+def test_variant_c_rejects_nonseekable_m4a_without_fallback(monkeypatch):
     real_tools()
     from test_voice_audio_compatibility import encoded
     source=encoded(seconds=10.56)
@@ -214,8 +214,7 @@ def test_m4a_with_trailing_metadata_uses_sealed_seekable_input(monkeypatch):
     assert source.index(b'moov')>source.index(b'mdat')
     with pytest.raises(ValueError):tools.encode(source)  # Pinned pipe emits demux errors, even if exit status is zero
     monkeypatch.setenv('VOICE_FFMPEG_ENCODER_ENABLED','true')
-    result,duration=audio_service.normalize_voice_audio(source,'audio/mp4')
-    assert duration==pytest.approx(10.56,abs=.05) and tools.production_decode(result)['passed']
+    with pytest.raises(audio_service.VoiceAudioError):audio_service.normalize_voice_audio(source,'audio/mp4')
 
 
 def test_production_timeout_is_explicit_and_never_falls_back(monkeypatch):

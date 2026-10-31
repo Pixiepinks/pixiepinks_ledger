@@ -1,3 +1,4 @@
-# Optional diagnostic deployment only. Linux x86_64 wheel; no request-time downloads.
+# Pinned Variant C production/diagnostic executable. Linux x86_64 only.
+# Installed by the Railway build; never download executables at request time.
 # Install with: pip install --no-deps --only-binary=:all: --require-hashes -r requirements.voice-diagnostics.txt
 imageio-ffmpeg==0.6.0 --hash=sha256:c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282

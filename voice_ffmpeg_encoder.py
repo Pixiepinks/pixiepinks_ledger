@@ -1,4 +1,4 @@
-"""Flag-gated production candidate: same pinned codec command as successful C."""
+"""Staff Variant C encoder, enabled by the production FFmpeg rollout flag."""
 from collections import Counter
 from threading import Lock, BoundedSemaphore
 from time import monotonic
@@ -12,8 +12,8 @@ LOCK=Lock()
 SLOTS=BoundedSemaphore(2)
 PARAMETERS={'codec':'libopus','container':'ogg','sample_rate':48000,'channels':1,'bit_rate':32000,
     'application':'voip','frame_duration_ms':20,'vbr':'on','threads':1,'mime_type':'audio/ogg',
-    'duration_guard_seconds':601,'source_limit_seconds':600,'input_transport':'sealed_seekable_memfd',
-    'input_protocols':['fd','pipe']}
+    'duration_guard_seconds':601,'source_limit_seconds':600,'input_transport':'pipe',
+    'input_protocols':['pipe'],'profile':'variant_c'}
 
 
 def metrics():
