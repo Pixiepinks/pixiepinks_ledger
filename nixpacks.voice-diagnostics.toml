@@ -1,0 +1,10 @@
+# OPTIONAL owner diagnostic build. The normal nixpacks.toml is unchanged.
+# Select this file explicitly; it does NOT enable any diagnostic or AI flag.
+[phases.setup]
+nixLibs = ["...", "gcc-unwrapped"]
+
+[variables]
+PIP_ONLY_BINARY = "av"
+
+[phases.build]
+cmds = ["...", "python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements.voice-diagnostics.txt", "python -c \"import voice_diagnostic_tools as t; assert t.runtime().get('verified'), 'Pinned diagnostic tool unavailable'\"", "python build_info.py --write"]

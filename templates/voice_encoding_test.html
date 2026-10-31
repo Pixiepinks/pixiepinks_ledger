@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Same-source encoding comparison — Owner Only</h1>
+<p><a href="/crm/bot-management/voice-diagnostics/ab">Back to owner diagnostics</a></p>
+<p>Test {{ run.id }} — <strong>{{ run.status }}</strong>. Preparation sends nothing. All three variants use the same immutable source, owner recipient and ordinary-audio payload with the voice key omitted.</p>
+<p>Valid Opus modes include SILK, hybrid and CELT. The table shows observed packets; requested settings do not guarantee a mode. A successful decoder, Meta acceptance, delivery and Android playback are separate outcomes.</p>
+<p>Source SHA-256: <code style="overflow-wrap:anywhere">{{ run.evidence.source.sha256 }}</code>. Source: {{ run.evidence.source_origin }}. Files derived from a normalized fallback have already undergone lossy encoding.</p>
+<div style="overflow-x:auto"><table><thead><tr><th>Variant</th><th>Measured stream</th><th>Validation</th><th>File</th><th>Meta / delivery / phone</th></tr></thead><tbody>
+{% for variant in variants %}{% set value=run.evidence.variants[variant.variant] %}{% set audio=value.get('audio',{}) %}{% set valid=audio.get('validation',{}) %}
+<tr><td>{{ variant.variant }} — {{ value.label }}<br><code>{"type":"audio","audio":{"id":"media_id"}}</code>
+{% if value.get('storage_name') and run.status!='CLOSED' %}<audio controls preload="none" src="/crm/bot-management/voice-diagnostics/ab/encoding/{{ run.id }}/{{ variant.variant }}/audio"></audio>{% endif %}</td>
+<td>{{ valid.get('codec','Unavailable') }} / {{ valid.get('sample_rate','?') }} Hz / {{ valid.get('channels','?') }} channel<br>{{ valid.get('duration_seconds','?') }} seconds<br>
+{% for mode,count in audio.get('encoded_mode_counts',{}).items() %}{{ mode }}: {{ count }} packets<br>{% endfor %}
+TOC: {{ audio.get('encoded_toc_config_counts',{}) }}<br>Frames: {{ audio.get('encoded_packet_duration_ms_unique',[]) }} ms</td>
+<td>File valid: {{ 'Yes' if value.get('valid') else 'No' }}<br>Independent decode: {{ 'Passed' if value.get('independent',{}).get('passed') else 'Not passed / unavailable' }}<br>Eligible: {{ 'Yes' if value.eligible else 'No' }}<br>{{ value.get('error','') }}<br>Warnings: {{ audio.get('warnings',[]) }}</td>
+<td>{{ value.get('bytes',{}).get('size_bytes','?') }} bytes<br><code style="overflow-wrap:anywhere">{{ value.get('bytes',{}).get('sha256','Not generated') }}</code></td>
+<td>Meta upload: {{ 'Accepted' if variant.media_id else 'Not accepted / not attempted' }}<br>Meta message submission: {{ variant.status }}<br>Delivery: {{ variant.delivery_status or 'Not reported' }} {{ variant.delivery_error_code or '' }}<br>Phone: {{ run.playback.variants[variant.variant].result|replace('_',' ') if run.playback else 'Not tested' }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% if run.evidence.variants.A.get('audio',{}).get('encoded_mode_counts') == run.evidence.variants.B.get('audio',{}).get('encoded_mode_counts') %}<p>A and B currently have the same observed mode distribution. This recording does not isolate CELT versus hybrid.</p>{% else %}<p>A and B have different observed distributions. Other profile parameters also differ, so modes alone are not isolated.</p>{% endif %}
+<p>Independent tool: {{ run.evidence.independent_runtime }}. No binaries are downloaded at request time. AAC/M4A live control: disabled because its current official Meta contract has not been verified.</p>
+{% if run.status=='OFFLINE_ONLY' %}<p><strong>Sending blocked.</strong> Every variant must be valid and independently decoded. Install/verify the optional pinned toolchain, then prepare a fresh comparison. These snapshots cannot be promoted or retried.</p>{% endif %}
+{% if run.status=='REVIEW' and encoding_enabled %}
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/encoding/run"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}"><input type="hidden" name="message_count" value="3">
+<p><strong>This sends exactly THREE owner test messages if all stages succeed: A, B, then C.</strong> A failure or ambiguous outcome stops the sequence. No automatic retries. Review authorization expires after 15 minutes.</p>
+<label><input name="confirm_three" type="checkbox" required> I confirm the destination is the configured owner-controlled number, the owner authorizes all three messages, and the 24-hour WhatsApp service window is open.</label><button>Run encoding test — Send Three Messages</button></form>
+{% endif %}
+{% if run.status in ['SUBMITTED','INCOMPLETE','CLOSED'] %}
+<p>Check the exact messages on the owner's Android WhatsApp. Do not resend a partial/unknown sequence without investigating its existing evidence.</p>
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/encoding/results"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}">
+{% for key in ['A','B','C'] %}<label>{{ key }} <select name="{{ key|lower }}">{% for value,label in [('not_tested','Not tested'),('plays','Plays correctly'),('cannot_play','Cannot play'),('cannot_download','Cannot download'),('cannot_share','Cannot share')] %}<option value="{{ value }}" {% if run.playback and run.playback.variants[key].result==value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>{% endfor %}
+<label>Client <select name="platform">{% for value in ['Android','iPhone','Web/Desktop','Other'] %}<option {% if run.playback and run.playback.platform==value %}selected{% endif %}>{{ value }}</option>{% endfor %}</select></label><button>Record actual phone results — send nothing</button></form>
+<p>{{ interpretation }} This is diagnostic guidance, not proof of root cause.</p>
+{% if encoding_enabled %}<form method="post" action="/crm/bot-management/voice-diagnostics/ab/encoding/meta"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}"><label><input type="checkbox" name="owner_confirm" required> Read the existing owner test media from Meta and compare hashes; send nothing.</label><button>Inspect existing variant media — send nothing</button></form>{% endif %}
+{% endif %}
+{% if run.status!='RUNNING' and not run.evidence.get('snapshots_deleted') %}
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/encoding/close"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}"><p>After checking the phone, or abandoning this test, delete experimental source/variant snapshots. Fingerprints, send evidence and phone results remain. Saved Voices originals remain untouched.</p><label><input type="checkbox" name="confirm_delete" required> Close this test and delete only its experimental snapshots.</label><button>Close test and delete experimental audio</button></form>
+{% endif %}
+<details><summary>Advanced evidence and audit — no phone number or credentials</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ evidence_json|e }}</pre></details>
+{% endblock %}

@@ -1,0 +1,3 @@
+# Optional diagnostic deployment only. Linux x86_64 wheel; no request-time downloads.
+# Install with: pip install --no-deps --only-binary=:all: --require-hashes -r requirements.voice-diagnostics.txt
+imageio-ffmpeg==0.6.0 --hash=sha256:c7e46fcec401dd990405049d2e2f475e2b397779df2519b544b8aab515195282
