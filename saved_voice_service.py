@@ -121,8 +121,9 @@ def prepare(db, row, *, retry=False):
             raise exc
         return row
     from audio_service import ffmpeg_encoder_enabled
-    if ffmpeg_encoder_enabled():
-        raise HTTPException(409,"The FFmpeg rollout does not rewrite historical recordings. Upload a new recording; retained originals are unchanged.")
+    staff_ffmpeg=ffmpeg_encoder_enabled()
+    if staff_ffmpeg and not retry:
+        raise HTTPException(409,"Click Prepare recording, then preview and select it again before sending.")
     if row.processing_status == "FAILED" and not retry:
         raise HTTPException(422, row.normalization_error or "Conversion failed. Prepare the recording before sending.")
     now=datetime.utcnow(); token=uuid4().hex; voice_id=row.id
@@ -140,7 +141,19 @@ def prepare(db, row, *, retry=False):
             raise HTTPException(503,"The retained source failed its integrity check")
         source=source_audio_info(raw)
         source["sha256"]=hashlib.sha256(raw).hexdigest()
-        normalized,duration=normalize_voice_audio(raw,"application/octet-stream")
+        if staff_ffmpeg:
+            # The proven staff pipeline consumes validated OGG. Legacy uploads
+            # may actually be M4A despite their filename. Build a private OGG
+            # staging input explicitly; never send PyAV output as a fallback.
+            try:
+                validate_voice_audio(raw)
+                staging=raw
+            except VoiceAudioError:
+                from audio_service import _normalize_pyav
+                staging,_=_normalize_pyav(raw,'application/octet-stream')
+            normalized,duration=normalize_voice_audio(staging,'audio/ogg')
+        else:
+            normalized,duration=normalize_voice_audio(raw,"application/octet-stream")
         output=validate_voice_audio(normalized)
         stored=write_audio(normalized)
         original=row.original_storage_name or row.storage_name
