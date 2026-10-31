@@ -161,7 +161,7 @@ def compare(raw, directory, *, known_working=None, actual_failed=None):
         'pyav_libraries':av.library_versions, 'independent_tools':tool_versions(), 'variants':{}, 'live_sends':0,
         'interpretation':'Offline decode success is not WhatsApp playback proof. Historical profile is not a verified working deployment.'}
     candidates = [
-        ('current', lambda:audio_service.normalize_voice_audio(raw)[0], {'encoder':'PyAV/libopus','rate':48000,'channels':1,'bitrate':32000,'application':'voip','frame_duration_ms':20,'vbr':'on','resampler':'flt'}, '.ogg','audio/ogg'),
+        ('current', lambda:audio_service._normalize_pyav(raw)[0], {'encoder':'PyAV/libopus','rate':48000,'channels':1,'bitrate':32000,'application':'voip','frame_duration_ms':20,'vbr':'on','resampler':'flt'}, '.ogg','audio/ogg'),
         ('historical_pre_22b05f8', lambda:historical_profile(raw), {'encoder':'PyAV/libopus','rate':48000,'channels':1,'bitrate':'unspecified','application':'unspecified','frame_duration_ms':'unspecified','vbr':'unspecified','resampler':'fltp'}, '.ogg','audio/ogg'),
         ('aac_m4a_offline_only', lambda:_encode(raw,'mp4','aac','fltp',64000), {'encoder':'PyAV/aac','container':'mp4','rate':48000,'channels':1,'bitrate':64000,'voice': 'omitted if a future documented audio experiment is authorized'}, '.m4a','audio/mp4'),
     ]

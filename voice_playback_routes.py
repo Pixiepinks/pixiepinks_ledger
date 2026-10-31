@@ -22,8 +22,12 @@ def build_router(get_db, require_user, csrf, templates):
             if not expected or not hmac.compare_digest(token.encode(), expected.encode()):
                 raise HTTPException(403, 'Invalid CSRF token')
 
-    def render(request, db, user, run=None):
+    def render(request, db, user, run=None, additional=None):
         import voice_encoding_experiment as encoding
+        import voice_ffmpeg_owner_test as candidate
+        is_candidate=bool(run and run.evidence.get('kind')==candidate.KIND)
+        try:candidate.configuration();candidate_enabled=True
+        except HTTPException:candidate_enabled=False
         is_encoding=bool(run and run.evidence.get('kind')==encoding.KIND)
         try:encoding.configuration();encoding_enabled=True
         except HTTPException:encoding_enabled=False
@@ -31,17 +35,98 @@ def build_router(get_db, require_user, csrf, templates):
         except HTTPException:enabled=False
         variants = db.query(VoicePlaybackVariant).filter_by(run_id=run.id).order_by(VoicePlaybackVariant.variant).all() if run else []
         evidence = {'run_id':run.id,'administrator_id':run.staff_id,'created_at':run.created_at,'confirmed_at':run.confirmed_at,
-            'recording_id':run.voice_id,'recording_revision':run.voice_revision,'evidence':encoding.safe_evidence(run) if is_encoding else run.evidence,
+            'recording_id':run.voice_id,'recording_revision':run.voice_revision,'evidence':encoding.safe_evidence(run) if is_encoding or is_candidate else run.evidence,
             'variants':[{k:getattr(v,k) for k in ('variant','status','media_id','whatsapp_message_id','delivery_status','delivery_error_code','audio_trace')} for v in variants],
-            'playback':run.playback,'results_by':run.results_by,'results_at':run.results_at} if run else None
-        return templates.TemplateResponse('voice_encoding_test.html' if is_encoding else 'voice_playback_test.html', {'request':request,'user':user,
-            'page_title':'Owner voice playback comparison','csrf_token':csrf(request),'enabled':enabled,'run':run,'encoding_enabled':encoding_enabled,
+            'playback':run.playback,'results_by':run.results_by,'results_at':run.results_at,'read_only_inspection':additional} if run else additional
+        return templates.TemplateResponse('voice_ffmpeg_candidate.html' if is_candidate else 'voice_encoding_test.html' if is_encoding else 'voice_playback_test.html', {'request':request,'user':user,
+            'page_title':'Owner voice playback comparison','csrf_token':csrf(request),'enabled':enabled,'run':run,'encoding_enabled':encoding_enabled,'candidate_enabled':candidate_enabled,
             'interpretation':encoding.interpretation(run.playback) if is_encoding else '',
             'variants':variants,'summary':service.summary(run.playback) if run else '',
             'evidence_json':json.dumps(evidence,indent=2,default=str),
             'voices':db.query(SavedVoice).filter_by(active=True,processing_status='READY',normalization_version=NORMALIZATION_VERSION).order_by(SavedVoice.id).limit(100).all(),
             'recent':db.query(VoicePlaybackTest).filter_by(staff_id=user.id).order_by(VoicePlaybackTest.created_at.desc()).limit(10).all()},
             headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
+
+    @router.post(BASE + '/encoding/evidence')
+    def inspect_experiment(request:Request,run_id:str=Form(...),owner_confirm:bool=Form(False),retrieve_meta:bool=Form(False),
+                           offline_remux:bool=Form(False),csrf_token:str=Form(...),db=Depends(get_db),user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        import voice_encoding_experiment as encoding
+        run=encoding.get_run(db,user,run_id);recipient=service.configuration()
+        if not owner_confirm:raise HTTPException(400,'Confirm read-only owner experiment inspection')
+        if service.binding(recipient)!=run.recipient_hash:raise HTTPException(409,'Owner/business binding changed')
+        if offline_remux and not retrieve_meta:raise HTTPException(400,'Remux requires explicitly requested existing-media retrieval')
+        from voice_experiment_evidence import report
+        from models import BotAuditEvent
+        try:value=report(db,run.id,retrieve=retrieve_meta,remux=offline_remux)
+        except (ValueError,OSError):raise HTTPException(422,'Bounded existing-media inspection failed; no sends') from None
+        db.add(BotAuditEvent(action='VOICE_ENCODING_EVIDENCE_READ',actor='administrator:'+str(user.id),
+            summary=json.dumps({'run_id':run.id,'retrieve_meta':retrieve_meta,'offline_remux':offline_remux})));db.commit()
+        return render(request,db,user,run,additional=value)
+
+    @router.post(BASE + '/candidate/prepare')
+    def prepare_candidate(request:Request,reference_id:str=Form(...),voice_id:int=Form(...),revision:int=Form(...),owner_number:str=Form(...),
+                          owner_confirm:bool=Form(False),mode:str=Form(...),csrf_token:str=Form(...),db=Depends(get_db),user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        import voice_ffmpeg_owner_test as candidate
+        from audio_service import VoiceAudioError
+        try:run=candidate.prepare(db,user,reference_id,voice_id,revision,owner_number,owner_confirm,mode)
+        except VoiceAudioError as exc:raise HTTPException(422,str(exc)) from None
+        except ValueError:raise HTTPException(422,'Fresh candidate encoding/validation failed; no fallback or send was used') from None
+        return render(request,db,user,run)
+
+    @router.post(BASE + '/candidate/run')
+    def run_candidate(request:Request,run_id:str=Form(...),confirm_one:bool=Form(False),message_count:int=Form(...),csrf_token:str=Form(...),
+                      db=Depends(get_db),user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        import voice_ffmpeg_owner_test as candidate
+        try:run=candidate.execute(db,user,run_id,confirm_one,message_count)
+        except ValueError:raise HTTPException(422,'Candidate preflight failed; nothing sent') from None
+        return render(request,db,user,run)
+
+    @router.post(BASE + '/candidate/meta')
+    def inspect_candidate(request:Request,run_id:str=Form(...),owner_confirm:bool=Form(False),csrf_token:str=Form(...),
+                          db=Depends(get_db),user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        import voice_ffmpeg_owner_test as candidate
+        import voice_encoding_experiment as encoding
+        recipient=candidate.configuration();run=candidate.get_run(db,user,run_id)
+        if not owner_confirm:raise HTTPException(400,'Confirm existing owner candidate media retrieval')
+        if service.binding(recipient)!=run.recipient_hash:raise HTTPException(409,'Owner/business binding changed')
+        from voice_production_diagnostics import retrieve_meta
+        variant=db.query(VoicePlaybackVariant).filter_by(run_id=run.id,variant='P').one()
+        if not variant.media_id:raise HTTPException(409,'No accepted candidate upload')
+        value=dict(variant.audio_trace or {})
+        value['meta_retrieval']=retrieve_meta(variant.media_id,run.evidence['variants']['P']['bytes']);variant.audio_trace=value
+        run.evidence=encoding.audit(db,run.evidence,user,'CANDIDATE_MEDIA_READ');db.commit()
+        return render(request,db,user,run)
+
+    @router.post(BASE + '/candidate/results')
+    def result_candidate(request:Request,run_id:str=Form(...),result:str=Form(...),platform:str=Form(...),csrf_token:str=Form(...),
+                         db=Depends(get_db),user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        import voice_ffmpeg_owner_test as candidate
+        return render(request,db,user,candidate.results(db,user,run_id,result,platform))
+
+    @router.post(BASE + '/candidate/close')
+    def close_candidate(request:Request,run_id:str=Form(...),confirm_delete:bool=Form(False),csrf_token:str=Form(...),
+                        db=Depends(get_db),user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        if not confirm_delete:raise HTTPException(400,'Confirm candidate-only snapshot cleanup')
+        import voice_ffmpeg_owner_test as candidate
+        return render(request,db,user,candidate.close(db,user,run_id))
+
+    @router.get(BASE + '/candidate/{run_id}/audio')
+    def preview_candidate(request:Request,run_id:str,db=Depends(get_db),user=Depends(require_user)):
+        guard(request,user)
+        import voice_ffmpeg_owner_test as candidate
+        from models import BotAuditEvent
+        run=candidate.get_run(db,user,run_id)
+        if run.status=='CLOSED':raise HTTPException(404,'Candidate snapshot closed')
+        info=run.evidence['variants']['P'];raw=_read_file(info['storage_name'])
+        if voice_trace.fingerprint(raw)!=info['bytes']:raise HTTPException(409,'Candidate integrity mismatch')
+        db.add(BotAuditEvent(action='VOICE_ENCODING_CANDIDATE_PREVIEW',actor='administrator:'+str(user.id),summary=json.dumps({'run_id':run.id})));db.commit()
+        return audio_response(raw,'audio/ogg',request)
 
     @router.post(BASE + '/encoding/prepare')
     def prepare_encoding(request:Request, voice_id:int=Form(...), revision:int=Form(...), owner_number:str=Form(...),
@@ -120,7 +205,7 @@ def build_router(get_db, require_user, csrf, templates):
     def preview(run_id:str, request:Request, db=Depends(get_db), user=Depends(require_user)):
         guard(request,user)
         run=service.get_run(db,user,run_id)
-        if run.evidence.get('kind')=='same_source_encoding':raise HTTPException(409,'Use a variant preview')
+        if run.evidence.get('kind') in {'same_source_encoding','production_ffmpeg_candidate'}:raise HTTPException(409,'Use a variant preview')
         raw=_read_file(run.storage_name)
         if voice_trace.fingerprint(raw)!=run.evidence['normalized']:raise HTTPException(409,'Snapshot integrity check failed')
         return audio_response(raw,'audio/ogg',request)
@@ -144,7 +229,7 @@ def build_router(get_db, require_user, csrf, templates):
         guard(request,user,csrf_token)
         recipient=service.configuration()
         run=service.get_run(db,user,run_id)
-        if run.evidence.get('kind')=='same_source_encoding':raise HTTPException(409,'Use the encoding experiment workflow')
+        if run.evidence.get('kind') in {'same_source_encoding','production_ffmpeg_candidate'}:raise HTTPException(409,'Use the encoding experiment workflow')
         if not owner_confirm:raise HTTPException(400,'Confirm read-only owner media comparison')
         if working_route not in {'saved','browser'} or failed_route not in {'saved','browser'}:
             raise HTTPException(422,'Choose a valid recording route')
@@ -169,7 +254,7 @@ def build_router(get_db, require_user, csrf, templates):
         guard(request,user,csrf_token)
         service.configuration()  # Existing experimental feature switch also gates offline generation.
         run=service.get_run(db,user,run_id)
-        if run.evidence.get('kind')=='same_source_encoding':raise HTTPException(409,'Use the encoding experiment workflow')
+        if run.evidence.get('kind') in {'same_source_encoding','production_ffmpeg_candidate'}:raise HTTPException(409,'Use the encoding experiment workflow')
         if not owner_confirm:raise HTTPException(400,'Confirm owner-authorized offline analysis')
         from voice_regression_diagnostics import compare
         from audio_service import VoiceAudioError
@@ -199,7 +284,7 @@ def build_router(get_db, require_user, csrf, templates):
              db=Depends(get_db), user=Depends(require_user)):
         guard(request,user,csrf_token)
         run=service.get_run(db,user,run_id)
-        if run.evidence.get('kind')=='same_source_encoding':raise HTTPException(409,'Use the encoding experiment workflow')
+        if run.evidence.get('kind') in {'same_source_encoding','production_ffmpeg_candidate'}:raise HTTPException(409,'Use the encoding experiment workflow')
         if not owner_confirm:raise HTTPException(400,'Confirm read-only Meta retrieval')
         from voice_production_diagnostics import retrieve_meta
         for variant in db.query(VoicePlaybackVariant).filter_by(run_id=run.id).all():

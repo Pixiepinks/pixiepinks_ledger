@@ -22,6 +22,16 @@
 <label>Source revision <input type="number" name="revision" min="1" required></label><label>Verify owner number <input type="password" name="owner_number" autocomplete="off" required></label>
 <label><input type="checkbox" name="owner_confirm" required> I authorize use of this recording for the owner test.</label><button>Prepare three encoding variants — send nothing</button></form>
 {% else %}<p>Disabled by default. Enable the separate encoding experiment feature only after reviewing the optional pinned independent decoder installation.</p>{% endif %}
+<h2>Verify production FFmpeg candidate</h2>
+<p>This calls the actual public audio-service candidate with a new recording. The global production flag stays unchanged. Upload a new short owner sample to Saved Voices after the completed reference test; do not send that library recording from Inbox.</p>
+{% if candidate_enabled %}
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/candidate/prepare"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}">
+<label>Completed successful-C reference run ID <input name="reference_id" required></label>
+<label>New owner sample <select name="voice_id">{% for voice in voices %}<option value="{{ voice.id }}">#{{ voice.id }} — {{ voice.title }} (revision {{ voice.revision }})</option>{% endfor %}</select></label>
+<label>Sample revision <input name="revision" type="number" min="1" required></label><label>Verify configured owner number <input type="password" name="owner_number" autocomplete="off" required></label>
+<label>Delivery <select name="mode"><option value="native">Native voice note — actual production delivery</option><option value="ordinary">Ordinary audio — successful-C control</option></select></label>
+<label><input type="checkbox" name="owner_confirm" required> I confirm reference C played correctly, this new/different recording is owner-authorized, and the configured destination is the owner test phone.</label><button>Prepare production candidate — send nothing</button></form>
+{% else %}<p>Candidate owner verification is disabled by default. Production encoder activation is a separate flag and remains OFF.</p>{% endif %}
 {% if run %}
 <h2>Test {{ run.id }} — {{ run.status }}</h2>
 <audio controls preload="none" src="/crm/bot-management/voice-diagnostics/ab/{{ run.id }}/audio"></audio>

@@ -16,6 +16,8 @@ BINARY_SIZE = 79826272
 ROOT = Path(__file__).resolve().parent
 MAX_BYTES = 16 * 1024 * 1024
 MAX_PCM = 31 * 48000 * 2
+PRODUCTION_SECONDS = 600
+PRODUCTION_PCM = (PRODUCTION_SECONDS+1)*48000*2
 
 
 def verified_binary():
@@ -43,18 +45,18 @@ def _run(operation, raw=b''):
     # A fresh child applies limits before exec. No preexec_fn in threaded web
     # workers, no shell, no inherited app secrets and pipe-only FFmpeg inputs.
     environment={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'}
-    if operation.startswith('pyav_') or operation.startswith('inspect_'):
+    if operation.startswith('pyav_') or operation.startswith('inspect_') or operation in {'production_source','production_inspect'}:
         # Nixpacks may provide the C++ loader path needed by the existing PyAV
         # wheel. This is a platform linkage setting, not application credentials.
         if os.environ.get('LD_LIBRARY_PATH'):
             environment['LD_LIBRARY_PATH']=os.environ['LD_LIBRARY_PATH']
     try:
         result = subprocess.run([sys.executable, '-m', 'voice_diagnostic_tools', '--worker', operation],
-            input=raw, capture_output=True, timeout=25, cwd=ROOT,
+            input=raw, capture_output=True, timeout=120 if operation.startswith('production_') else 25, cwd=ROOT,
             env=environment)
     except (OSError,subprocess.SubprocessError):
         raise ValueError('Independent tool failed or timed out; private output omitted') from None
-    limit = MAX_PCM if operation == 'decode' else MAX_BYTES
+    limit = PRODUCTION_PCM if operation=='production_decode' else MAX_PCM if operation=='decode' else MAX_BYTES
     if len(result.stdout) > limit:
         raise ValueError('Diagnostic output exceeds size limit')
     return result
@@ -80,6 +82,30 @@ def encode(raw):
     if result.returncode or result.stderr.strip() or not result.stdout:
         raise ValueError('Independent encoding failed; private decoder text omitted')
     return result.stdout
+
+
+def production_encode(raw):
+    result=_run('production_encode',raw)
+    if result.returncode or result.stderr.strip() or not result.stdout:
+        raise ValueError('Pinned FFmpeg encoding failed; private output omitted')
+    return result.stdout
+
+
+def production_source(raw):
+    return _inspect(raw,'production_source')
+
+
+def production_inspect(raw):
+    return _inspect(raw,'production_inspect')
+
+
+def production_decode(raw):
+    result=_run('production_decode',raw)
+    duration=len(result.stdout)/(48000*2)
+    return {'passed':result.returncode==0 and not result.stderr.strip() and .25<=duration<=PRODUCTION_SECONDS+.05,
+        'decoded_duration_seconds':duration,'pcm_size_bytes':len(result.stdout),
+        'pcm_sha256':hashlib.sha256(result.stdout).hexdigest(),'returncode':result.returncode,
+        'stderr_present':bool(result.stderr.strip()),'stderr_sha256':hashlib.sha256(result.stderr).hexdigest()}
 
 
 def encode_pyav(raw, profile):
@@ -120,35 +146,69 @@ def decode(raw):
 
 def worker(operation):
     import resource
-    resource.setrlimit(resource.RLIMIT_CPU, (15,15))
+    cpu=90 if operation.startswith('production_') else 15
+    resource.setrlimit(resource.RLIMIT_CPU, (cpu,cpu))
     resource.setrlimit(resource.RLIMIT_AS, (512*1024*1024,512*1024*1024))
     resource.setrlimit(resource.RLIMIT_FSIZE, (32*1024*1024,32*1024*1024))
     resource.setrlimit(resource.RLIMIT_CORE, (0,0))
-    if operation in {'pyav_current','pyav_historical','inspect_source','inspect_variant'}:
+    if operation in {'pyav_current','pyav_historical','inspect_source','inspect_variant','production_source','production_inspect'}:
         from voice_regression_diagnostics import _short_source, historical_profile
-        from audio_service import normalize_voice_audio
+        from audio_service import _normalize_pyav, source_audio_info, _open
         from voice_compatibility import inspect
         raw=sys.stdin.buffer.read(MAX_BYTES+1)
         if len(raw)>MAX_BYTES:raise ValueError('Input exceeds limit')
-        if operation=='inspect_variant':
+        if operation in {'inspect_variant','production_inspect'}:
             result=inspect(raw)
-            if result['validation']['duration_seconds']>30.05:raise ValueError('Variant too long')
+            maximum=PRODUCTION_SECONDS if operation=='production_inspect' else 30
+            if result['validation']['duration_seconds']>maximum+.05:raise ValueError('Variant too long')
             sys.stdout.write(json.dumps(result));return
+        if operation=='production_source':
+            info=source_audio_info(raw);duration=0.0
+            with _open(raw) as source:
+                for frame in source.decode(audio=0):
+                    duration+=frame.samples/frame.sample_rate
+                    if duration>PRODUCTION_SECONDS+.001:raise ValueError('Source exceeds 10 minutes')
+            if duration<.25:raise ValueError('Source too short')
+            info['decoded_duration_seconds']=duration
+            sys.stdout.write(json.dumps(info));return
         info=_short_source(raw)
         if operation=='inspect_source':
             sys.stdout.write(json.dumps(info));return
-        output=historical_profile(raw) if operation=='pyav_historical' else normalize_voice_audio(raw)[0]
+        output=historical_profile(raw) if operation=='pyav_historical' else _normalize_pyav(raw)[0]
         if len(output)>MAX_BYTES:raise ValueError('Output exceeds limit')
         sys.stdout.buffer.write(output);return
     binary = verified_binary()
     if operation == 'version':
         args = [binary,'-version']
-    elif operation in {'encode','decode'}:
-        args = [binary,'-v','error','-nostdin','-threads','1','-protocol_whitelist','pipe','-i','pipe:0',
-            '-map','0:a:0','-vn','-sn','-dn','-t','31','-threads','1','-ac','1','-ar','48000']
-        if operation == 'encode':
+    elif operation in {'encode','decode','production_encode','production_decode','remux'}:
+        seconds=PRODUCTION_SECONDS+1 if operation.startswith('production_') else 31
+        input_options=['-protocol_whitelist','pipe','-i','pipe:0']
+        if operation=='production_encode':
+            # M4A with a trailing moov atom needs seeks. FFmpeg's fd protocol
+            # supports a sealed anonymous descriptor without permitting file or
+            # network protocols, unlike a temporary path/cache URL.
+            import fcntl
+            raw=sys.stdin.buffer.read(MAX_BYTES+1)
+            if len(raw)>MAX_BYTES:raise ValueError('Input exceeds limit')
+            descriptor=os.memfd_create('voice-candidate-source',os.MFD_ALLOW_SEALING)
+            with os.fdopen(os.dup(descriptor),'wb') as source:source.write(raw)
+            os.lseek(descriptor,0,os.SEEK_SET)
+            # Linux UAPI constants are not exported by every CPython build.
+            add_seals=getattr(fcntl,'F_ADD_SEALS',1033)
+            get_seals=getattr(fcntl,'F_GET_SEALS',1034)
+            seals=0x0001|0x0002|0x0004|0x0008  # SEAL, SHRINK, GROW, WRITE
+            fcntl.fcntl(descriptor,add_seals,seals)
+            if fcntl.fcntl(descriptor,get_seals)&seals!=seals:raise ValueError('Input sealing failed')
+            os.set_inheritable(descriptor,True)
+            input_options=['-protocol_whitelist','fd,pipe','-fd',str(descriptor),'-i','fd:']
+        args = [binary,'-v','error','-nostdin','-threads','1',*input_options,
+            '-map','0:a:0','-vn','-sn','-dn','-t',str(seconds),'-threads','1']
+        if operation=='remux':
+            args+=['-c:a','copy','-f','ogg','pipe:1']
+        else:args+=['-ac','1','-ar','48000']
+        if operation in {'encode','production_encode'}:
             args += ['-c:a','libopus','-b:a','32k','-application','voip','-frame_duration','20','-vbr','on','-f','ogg','pipe:1']
-        else:
+        elif operation in {'decode','production_decode'}:
             args += ['-c:a','pcm_s16le','-f','s16le','pipe:1']
     else:
         raise ValueError('Unknown diagnostic operation')

@@ -29,12 +29,14 @@ STARTED=datetime.now(timezone.utc).isoformat()
 
 def runtime_report(db, *, context="cli"):
     import io,wave
+    import voice_ffmpeg_encoder
     result={'runtime':build_info.runtime(),'process_instance':INSTANCE,'diagnostics_loaded_at':STARTED,'execution_context':context,
         'normalization_version':audio_service.NORMALIZATION_VERSION,'pyav_version':av.__version__,
         'ffmpeg_libraries':{k:list(v) for k,v in av.library_versions.items()},
         'graph_version':settings.META_GRAPH_API_VERSION if re.fullmatch(r'v\d+\.\d+',settings.META_GRAPH_API_VERSION) else 'unrecognized',
         'meta_token_configured':bool(settings.META_WHATSAPP_ACCESS_TOKEN),
-        'business_phone_id_sha256':hashlib.sha256(settings.META_WHATSAPP_PHONE_NUMBER_ID.encode()).hexdigest() if settings.META_WHATSAPP_PHONE_NUMBER_ID else None}
+        'business_phone_id_sha256':hashlib.sha256(settings.META_WHATSAPP_PHONE_NUMBER_ID.encode()).hexdigest() if settings.META_WHATSAPP_PHONE_NUMBER_ID else None,
+        'ffmpeg_encoder_enabled':audio_service.ffmpeg_encoder_enabled(),'ffmpeg_encoder_metrics':voice_ffmpeg_encoder.metrics()}
     try:
         result['alembic_revisions']=list(db.execute(text('SELECT version_num FROM alembic_version')).scalars())
         result['global_ai_enabled']=global_ai_control.state(db)['enabled']

@@ -1,6 +1,9 @@
 """Byte-based audio detection and validated FFmpeg/libopus voice-note encoding."""
 from io import BytesIO
+from contextlib import contextmanager
+from contextvars import ContextVar
 import logging
+import os
 import struct
 
 import av
@@ -10,6 +13,21 @@ logger = logging.getLogger(__name__)
 MAX_AUDIO_BYTES = 16 * 1024 * 1024
 MAX_AUDIO_SECONDS = 10 * 60
 NORMALIZATION_VERSION = 1
+_owner_ffmpeg_candidate = ContextVar('owner_ffmpeg_candidate', default=False)
+
+
+def ffmpeg_encoder_enabled():
+    return _owner_ffmpeg_candidate.get() or os.getenv('VOICE_FFMPEG_ENCODER_ENABLED','').lower() == 'true'
+
+
+@contextmanager
+def owner_ffmpeg_candidate():
+    """Internal owner-verification scope; never mutates the process/global flag."""
+    token=_owner_ffmpeg_candidate.set(True)
+    try:yield
+    finally:_owner_ffmpeg_candidate.reset(token)
+
+
 ALLOWED_INPUT_TYPES = {"audio/webm", "audio/ogg", "audio/mp4", "audio/x-m4a", "audio/m4a",
     "audio/aac", "audio/x-aac", "audio/mpeg", "audio/wav", "audio/x-wav", "application/octet-stream"}
 
@@ -128,6 +146,14 @@ def validate_voice_audio(raw):
 
 
 def normalize_voice_audio(raw: bytes, content_type: str = "") -> tuple[bytes, float]:
+    """Stable public interface. FFmpeg opt-in fails closed; OFF keeps PyAV."""
+    if ffmpeg_encoder_enabled():
+        from voice_ffmpeg_encoder import normalize
+        return normalize(raw,content_type)
+    return _normalize_pyav(raw,content_type)
+
+
+def _normalize_pyav(raw: bytes, content_type: str = "") -> tuple[bytes, float]:
     """Convert actual supported audio bytes to speech-quality mono 48k OGG/Opus."""
     info=source_audio_info(raw)
     output_buffer=BytesIO();samples=0
