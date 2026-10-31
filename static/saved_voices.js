@@ -35,9 +35,10 @@
         const prepare = text("button", "Prepare recording"); prepare.type = "button"; prepare.disabled = busy;
         prepare.onclick = async () => {
           if (busy) return; busy = true; status.textContent = "Processing recording…"; render();
-          try { await api(`/crm/saved-voices/api/${row.id}/prepare`, {method:"POST",headers:{"X-CSRF-Token":csrf}}); status.textContent = "Ready to send. Preview the normalized recording before choosing it."; }
-          catch (error) { status.textContent = error.message; }
-          finally { busy = false; await load(); }
+          let message;
+          try { await api(`/crm/saved-voices/api/${row.id}/prepare`, {method:"POST",headers:{"X-CSRF-Token":csrf}}); message = "Ready to send. Preview the normalized recording before choosing it."; }
+          catch (error) { message = error.message; }
+          finally { busy = false; await load(); status.textContent = message; status.scrollIntoView({block:"nearest"}); }
         }; card.append(prepare);
       }
       if (row.audio_diagnostics?.source && row.audio_diagnostics?.normalized) {
