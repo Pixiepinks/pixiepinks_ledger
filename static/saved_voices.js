@@ -158,9 +158,12 @@
     } catch (error) {
       if (error.status === 422 || (error.status === 409 && (error.message.startsWith("This recording changed") || error.message.startsWith("Recording was normalized")))) {
         sessionStorage.removeItem(slot); chosen = null;
-        document.getElementById("saved-voice-selection").hidden = true; load();
+        document.getElementById("saved-voice-selection").hidden = true;
       }
-      if (target === cid && dialog.open) status.textContent = `${error.message} Check send status before trying again.`;
+      if (target === cid && dialog.open) {
+        status.textContent = error.status === 422 ? `Nothing was sent. ${error.message}` : `${error.message} Check send status before trying again.`;
+        status.scrollIntoView({block:"nearest"});
+      }
     }
     finally { busy = false; if (dialog.open) { send.disabled = !chosen; check.disabled = false; check.hidden = !pending(); render(); } }
   }

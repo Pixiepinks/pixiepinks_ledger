@@ -199,10 +199,9 @@ def send(db, user, conversation, values, key, upload, deliver):
     from audio_service import ffmpeg_encoder_enabled
     staff_variant_c=ffmpeg_encoder_enabled()
     if staff_variant_c:
-        source_raw=_read_file(voice.original_storage_name) if voice.original_storage_name else raw
-        expected_source=(voice.audio_diagnostics or {}).get('source',{}).get('sha256') if voice.original_storage_name else voice.sha256
-        if expected_source and hashlib.sha256(source_raw).hexdigest()!=expected_source:
-            raise HTTPException(409,'Saved Voice source integrity check failed')
+        # read_audio already validates stored OGG and its fingerprint. Re-reading
+        # the upload (often seek-dependent M4A) unnecessarily breaks a READY item.
+        source_raw=raw
         try:raw,converted_duration=normalize_voice_audio(source_raw)
         except VoiceAudioError as exc:raise HTTPException(422,str(exc)) from None
     title, transcript, duration = voice.title, voice.transcript, voice.duration_seconds

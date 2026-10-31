@@ -25,8 +25,8 @@ No owner-only flags or test-number configuration are required for normal staff.
 - Both normal staff pathways send ordinary audio with the voice key omitted.
   This may display as an audio attachment rather than a native microphone note.
 - Existing Saved Voice records and original files are preserved. Each new send
-  converts from retained original source after integrity checking (or the stored
-  normalized file when no original exists). It stores a new immutable per-attempt
+  converts the already validated, fingerprint-checked OGG/Opus library audio.
+  It does not reopen the original M4A during sending. It stores a new immutable per-attempt
   snapshot, so Inbox history serves the exact uploaded bytes. It does not rewrite
   library revisions or earlier messages. Failed legacy validation still requires
   a replacement upload, not an automatic historical database migration.
