@@ -18,9 +18,10 @@ def summarize(variant):
         'multipart_file': stages.get('multipart_file'),
         'upload_http': stages.get('upload_http'),
         'send_http': stages.get('send_http'),
-        'failure_details_available': False,
-        'missing': ['Status webhook retains only status and first numeric error code; '
-                    'Meta title, message, error_data.details, href and additional errors are not retained.'],
+        'failure_details_available': bool(trace.get('delivery_failure',{}).get('errors')),
+        'delivery_failure': trace.get('delivery_failure'),
+        'missing': [] if trace.get('delivery_failure',{}).get('errors') else [
+            'No retained detailed failure event; historical Meta error text cannot be reconstructed.'],
     }
 
 

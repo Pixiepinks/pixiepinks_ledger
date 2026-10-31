@@ -75,6 +75,16 @@ def build_router(get_db, require_user, csrf, templates):
         except ValueError:raise HTTPException(422,'Fresh candidate encoding/validation failed; no fallback or send was used') from None
         return render(request,db,user,run)
 
+    @router.post(BASE + '/candidate/exact/prepare')
+    def prepare_exact_control(request:Request,reference_id:str=Form(...),owner_number:str=Form(...),
+                              owner_confirm:bool=Form(False),csrf_token:str=Form(...),
+                              db=Depends(get_db),user=Depends(require_user)):
+        guard(request,user,csrf_token)
+        import voice_ffmpeg_owner_test as candidate
+        try:run=candidate.prepare_exact(db,user,reference_id,owner_number,owner_confirm)
+        except (ValueError,OSError):raise HTTPException(409,'Retained reference snapshot is unavailable or invalid; nothing sent') from None
+        return render(request,db,user,run)
+
     @router.post(BASE + '/candidate/run')
     def run_candidate(request:Request,run_id:str=Form(...),confirm_one:bool=Form(False),message_count:int=Form(...),csrf_token:str=Form(...),
                       db=Depends(get_db),user=Depends(require_user)):
