@@ -120,6 +120,9 @@ def prepare(db, row, *, retry=False):
             db.commit()
             raise exc
         return row
+    from audio_service import ffmpeg_encoder_enabled
+    if ffmpeg_encoder_enabled():
+        raise HTTPException(409,"The FFmpeg rollout does not rewrite historical recordings. Upload a new recording; retained originals are unchanged.")
     if row.processing_status == "FAILED" and not retry:
         raise HTTPException(422, row.normalization_error or "Conversion failed. Prepare the recording before sending.")
     now=datetime.utcnow(); token=uuid4().hex; voice_id=row.id

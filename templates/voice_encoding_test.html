@@ -35,5 +35,8 @@ TOC: {{ audio.get('encoded_toc_config_counts',{}) }}<br>Frames: {{ audio.get('en
 {% if run.status!='RUNNING' and not run.evidence.get('snapshots_deleted') %}
 <form method="post" action="/crm/bot-management/voice-diagnostics/ab/encoding/close"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}"><p>After checking the phone, or abandoning this test, delete experimental source/variant snapshots. Fingerprints, send evidence and phone results remain. Saved Voices originals remain untouched.</p><label><input type="checkbox" name="confirm_delete" required> Close this test and delete only its experimental snapshots.</label><button>Close test and delete experimental audio</button></form>
 {% endif %}
+<h2>Read existing experiment evidence — no resends</h2>
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/encoding/evidence"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}">
+<label><input type="checkbox" name="owner_confirm" required> I authorize read-only inspection of this existing owner test and its audit records.</label><label><input type="checkbox" name="retrieve_meta"> Retrieve its existing Meta media and inspect exact B/C bitstreams.</label><label><input type="checkbox" name="offline_remux"> Also remux locally to isolate container changes; requires existing-media retrieval. No sends.</label><button>Read evidence — send nothing</button></form>
 <details><summary>Advanced evidence and audit — no phone number or credentials</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ evidence_json|e }}</pre></details>
 {% endblock %}
