@@ -1520,8 +1520,25 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                             evidence["delivery"]={"status":delivery_status,"error_code":code}
                             voice_attempt.audio_trace=evidence
                     from models import VoicePlaybackVariant
-                    db.query(VoicePlaybackVariant).filter_by(whatsapp_message_id=outbound_id).update({
-                        "delivery_status":delivery_status,"delivery_error_code":code})
+                    callback=delivery.get('biz_opaque_callback_data')
+                    if isinstance(callback,str) and re.fullmatch(r'exact-control:[0-9a-f]{32}',callback):
+                        pending=db.query(VoicePlaybackVariant).filter_by(run_id=callback.split(':',1)[1],variant='P').with_for_update().one_or_none()
+                        if (pending and pending.status=='SENDING' and not pending.whatsapp_message_id
+                                and (pending.audio_trace or {}).get('exact_byte_control')):
+                            pending.whatsapp_message_id=outbound_id
+                            db.flush()
+                    for diagnostic_variant in db.query(VoicePlaybackVariant).filter_by(whatsapp_message_id=outbound_id).with_for_update().all():
+                        diagnostic_variant.delivery_status=delivery_status
+                        diagnostic_variant.delivery_error_code=code
+                        trace=dict(diagnostic_variant.audio_trace or {})
+                        if trace.get('exact_byte_control'):
+                            from voice_delivery_errors import errors as safe_delivery_errors
+                            event={"status":delivery_status,"errors":safe_delivery_errors(errors)}
+                            events=list(trace.get('delivery_events',[]))
+                            if event not in events:events.append(event)
+                            trace['delivery_events']=events[-16:]
+                            if delivery_status=='failed':trace['delivery_failure']=event
+                            diagnostic_variant.audio_trace=trace
                     db.commit()
             messages = value.get("messages", [])
             if not isinstance(messages, list):

@@ -18,6 +18,69 @@ import voice_trace
 import whatsapp_service
 
 KIND='production_ffmpeg_candidate'
+FAILED_REFERENCE='def27d027c1742be8f4baa8e8e358efb'
+FAILED_FINGERPRINT={'sha256':'b2f13701d7e62e9229afa53f9e866e7791073eecbdfedd85d1230607fe5243b2','size_bytes':41771}
+
+
+def exact_control_safety(db):
+    from models import GlobalAIReplyControl
+    if os.getenv('VOICE_EXACT_AUDIO_CONTROL_ENABLED','').lower()!='true':
+        raise HTTPException(409,'Exact-byte owner control is disabled')
+    if audio_service.ffmpeg_encoder_enabled():
+        raise HTTPException(409,'Production FFmpeg encoder must remain OFF')
+    control=db.query(GlobalAIReplyControl).populate_existing().filter_by(id=1).one_or_none()
+    if not control or control.enabled:
+        raise HTTPException(409,'Global AI must remain OFF')
+
+
+def prepare_exact(db,user,reference_id,typed_recipient,confirmed):
+    """Copy verified immutable bytes only; never invoke an encoder or send."""
+    import hashlib
+    from sqlalchemy.exc import IntegrityError
+    owner.authorize(user);recipient=configuration();exact_control_safety(db)
+    if not confirmed or not hmac.compare_digest(recipient,typed_recipient):
+        raise HTTPException(400,'Confirm configured owner and exact-byte comparison')
+    if reference_id!=FAILED_REFERENCE:
+        raise HTTPException(409,'Only the reviewed failed owner reference is allowed')
+    reference=get_run(db,user,reference_id)
+    if reference.recipient_hash!=owner.binding(recipient):raise HTTPException(409,'Owner binding changed')
+    original=db.query(VoicePlaybackVariant).filter_by(run_id=reference.id,variant='P').one()
+    if original.delivery_status!='failed' or original.delivery_error_code!=131053 or not original.media_id:
+        raise HTTPException(409,'Reference is not the reviewed failed native attempt')
+    payload=(original.audio_trace or {}).get('stages',{}).get('send_payload',{}).get('audio',{})
+    if payload.get('voice') is not True or payload.get('id')!=original.media_id:
+        raise HTTPException(409,'Reference native payload is unverified')
+    run_id=hashlib.sha256(('exact-ordinary-once:'+reference.id).encode()).hexdigest()[:32]
+    existing=db.get(VoicePlaybackTest,run_id)
+    if existing:return get_run(db,user,run_id)
+    owner.window(db,recipient)
+    value=reference.evidence['variants']['P'];raw=_read_file(value['storage_name'])
+    expected=FAILED_FINGERPRINT
+    if voice_trace.fingerprint(raw)!=expected or value['bytes']!=expected:
+        raise HTTPException(409,'Reference bytes do not match the reviewed failed upload')
+    stages=original.audio_trace.get('stages',{})
+    if any({k:stages.get(stage,{}).get(k) for k in expected}!=expected
+           for stage in ('immutable_snapshot','upload_validated','multipart_file')):
+        raise HTTPException(409,'Reference upload fingerprints disagree')
+    names=[]
+    try:
+        for _ in range(2):names.append(write_audio(raw))
+        evidence=voice_trace.new('owner_exact_ordinary_control')
+        evidence.update(kind=KIND,experiment_id=run_id,exact_byte_control=True,
+            source=expected,reference={'run_id':reference.id,'media_id':original.media_id},
+            global_production_flag_at_prepare=False,delivery_mode='ordinary',
+            message_type={'type':'audio','audio':{'id':'<new-media-id>'}},
+            variants={'P':{**deepcopy(value),'storage_name':names[1]}})
+        run=VoicePlaybackTest(id=run_id,staff_id=user.id,voice_id=reference.voice_id,
+            voice_revision=reference.voice_revision,storage_name=names[0],recipient_hash=reference.recipient_hash,
+            status='REVIEW',evidence=experiment.audit(db,evidence,user,'EXACT_CONTROL_PREPARED',reference_id=reference.id))
+        db.add(run);db.flush();db.add(VoicePlaybackVariant(run_id=run.id,variant='P',status='NOT_STARTED'))
+        db.commit();return run
+    except Exception as exc:
+        db.rollback()
+        for name in names:storage_path(name).unlink(missing_ok=True)
+        if isinstance(exc,IntegrityError):return get_run(db,user,run_id)
+        raise
 
 
 def configuration():
@@ -94,6 +157,7 @@ def prepare(db,user,reference_id,voice_id,revision,typed_recipient,confirmed,mod
 
 def execute(db,user,run_id,confirmed,count):
     run=get_run(db,user,run_id);recipient=configuration()
+    if run.evidence.get('exact_byte_control'):exact_control_safety(db)
     if not confirmed or count!=1:raise HTTPException(400,'Explicitly authorize exactly one owner message')
     if run.recipient_hash!=owner.binding(recipient):raise HTTPException(409,'Owner/business configuration changed')
     if run.status!='REVIEW':return run
@@ -113,6 +177,7 @@ def execute(db,user,run_id,confirmed,count):
     if not changed:return run
     trace=voice_trace.new('owner_candidate_actual_production_path')
     trace.update(run_id=run.id,idempotency_key='candidate:'+run.id+':P',source=run.evidence['source'])
+    if run.evidence.get('exact_byte_control'):trace['exact_byte_control']=True
     trace['stages']['immutable_snapshot']=voice_trace.fingerprint(raw)
     claimed=db.query(VoicePlaybackVariant).filter_by(id=variant.id,status='NOT_STARTED').update(
         {'status':'UPLOADING','audio_trace':voice_trace.snapshot(trace)},synchronize_session=False)
@@ -120,6 +185,7 @@ def execute(db,user,run_id,confirmed,count):
     run.evidence=experiment.audit(db,run.evidence,user,'CANDIDATE_AUTHORIZED',message_count=1)
     db.commit();db.refresh(variant)
     def boundary():
+        if run.evidence.get('exact_byte_control'):exact_control_safety(db)
         if datetime.utcnow()-run.created_at>timedelta(minutes=15):raise ValueError('Authorization expired')
         if owner.binding(configuration())!=run.recipient_hash:raise ValueError('Configuration changed')
         owner.window(db,recipient)
@@ -130,10 +196,21 @@ def execute(db,user,run_id,confirmed,count):
             if not media:variant.status='UPLOAD_FAILED';db.commit()
             else:
                 variant.status='SENDING';db.commit();boundary()
-                outcome,wid=whatsapp_service.send_whatsapp_audio(recipient,media,voice=run.evidence['delivery_mode']=='native',return_outcome=True)
-                variant.status=outcome;variant.whatsapp_message_id=wid;variant.audio_trace=voice_trace.snapshot(trace);db.commit()
+                kwargs={'owner_callback':'exact-control:'+run.id} if run.evidence.get('exact_byte_control') else {}
+                outcome,wid=whatsapp_service.send_whatsapp_audio(recipient,media,voice=run.evidence['delivery_mode']=='native',return_outcome=True,**kwargs)
+                db.refresh(variant)
+                merged=voice_trace.snapshot(trace)
+                for key in ('delivery_events','delivery_failure'):
+                    if key in (variant.audio_trace or {}):merged[key]=variant.audio_trace[key]
+                variant.status=outcome
+                if wid:variant.whatsapp_message_id=wid
+                variant.audio_trace=merged;db.commit()
     except Exception:
-        db.rollback();db.refresh(variant);variant.status='UNKNOWN';variant.audio_trace=voice_trace.snapshot(trace);db.commit()
+        db.rollback();db.refresh(variant);variant.status='UNKNOWN'
+        merged=voice_trace.snapshot(trace)
+        for key in ('delivery_events','delivery_failure'):
+            if key in (variant.audio_trace or {}):merged[key]=variant.audio_trace[key]
+        variant.audio_trace=merged;db.commit()
     run.status='SUBMITTED' if variant.status=='SENT' else 'INCOMPLETE'
     run.evidence=experiment.audit(db,run.evidence,user,'CANDIDATE_SEND_FINISHED',status=run.status)
     db.commit();return run

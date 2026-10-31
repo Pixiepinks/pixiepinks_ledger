@@ -2,13 +2,25 @@
 {% block content %}
 <h1>Public production FFmpeg candidate — Owner Only</h1>
 <p><a href="/crm/bot-management/voice-diagnostics/ab">Back to owner diagnostics</a></p>
-<p>Run {{ run.id }} — <strong>{{ run.status }}</strong>. A fresh source was encoded by the same public function used by Saved Voices and browser recordings. No experimental output file was reused.</p>
+<p>Run {{ run.id }} — <strong>{{ run.status }}</strong>.</p>
+{% if run.evidence.get('exact_byte_control') %}
+<p><strong>Exact-byte ordinary audio control.</strong> The retained failed native candidate was copied with identical SHA-256 and size. No re-encoding. The voice key is omitted entirely. Reference {{ run.evidence.reference.run_id }}.</p>
+{% else %}
+<p>A fresh source was encoded by the same public function used by Saved Voices and browser recordings. No experimental output file was reused.</p>
+{% endif %}
 <p>Global production flag at preparation: {{ run.evidence.global_production_flag_at_prepare }}. The private owner-test scope does not enable that flag for other requests. Delivery mode: <strong>{{ run.evidence.delivery_mode }}</strong>.</p>
-<p>Reference {{ run.evidence.reference.run_id }}. Owner confirms C plays. Stored historical playback missing: {{ run.evidence.reference.stored_playback_missing }}. This is not silently filled into the old record.</p>
+{% if not run.evidence.get('exact_byte_control') %}<p>Reference {{ run.evidence.reference.run_id }}. Owner confirms C plays. Stored historical playback missing: {{ run.evidence.reference.stored_playback_missing }}. This is not silently filled into the old record.</p>{% endif %}
 {% set value=run.evidence.variants.P %}{% set variant=variants[0] %}
 <p>Source SHA-256: <code style="overflow-wrap:anywhere">{{ run.evidence.source.sha256 }}</code><br>Output SHA-256: <code style="overflow-wrap:anywhere">{{ value.bytes.sha256 }}</code><br>{{ value.bytes.size_bytes }} bytes; {{ value.audio.validation.duration_seconds }} seconds; {{ value.audio.validation.codec }} / {{ value.audio.validation.sample_rate }} Hz / {{ value.audio.validation.channels }} channel.<br>Actual modes: {{ value.audio.encoded_mode_counts }}. Reviewed payload: <code>{{ run.evidence.message_type }}</code>.</p>
 {% if run.status!='CLOSED' %}<audio controls preload="none" src="/crm/bot-management/voice-diagnostics/ab/candidate/{{ run.id }}/audio"></audio>{% endif %}
 <p>Meta submission: {{ variant.status }}. Delivery: {{ variant.delivery_status or 'Not reported' }} {{ variant.delivery_error_code or '' }}. Phone: {{ run.playback.P.result|replace('_',' ') if run.playback else 'Not tested' }}.</p>
+<p>Upload: {{ variant.audio_trace.get('stages',{}).get('upload_http',{}).get('http_status','Not attempted') if variant.audio_trace else 'Not attempted' }}. Submission HTTP: {{ variant.audio_trace.get('stages',{}).get('send_http',{}).get('http_status','Not attempted') if variant.audio_trace else 'Not attempted' }}. Android playback must be recorded separately from delivery.</p>
+{% if run.id=='def27d027c1742be8f4baa8e8e358efb' %}
+<form method="post" action="/crm/bot-management/voice-diagnostics/ab/candidate/exact/prepare">
+<input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="reference_id" value="{{ run.id }}">
+<label>Configured owner number <input name="owner_number" required autocomplete="off"></label>
+<label><input type="checkbox" name="owner_confirm" required> I confirm this is my owner-only failed test and authorize preparation of an identical-byte ordinary control. Preparation sends nothing.</label>
+<button>Prepare exact-byte control — send nothing</button></form>{% endif %}
 {% if run.status=='REVIEW' and candidate_enabled %}
 <form method="post" action="/crm/bot-management/voice-diagnostics/ab/candidate/run"><input type="hidden" name="csrf_token" value="{{ csrf_token|e }}"><input type="hidden" name="run_id" value="{{ run.id }}"><input type="hidden" name="message_count" value="1">
 <label><input type="checkbox" name="confirm_one" required> I authorize exactly ONE new candidate message to the configured owner phone, confirm the 24-hour window is open and accept the reviewed {{ run.evidence.delivery_mode }} delivery. This review expires in 15 minutes.</label><button>Send One Candidate Message</button></form>{% endif %}

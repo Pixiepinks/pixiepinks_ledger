@@ -198,7 +198,7 @@ def upload_whatsapp_audio(audio: bytes, filename: str = "voice-note.ogg") -> str
 
 @global_ai_control.transport_send
 def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True,
-                        return_outcome: bool = False) -> str | None | tuple[str, str | None]:
+                        return_outcome: bool = False, owner_callback: str | None = None) -> str | None | tuple[str, str | None]:
     """Send previously uploaded Meta media as an audio message/voice note."""
     access_token = settings.META_WHATSAPP_ACCESS_TOKEN
     phone_number_id = settings.META_WHATSAPP_PHONE_NUMBER_ID
@@ -209,13 +209,19 @@ def send_whatsapp_audio(recipient: str, media_id: str, *, voice: bool = True,
     audio = {"id": media_id}
     if voice:
         audio["voice"] = True
+    payload={"messaging_product":"whatsapp","to":recipient,"type":"audio","audio":audio}
+    if owner_callback is not None:
+        import re
+        if not re.fullmatch(r'exact-control:[0-9a-f]{32}',owner_callback):
+            raise ValueError('Invalid owner diagnostic callback')
+        payload['biz_opaque_callback_data']=owner_callback
     voice_trace.record("send_payload", {"type":"audio","audio":dict(audio),
         "phone_id_sha256":hashlib.sha256(phone_number_id.encode()).hexdigest(),"graph_version":voice_trace.graph_version(version)})
     try:
         response = httpx.post(
             f"https://graph.facebook.com/{version}/{phone_number_id}/messages",
             headers={"Authorization": f"Bearer {access_token}"},
-            json={"messaging_product": "whatsapp", "to": recipient, "type": "audio", "audio": audio},
+            json=payload,
             timeout=15.0,
         )
         voice_trace.record("send_http", _audio_diagnostic("send",response))
