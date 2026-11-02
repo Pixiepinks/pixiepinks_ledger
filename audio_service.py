@@ -153,6 +153,21 @@ def normalize_voice_audio(raw: bytes, content_type: str = "") -> tuple[bytes, fl
     return _normalize_pyav(raw,content_type)
 
 
+def stage_browser_voice(raw: bytes, content_type: str = "") -> bytes:
+    """Match the validated library-OGG input used by working Saved Voice sends.
+
+    Staging is never uploaded as an encoder fallback. The caller must still run
+    normal final encoding/validation. Flag OFF preserves the original route.
+    """
+    if not ffmpeg_encoder_enabled():return raw
+    staged,_=_normalize_pyav(raw,content_type)
+    info=validate_voice_audio(staged)
+    import voice_trace
+    voice_trace.record('browser_ogg_staging',{'source':voice_trace.fingerprint(raw),
+        'output':voice_trace.fingerprint(staged),'validated_format':info})
+    return staged
+
+
 def _normalize_pyav(raw: bytes, content_type: str = "") -> tuple[bytes, float]:
     """Convert actual supported audio bytes to speech-quality mono 48k OGG/Opus."""
     info=source_audio_info(raw)
