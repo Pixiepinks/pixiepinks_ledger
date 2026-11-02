@@ -87,7 +87,7 @@ from whatsapp_service import (
     send_whatsapp_text,
     upload_whatsapp_audio,
 )
-from audio_service import NORMALIZATION_VERSION, MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio, ffmpeg_encoder_enabled
+from audio_service import NORMALIZATION_VERSION, MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio, ffmpeg_encoder_enabled, stage_browser_voice
 from shopify_catalog_service import (
     ShopifyCatalogError, bicycle_collection, format_product, is_product_image_request,
     get_product_by_handle, parse_search_intent, search_bicycles_by_collection, search_products,
@@ -2791,12 +2791,14 @@ async def whatsapp_manual_audio_send(
     content_type = audio.content_type or ""
     raw = await audio.read(MAX_AUDIO_BYTES + 1)
     await audio.close()
+    trace=voice_trace.new("browser_recording")
     try:
-        voice_note, duration = normalize_voice_audio(raw, content_type)
+        with voice_trace.capture(trace):
+            staged=stage_browser_voice(raw,content_type)
+            voice_note, duration = normalize_voice_audio(staged,'audio/ogg' if ffmpeg_encoder_enabled() else content_type)
     except VoiceAudioError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    trace=voice_trace.new("browser_recording")
     if ffmpeg_encoder_enabled():trace['staff_audio_profile']='variant_c_ordinary'
     trace["normalization_version"]=NORMALIZATION_VERSION
     trace["stages"]["browser_upload"]=voice_trace.fingerprint(raw)
