@@ -112,3 +112,6 @@ An additional focused account/audit failure run passed 4 tests, including a
 commit failure that rolls back grants, password and session version together and
 does not create a false audit event. Route dependency inspection confirms every
 mapped section route includes the shared server authentication/access dependency.
+The route audit found and closed an existing unauthenticated POST /accounts path.
+Three focused checks pass for denied/allowed chart creation, ordinary staff access
+and the invariant that every mapped route has the shared dependency.

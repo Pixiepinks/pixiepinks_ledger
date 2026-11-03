@@ -49,6 +49,7 @@ def test_create_login_navigation_and_server_gates(staff):
                  '/crm/bot-management','/crm/quick-messages/api','/crm/saved-voices/api','/api/sales-orders','/admin/staff']:
         assert client.get(path).status_code==403,path
     assert client.post('/entries',data={}).status_code==403
+    assert client.post('/accounts',data={'code':'X','name':'Forbidden','type':'ASSET'}).status_code==403
     assert client.post('/admin/staff',data={'username':'attack','new_password':PASSWORD,'csrf_token':s.csrf}).status_code==403
     with s.sessions() as db:
         target=db.get(User,s.target());assert target.role=='STAFF' and target.section_access==['whatsapp']
@@ -140,6 +141,27 @@ def test_failed_commit_rolls_back_access_password_and_audit(staff,monkeypatch):
         assert row.section_access==['whatsapp'] and row.session_version==0 and row.password_hash==before
         assert db.query(StaffAccessAudit).count()==1
     assert client.get('/crm/whatsapp').status_code==200
+
+
+def test_chart_creation_requires_login_and_section_grant(staff):
+    values={'code':'STAFF01','name':'Allowed staff account','type':'ASSET'}
+    anonymous=TestClient(main.app,base_url='https://testserver')
+    assert anonymous.post('/accounts',data=values,follow_redirects=False).status_code==303
+    s=staff;s.create(sections=['accounts']);client,_=s.signin()
+    assert client.post('/accounts',data=values,follow_redirects=False).status_code==303
+
+
+def test_all_mapped_section_routes_include_the_shared_access_dependency():
+    def calls(dep):
+        found={getattr(dep,'call',None)}
+        for child in getattr(dep,'dependencies',[]):found.update(calls(child))
+        return found
+    missing=[]
+    for route in main.app.routes:
+        path=getattr(route,'path','')
+        if not (access.section_for(path) or path.startswith('/admin/staff') or path=='/staff-home'):continue
+        if getattr(route,'dependant',None) is not None and main.require_user not in calls(route.dependant):missing.append(path)
+    assert not missing,missing
 
 
 @pytest.mark.parametrize('key,label,path',access.SECTIONS)

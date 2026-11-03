@@ -1998,7 +1998,8 @@ def create_account(
     type: str = Form(...),
     subtype: str = Form(""),
     description: str = Form(""),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user)
 ):
     acc = Account(
         code=code.strip(),
