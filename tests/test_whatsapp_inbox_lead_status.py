@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event
 import main
-from models import Lead,WhatsAppConversation,WhatsAppConversationMessage,WhatsAppMessageAttachment
+from models import User,Lead,WhatsAppConversation,WhatsAppConversationMessage,WhatsAppMessageAttachment
 from test_whatsapp_quick_messages import inbox
 from test_crm_whatsapp_leads import BASE,save
 from test_whatsapp_referral_cards import PNG
@@ -47,6 +47,8 @@ def test_list_status_lookup_is_batched_not_one_query_per_conversation(inbox):
 @pytest.mark.parametrize('name',['quick-admin','quick-manager','quick-agent','quick-staff'])
 def test_status_metadata_and_shared_update_permissions(inbox,name):
     client,sessions,ids,sends,login,_=inbox;csrf=login(name)
+    with sessions() as db:
+        db.get(WhatsAppConversation,ids[0]).assigned_to_user_id=db.query(User.id).filter_by(username=name).scalar();db.commit()
     response=client.get(f'{BASE}/{ids[0]}/status');assert response.status_code==200
     assert response.headers['cache-control']=='private, no-store'
     assert response.json()['lead'] is None
@@ -65,7 +67,7 @@ def test_status_metadata_and_shared_update_permissions(inbox,name):
 def test_metadata_auth_missing_id_and_matching_lead_preservation(inbox):
     client,sessions,ids,_,login,csrf=inbox
     assert TestClient(main.app).get(f'{BASE}/{ids[0]}/status',follow_redirects=False).status_code==303
-    login('quick-denied');assert client.get(f'{BASE}/{ids[0]}/status').status_code==403
+    login('quick-denied');assert client.get(f'{BASE}/{ids[0]}/status').status_code==404
     csrf=login();assert client.get(f'{BASE}/999999/status').status_code==404
     with sessions() as db:
         conversation=db.get(WhatsAppConversation,ids[0])
