@@ -57,10 +57,13 @@ def referral_columns():
         Referral.source_url,Referral.media_type,Referral.image_url,Referral.thumbnail_url,Referral.captured_at]
 
 
-def listing(db,preview_tag,search='',source='',status='',assigned='',offset=0):
+def listing(db,preview_tag,search='',source='',status='',assigned='',offset=0,user=None):
     referral_query=db.query(Referral.id).join(Message,Message.id==Referral.message_id).filter(
         Message.phone_number==WhatsAppConversation.phone_number,Message.direction=='inbound')
     query=db.query(WhatsAppConversation,Lead).outerjoin(Lead,Lead.whatsapp_conversation_id==WhatsAppConversation.id)
+    if user is not None:
+        from conversation_access import scope
+        query=scope(query,user)
     if search:
         pattern='%'+search+'%'
         query=query.filter(or_(WhatsAppConversation.customer_name.ilike(pattern),WhatsAppConversation.phone_number.ilike(pattern),
@@ -113,7 +116,7 @@ def build_router(get_db,require_user,require_csrf,csrf_token,statuses,preview_ta
         status:str=Query('',max_length=32),assigned:str=Query('',max_length=100),offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
         authorize(user)
         if status and status not in statuses+['UNORGANIZED']:raise HTTPException(422,'Invalid status')
-        return {**listing(db,preview_tag,q.strip(),source,status,assigned,offset),'statuses':statuses,'status_labels':status_labels or {},
+        return {**listing(db,preview_tag,q.strip(),source,status,assigned,offset,user=user),'statuses':statuses,'status_labels':status_labels or {},
             'assignees':[name for name, in db.query(CRMUser.name).order_by(CRMUser.name)],'csrf_token':csrf_token(request)}
 
     @router.get('/{cid}')

@@ -163,6 +163,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["settings"] = settings
 import staff_access
+import conversation_access
 templates.env.globals['can_access_section']=staff_access.allowed
 
 # ---------------------- DB Session ----------------------
@@ -1706,6 +1707,7 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
         user = db.get(User, uid)
         if user and user.is_active and request.session.get('auth_version',0)==(user.session_version or 0):
             staff_access.enforce(user,request.url.path)
+            conversation_access.enforce_path(db,user,request.url.path,request.query_params)
             request.state.current_user=user
             return user
         request.session.clear()
@@ -2115,7 +2117,7 @@ def _inbox_lead_status(lead) -> dict:
 def _conversation_payload(db: Session, conversation: WhatsAppConversation,
                           payment_phones: set[str] | None = None,
                           latest_messages: dict[str, WhatsAppConversationMessage] | None = None,
-                          linked_leads: dict | None = None) -> dict:
+                          linked_leads: dict | None = None, owner_users: dict | None = None) -> dict:
     latest = (latest_messages or {}).get(conversation.phone_number)
     if latest_messages is None:
         latest = db.query(WhatsAppConversationMessage).filter(
@@ -2127,6 +2129,8 @@ def _conversation_payload(db: Session, conversation: WhatsAppConversation,
     return {
         **_inbox_lead_status(linked),
         "id": conversation.id,
+        'owner':conversation_access.owner_data(db,conversation,owner_users),
+        'assignment_version':conversation.assignment_version,
         "phone_number": conversation.phone_number,
         "customer_name": conversation.customer_name or "WhatsApp customer",
         "mode": conversation.mode,
@@ -2141,10 +2145,11 @@ def _conversation_payload(db: Session, conversation: WhatsAppConversation,
 def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order: int | None = None,
                    db: Session = Depends(get_db), user: User = Depends(require_user)):
     _csrf_token(request)  # Persist the session token before inbox polling begins.
-    unread = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
+    unread = conversation_access.unread(db,user)
     return templates.TemplateResponse("whatsapp_inbox.html", {
         "request": request, "initial_conversation_id": conversation, "unread_whatsapp": unread,
         "page_title": "WhatsApp Inbox", "user": user, "edit_order_id": edit_order,
+        'assignment_csrf':_csrf_token(request),
         "global_ai": global_ai_control.display_state(db),
         "sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
         "can_create_sales_order": settings.SALES_ORDERS_ENABLED and
@@ -2156,9 +2161,15 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
 
 @app.get("/crm/whatsapp/api/conversations")
 def whatsapp_conversations(response: Response, search: str = "", filter: str = "all", limit: int = 50,
+                           mailbox: str | None = None,
                            db: Session = Depends(get_db), user: User = Depends(require_user)):
     response.headers["Cache-Control"] = "private, no-store"
-    query = db.query(WhatsAppConversation)
+    query = conversation_access.scope(db.query(WhatsAppConversation),user)
+    mailbox=mailbox or ('all' if user.role=='ADMIN' else 'mine')
+    if mailbox not in {'mine','unassigned','all'}:raise HTTPException(422,'Choose Mine, Unassigned or All')
+    if user.role!='ADMIN' and mailbox!='mine':raise HTTPException(403,'Staff can only access their assigned inbox')
+    if mailbox=='mine':query=query.filter(WhatsAppConversation.assigned_to_user_id==user.id)
+    elif mailbox=='unassigned':query=query.filter(WhatsAppConversation.assigned_to_user_id.is_(None))
     term = search.strip()
     if term:
         name_match = WhatsAppConversation.customer_name.ilike(f"%{term}%")
@@ -2183,13 +2194,15 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
     latest_messages = {}
     for message in recent_messages:
         latest_messages.setdefault(message.phone_number, message)
-    unread_total = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
+    unread_total = conversation_access.unread(db,user)
+    owner_users=conversation_access.owners(db,rows)
     linked_leads={row.whatsapp_conversation_id:row for row in db.query(Lead.id,Lead.status,Lead.whatsapp_conversation_id).filter(Lead.whatsapp_conversation_id.in_([item.id for item in rows] or [-1])).all()}
-    return {"conversations": [_conversation_payload(db, row, payment_phones, latest_messages, linked_leads) for row in rows],
+    return {"conversations": [_conversation_payload(db, row, payment_phones, latest_messages, linked_leads,owner_users) for row in rows],
             "unread_total": unread_total}
 
 
 def _get_conversation(db: Session, conversation_id: int) -> WhatsAppConversation:
+    if db.info.get('inbox_user') is not None:return conversation_access.require_owned(db,db.info['inbox_user'],conversation_id)
     conversation = db.get(WhatsAppConversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -2667,6 +2680,7 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         db.rollback()
         return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
     try:
+        conversation_access.require_owned(db,user,conversation.id)
         result = send_whatsapp_text(conversation.phone_number, body.strip(), return_message_id=True)
     except TypeError:
         result = send_whatsapp_text(conversation.phone_number, body.strip())
@@ -2776,6 +2790,7 @@ async def whatsapp_manual_product_send(conversation_id: int, request: Request,
         db.rollback()
         return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
     try:
+        conversation_access.require_owned(db,user,conversation.id)
         result = send_whatsapp_image(conversation.phone_number, product["image"], caption,
                                      return_message_id=True)
     except Exception as exc:
@@ -2837,6 +2852,7 @@ async def whatsapp_manual_audio_send(
     trace["attempt_id"]=attempt.id
     try:
         with voice_trace.capture(trace):
+            conversation_access.require_owned(db,user,conversation.id)
             media_id = upload_whatsapp_audio(voice_note)
     except Exception:
         media_id = None
@@ -2849,6 +2865,7 @@ async def whatsapp_manual_audio_send(
     db.commit()  # Preserve the upload evidence before the existing send call.
     try:
         with voice_trace.capture(trace):
+            conversation_access.require_owned(db,user,conversation.id)
             outbound_id = send_whatsapp_audio(conversation.phone_number, media_id, voice=not ffmpeg_encoder_enabled())
     except Exception:
         outbound_id = None
@@ -3909,12 +3926,12 @@ def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = 
     )
 
     recent_leads = db.query(Lead).order_by(Lead.created_at.desc(), Lead.id.desc()).limit(10).all()
-    unread_whatsapp = db.query(func.coalesce(func.sum(WhatsAppConversation.unread_count), 0)).scalar() or 0
-    human_handovers = db.query(func.count(WhatsAppConversation.id)).filter(WhatsAppConversation.mode == "HUMAN").scalar() or 0
+    unread_whatsapp = conversation_access.unread(db,user)
+    human_handovers = conversation_access.scope(db.query(func.count(WhatsAppConversation.id)),user).filter(WhatsAppConversation.mode == "HUMAN").scalar() or 0
     payment_required = db.query(func.count(WhatsAppOrderIntent.id)).filter(WhatsAppOrderIntent.status == PAYMENT_REQUIRED_STATUS).scalar() or 0
     active_order_intents = db.query(func.count(WhatsAppOrderIntent.id)).filter(
         WhatsAppOrderIntent.status.notin_(["CANCELLED", "HANDED_TO_TEAM"])).scalar() or 0
-    recent_conversations = db.query(WhatsAppConversation).order_by(
+    recent_conversations = conversation_access.scope(db.query(WhatsAppConversation),user).order_by(
         WhatsAppConversation.last_message_at.desc()).limit(6).all()
     recent_orders = db.query(WhatsAppOrderIntent).order_by(WhatsAppOrderIntent.updated_at.desc()).limit(6).all()
 
@@ -4431,3 +4448,6 @@ app.include_router(build_saved_voice_router(get_db, require_user, _require_csrf,
 
 from staff_routes import build_router as build_staff_router
 app.include_router(build_staff_router(get_db,require_user,_csrf_token,templates))
+
+from conversation_assignment_routes import build_router as build_assignment_router
+app.include_router(build_assignment_router(get_db,require_user,_require_csrf))

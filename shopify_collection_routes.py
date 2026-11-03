@@ -309,6 +309,8 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
             row.status = "PROCESSING"
             db.commit()
             try:
+                from conversation_access import require_owned
+                require_owned(db,user,conversation.id)
                 outcome, message_id = send_image(conversation.phone_number, product["image"], caption(product))
             except Exception:
                 outcome, message_id = "UNKNOWN", None

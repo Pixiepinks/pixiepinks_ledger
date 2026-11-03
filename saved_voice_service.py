@@ -244,6 +244,8 @@ def send(db, user, conversation, values, key, upload, deliver):
         raise HTTPException(409, "Voice send already claimed") from None
     trace["attempt_id"]=attempt.id
     try:
+        from conversation_access import require_owned
+        require_owned(db,user,conversation.id)
         if staff_variant_c:
             name=write_audio(raw)
             trace['staff_output_snapshot']={'storage_name':name,**voice_trace.fingerprint(raw)}
@@ -265,6 +267,7 @@ def send(db, user, conversation, values, key, upload, deliver):
     attempt.media_id=media_id
     try:
         require_reply_window(db, conversation)
+        require_owned(db,user,conversation.id)
     except HTTPException:
         attempt.status = "FAILED"; db.commit(); return status(attempt)
     if not voice.active or voice.revision != values.revision:

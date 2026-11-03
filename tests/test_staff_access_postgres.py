@@ -33,7 +33,7 @@ def test_postgres_migrates_legacy_users_and_fences_simultaneous_admin_updates(mo
             conn.execute(text("INSERT INTO users (username,password_hash,role) VALUES ('pg-admin',:hash,'ADMIN')"),{'hash':password})
         monkeypatch.setattr(database,'engine',engine)
         config=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
-        command.stamp(config,'20261030_21');command.upgrade(config,'head');command.upgrade(config,'head')
+        command.stamp(config,'20261030_21');command.upgrade(config,'20261103_22');command.upgrade(config,'20261103_22')
         with engine.connect() as conn:
             row=conn.execute(text('SELECT section_access,is_active,session_version,password_hash FROM users')).one()
             assert row==(None,True,0,password)

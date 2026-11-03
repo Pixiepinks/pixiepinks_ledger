@@ -10,7 +10,7 @@ from sqlalchemy import event
 
 import main
 from learning_models import LearningSource, LearningSettings, LearningJob, LearningAnalysis
-from models import WhatsAppConversation
+from models import WhatsAppConversation,User
 from settings import settings
 from test_whatsapp_quick_messages import inbox
 
@@ -33,7 +33,7 @@ def test_actual_id_profile_takeover_and_no_side_effects(inbox, mode):
     assert data['id'] == ids[0] and data['id'] != int(data['phone_number'])
     assert data['customer_name'] == 'Quick customer 1' and data['mode'] == mode
     assert data['phone_country']['name'] == 'Sri Lanka'
-    assert data['assigned_staff'] is None and data['taken_over_by'] == 'quick-staff'
+    assert data['assigned_staff'] == 'quick-staff' and data['taken_over_by'] == 'quick-staff'
     assert data['learning'] == {'eligibility': 'EXCLUDED', 'engine_enabled': False,
         'analysis_status': None, 'job_status': None, 'analysis_completed_at': None}
     assert all(sql.lstrip().upper().startswith('SELECT') for sql in queries)
@@ -75,7 +75,9 @@ def test_learning_eligibility_comes_from_source_not_ai_mode(inbox, monkeypatch, 
 
 @pytest.mark.parametrize('name', ['quick-admin', 'quick-manager', 'quick-staff', 'quick-agent'])
 def test_existing_staff_roles_can_read_details(inbox, name):
-    client, _, ids, _, login, _ = inbox; login(name)
+    client, sessions, ids, _, login, _ = inbox; login(name)
+    with sessions() as db:
+        db.get(WhatsAppConversation,ids[0]).assigned_to_user_id=db.query(User.id).filter_by(username=name).scalar();db.commit()
     assert client.get(f'/crm/whatsapp/api/conversations/{ids[0]}/details').status_code == 200
 
 
@@ -83,7 +85,7 @@ def test_auth_permissions_missing_conversation_and_invalid_phone(inbox):
     client, sessions, ids, _, login, _ = inbox
     assert TestClient(main.app).get(f'/crm/whatsapp/api/conversations/{ids[0]}/details', follow_redirects=False).status_code == 303
     login('quick-denied')
-    assert client.get(f'/crm/whatsapp/api/conversations/{ids[0]}/details').status_code == 403
+    assert client.get(f'/crm/whatsapp/api/conversations/{ids[0]}/details').status_code == 404
     login()
     assert client.get('/crm/whatsapp/api/conversations/99999999/details').status_code == 404
     assert client.get('/crm/whatsapp/api/conversations/not-an-id/details').status_code == 422
