@@ -177,7 +177,8 @@ def test_sharing_browser_notes_and_revoke(assignments):
                 route.fulfill(status=response.status_code,body=response.content,headers={k:value for k,value in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
             admin=browser.new_page();admin.route('**/*',serve)
             admin.goto(f'https://admin.inbox.test/crm/whatsapp?conversation={cid}')
-            admin.locator('#collaboration-panel summary').first.click()
+            admin.locator('#team-notes-open').click()
+            api.expect(admin.locator('#collaboration-panel')).to_be_visible()
             api.expect(admin.locator('#share-user option')).not_to_have_count(0)
             admin.locator('#share-user').select_option(str(v.users['quick-agent']))
             admin.locator('#share-form button').click()
@@ -186,7 +187,15 @@ def test_sharing_browser_notes_and_revoke(assignments):
             page.goto(f'https://shared.inbox.test/crm/whatsapp?conversation={cid}')
             api.expect(page.locator('#shared-permission')).to_contain_text('read and private notes only')
             api.expect(page.locator('#composer')).to_be_hidden()
-            page.locator('#collaboration-panel summary').first.click()
+            page.locator('#team-notes-open').click()
+            api.expect(page.locator('#collaboration-panel')).to_be_visible()
+            page.keyboard.press('Escape')
+            api.expect(page.locator('#collaboration-panel')).not_to_be_visible()
+            api.expect(page.locator('#team-notes-open')).to_be_focused()
+            page.set_viewport_size({'width':390,'height':760})
+            page.locator('#team-notes-open').click()
+            api.expect(page.locator('#collaboration-panel')).to_be_visible()
+            assert page.locator('#collaboration-panel').bounding_box()['width']<=390
             page.locator('#private-note-body').fill('<img src=x onerror=alert(1)> Payment verified')
             page.locator('#private-note-mentions').select_option(str(v.users['quick-staff']))
             page.locator('#private-note-form button').click()
@@ -195,6 +204,7 @@ def test_sharing_browser_notes_and_revoke(assignments):
             assert not v.sends
             admin.locator('#share-list button').click()
             api.expect(page.locator('#chat')).to_be_hidden(timeout=10000)
+            api.expect(page.locator('#collaboration-panel')).not_to_be_visible()
             assert page.locator('#private-notes').inner_text()=='' and not errors
         finally:browser.close()
 
