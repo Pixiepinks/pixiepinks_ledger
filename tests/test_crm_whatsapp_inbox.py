@@ -36,8 +36,8 @@ def test_inbox_requires_authentication_and_renders_for_staff():
     response = authenticated_client().get("/crm/whatsapp")
     assert response.status_code == 200
     assert 'class="app-body whatsapp-page"' in response.text
-    assert '/static/crm.css?v=lead-status-colors-1' in response.text
-    assert '/static/whatsapp_inbox.js?v=inbox-colombo-time-1' in response.text
+    assert '/static/crm.css?v=reply-jump-2' in response.text
+    assert '/static/whatsapp_inbox.js?v=reply-jump-2' in response.text
     assert 'id="send-button">Send</button>' in response.text
     assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
     assert all(control in response.text for control in (
@@ -61,7 +61,7 @@ def test_inbox_layout_uses_dynamic_viewport_and_flexible_message_history():
     assert ".whatsapp-page .inbox{height:100%;max-height:100%}" in css
     assert "recorder.onstart = () =>" in javascript
     assert javascript.index("recorder.onstart = () =>") < javascript.index("recorder.start(1000)")
-    assert "reconcileMessages(data.messages)" in javascript
+    assert "reconcileMessages(withReplyHistory(data.messages))" in javascript
     assert "wrapper.dataset.messageId = String(message.id)" in javascript
     assert "messages.replaceChildren(...data.messages.map(renderMessage))" not in javascript
     assert "if (conversationLoading) return" in javascript

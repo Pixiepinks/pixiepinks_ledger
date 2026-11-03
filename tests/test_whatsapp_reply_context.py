@@ -4,6 +4,7 @@ from ai_reply_test_support import reply_text
 import hashlib
 import hmac
 import json
+import re
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime,timedelta
@@ -178,13 +179,80 @@ def test_chromium_photo_quote_missing_text_and_stable_polling(replies,monkeypatc
             page.route('**/*',serve);page.goto(f'https://inbox.test/crm/whatsapp?conversation={ids[0]}')
             photo=page.locator('.message-quote').filter(has_text='Jeep requested');photo.locator('img').wait_for()
             page.wait_for_function('document.querySelector(".message-quote img").naturalWidth>0')
-            assert f'/messages/{target}/attachments/' in photo.locator('a').get_attribute('href')
+            assert f'/messages/{target}/attachments/' in photo.locator('img').get_attribute('src')
             assert 'Replying to Staff' in photo.inner_text()
+            photo.click()
+            playwright.expect(page.locator(f'[data-message-id="{target}"]')).to_have_class(re.compile('reply-target'))
             assert page.locator('.message-quote').filter(has_text='Original message unavailable').count()==1
             text=page.locator('.message-quote').filter(has_text='Original text');assert text.locator('img,script').count()==0 and page.evaluate('window.injected') is None
             page.evaluate('window.keptQuote=document.querySelector(".message-quote img")');page.wait_for_timeout(4300)
             assert page.evaluate('window.keptQuote===document.querySelector(".message-quote img")') and not errors
             page.set_viewport_size({'width':375,'height':800});assert photo.is_visible()
+        finally:browser.close()
+
+
+def test_reply_product_thumbnail_and_scoped_history_window(replies,monkeypatch):
+    client,sessions,ids,_,_,_,_=replies
+    target=original(sessions,kind=None,product='Quoted bicycle')
+    with sessions() as db:
+        product=db.get(WhatsAppConversationMessage,target);product.product_image_url='https://cdn.shopify.com/s/files/bicycle.png'
+        db.add_all([WhatsAppConversationMessage(phone_number='94770012301',direction='outbound',message_text=f'Later {n}',created_at=datetime.utcnow()-timedelta(hours=1)) for n in range(230)])
+        db.commit()
+    deliver(client,monkeypatch)
+    latest=client.get(f'/crm/whatsapp/api/conversations/{ids[0]}').json()['messages']
+    assert target not in [m['id'] for m in latest]
+    quote=latest[-1]['reply_context']
+    assert quote['message_id']==target and quote['type']=='product'
+    assert quote['preview_url']=='https://cdn.shopify.com/s/files/bicycle.png'
+    result=client.get(f'/crm/whatsapp/api/conversations/{ids[0]}?around_message_id={target}')
+    assert result.status_code==200 and len(result.json()['messages'])<=81
+    assert target in [m['id'] for m in result.json()['messages']]
+    assert client.get(f'/crm/whatsapp/api/conversations/{ids[1]}?around_message_id={target}').status_code==404
+    assert client.get(f'/crm/whatsapp/api/conversations/{ids[0]}?around_message_id=999999').status_code==404
+
+
+@pytest.mark.parametrize('url',['http://cdn.shopify.com/image.png','https://cdn.shopify.com.evil.test/image.png','javascript:alert(1)','https://user:secret@cdn.shopify.com/image.png'])
+def test_reply_product_thumbnail_rejects_untrusted_urls(replies,monkeypatch,url):
+    client,sessions,ids,_,_,_,_=replies
+    target=original(sessions,kind=None,product='Bicycle')
+    with sessions() as db:db.get(WhatsAppConversationMessage,target).product_image_url=url;db.commit()
+    deliver(client,monkeypatch)
+    quote=client.get(f'/crm/whatsapp/api/conversations/{ids[0]}').json()['messages'][-1]['reply_context']
+    assert quote['preview_url'] is None and quote['message_id']==target
+
+
+def test_chromium_jump_loads_old_product_and_retains_it_across_poll(replies,monkeypatch):
+    playwright=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    client,sessions,ids,_,_,_,_=replies
+    target=original(sessions,kind=None,product='Old bicycle')
+    with sessions() as db:
+        db.get(WhatsAppConversationMessage,target).product_image_url='https://cdn.shopify.com/s/files/old-bicycle.png'
+        db.add_all([WhatsAppConversationMessage(phone_number='94770012301',direction='outbound',message_text=f'Later message {n}',created_at=datetime.utcnow()-timedelta(hours=1)) for n in range(230)])
+        db.commit()
+    deliver(client,monkeypatch)
+    with playwright.sync_playwright() as runtime:
+        browser=runtime.chromium.launch(executable_path=chromium,headless=True,args=['--no-sandbox'])
+        try:
+            page=browser.new_page();errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
+            def serve(route):
+                req=route.request;url=urlsplit(req.url)
+                if url.hostname=='cdn.shopify.com':route.fulfill(status=200,body=png(),content_type='image/png');return
+                if url.hostname!='inbox.test':route.fulfill(status=200,body='');return
+                response=client.request(req.method,url.path+('?' +url.query if url.query else ''),follow_redirects=False)
+                route.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+            page.route('**/*',serve);page.goto(f'https://inbox.test/crm/whatsapp?conversation={ids[0]}')
+            quote=page.locator('.message-quote').filter(has_text='Old bicycle')
+            playwright.expect(quote.locator('img')).to_be_visible()
+            assert page.locator(f'[data-message-id="{target}"]').count()==0
+            quote.focus();quote.press('Enter')
+            destination=page.locator(f'[data-message-id="{target}"]')
+            playwright.expect(destination).to_have_class(re.compile('reply-target'))
+            page.wait_for_timeout(4300)
+            assert destination.count()==1 and not errors
+            page.set_viewport_size({'width':375,'height':800})
+            quote.scroll_into_view_if_needed();quote.click()
+            playwright.expect(destination).to_have_class(re.compile('reply-target'))
         finally:browser.close()
 
 

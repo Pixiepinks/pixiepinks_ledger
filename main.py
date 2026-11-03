@@ -36,7 +36,7 @@ import outbound_media_service as outbound_media
 import quick_message_service as quick_messages
 from phone_country_service import phone_country
 from whatsapp_reply_service import extract_reply_id, reply_previews
-from sqlalchemy import func, inspect, text, or_
+from sqlalchemy import func, inspect, text, or_, and_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
 
@@ -2208,12 +2208,25 @@ def whatsapp_conversation_details(conversation_id: int, response: Response,
 
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}")
 def whatsapp_conversation_detail(conversation_id: int, response: Response, limit: int = 100,
+                                 around_message_id: int | None = None,
                                  db: Session = Depends(get_db), user: User = Depends(require_user)):
     response.headers["Cache-Control"] = "private, no-store"
     conversation = _get_conversation(db, conversation_id)
-    messages = db.query(WhatsAppConversationMessage).filter(
+    message_query = db.query(WhatsAppConversationMessage).filter(
         WhatsAppConversationMessage.phone_number == conversation.phone_number
-    ).order_by(WhatsAppConversationMessage.created_at.desc()).limit(min(max(limit, 1), 200)).all()
+    )
+    if around_message_id is not None:
+        target=message_query.filter(WhatsAppConversationMessage.id==around_message_id).one_or_none()
+        if target is None:raise HTTPException(404,'Original message unavailable in this conversation')
+        earlier=message_query.filter(or_(WhatsAppConversationMessage.created_at<target.created_at,
+            and_(WhatsAppConversationMessage.created_at==target.created_at,WhatsAppConversationMessage.id<=target.id))
+            ).order_by(WhatsAppConversationMessage.created_at.desc(),WhatsAppConversationMessage.id.desc()).limit(41).all()
+        later=message_query.filter(or_(WhatsAppConversationMessage.created_at>target.created_at,
+            and_(WhatsAppConversationMessage.created_at==target.created_at,WhatsAppConversationMessage.id>target.id))
+            ).order_by(WhatsAppConversationMessage.created_at.asc(),WhatsAppConversationMessage.id.asc()).limit(40).all()
+        messages=sorted(earlier+later,key=lambda row:(row.created_at,row.id),reverse=True)
+    else:
+        messages=message_query.order_by(WhatsAppConversationMessage.created_at.desc(),WhatsAppConversationMessage.id.desc()).limit(min(max(limit, 1), 200)).all()
     referrals_by_message = {}
     inbound_ids = [message.id for message in messages if message.direction == "inbound"]
     if inbound_ids:

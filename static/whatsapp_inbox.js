@@ -4,6 +4,7 @@
   let selected = Number(root.dataset.initial) || null, filter = new URLSearchParams(location.search).get("filter") || "all";
   let recorder, stream, timer, blob, blobUrl, started, duration, voiceKey, chunks = [], discard = false;
   let textSending = false, textSendAttempt = null;
+  let replyHistory = new Map(), replyJump = 0;
   let conversationController, conversationLoading = false, conversationMarkRead = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null, listGeneration = 0;
   const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
   const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
@@ -141,19 +142,47 @@
     return card;
   }
   function renderReplyContext(reply) {
-    const card = document.createElement("aside"), heading = document.createElement("strong"), copy = document.createElement("span");
+    const card = document.createElement(reply.available ? "button" : "aside"), heading = document.createElement("strong"), copy = document.createElement("span");
     card.className = "message-quote"; card.setAttribute("aria-label", "Quoted message");
     if (!reply.available) { text(heading, "Reply to an earlier message"); text(copy, "Original message unavailable in CRM."); card.append(heading, copy); return card; }
+    card.type = "button"; card.setAttribute("aria-label", `Jump to original message from ${reply.author}`);
+    card.onclick = () => jumpToReply(reply.message_id);
     text(heading, `Replying to ${reply.author}`);
     const label = ({image: "Photo", sticker: "Sticker", video: "Video", audio: "Voice message", document: "Document", product: "Product"})[reply.type];
     text(copy, [label, reply.text].filter(Boolean).join(" · ")); card.append(heading, copy);
-    if (typeof reply.preview_url === "string" && /^\/crm\/whatsapp\/api\/conversations\/\d+\/messages\/\d+\/attachments\/\d+\/media$/.test(reply.preview_url)) {
+    let safeProduct = false;
+    try { const url = new URL(reply.preview_url); safeProduct = reply.type === "product" && url.protocol === "https:" && url.host === "cdn.shopify.com" && !url.username && !url.password; } catch (_) {}
+    if (typeof reply.preview_url === "string" && (safeProduct || /^\/crm\/whatsapp\/api\/conversations\/\d+\/messages\/\d+\/attachments\/\d+\/media$/.test(reply.preview_url))) {
       card.classList.add("has-preview");
-      const image = new Image(), link = document.createElement("a"); image.alt = "Quoted photo"; image.loading = "lazy"; image.decoding = "async"; image.referrerPolicy = "no-referrer";
-      link.href = reply.preview_url; link.target = "_blank"; link.rel = "noopener noreferrer"; link.setAttribute("aria-label", "Open quoted photo");
-      image.onerror = () => { link.hidden = true; image.removeAttribute("src"); }; image.src = reply.preview_url; link.append(image); card.append(link);
+      const image = new Image(); image.alt = reply.type === "product" ? "Quoted product" : "Quoted photo"; image.loading = "lazy"; image.decoding = "async"; image.referrerPolicy = "no-referrer";
+      image.onerror = () => { image.hidden = true; image.removeAttribute("src"); card.classList.remove("has-preview"); }; image.src = reply.preview_url; card.append(image);
     }
     return card;
+  }
+  function withReplyHistory(incoming) {
+    const merged = new Map(replyHistory);
+    incoming.forEach(message => { merged.set(String(message.id), message); if (replyHistory.has(String(message.id))) replyHistory.set(String(message.id), message); });
+    return [...merged.values()].sort((a,b) => new Date(a.timestamp)-new Date(b.timestamp) || a.id-b.id);
+  }
+  async function jumpToReply(messageId) {
+    if (!Number.isSafeInteger(messageId) || messageId < 1) return;
+    const cid = selected, generation = conversationGeneration, jump = ++replyJump;
+    let node = messages.querySelector(`[data-message-id="${messageId}"]`);
+    try {
+      if (!node) {
+        const data = await api(`/crm/whatsapp/api/conversations/${cid}?around_message_id=${messageId}`);
+        if (selected !== cid || generation !== conversationGeneration || jump !== replyJump) return;
+        data.messages.forEach(message => replyHistory.set(String(message.id),message));
+        while (replyHistory.size > 800) replyHistory.delete(replyHistory.keys().next().value);
+        reconcileMessages(withReplyHistory(currentConversationData?.messages || []));
+        node = messages.querySelector(`[data-message-id="${messageId}"]`);
+      }
+      if (!node) throw new Error("Original message unavailable in CRM.");
+      messages.querySelectorAll(".reply-target").forEach(item => item.classList.remove("reply-target"));
+      node.classList.add("reply-target"); node.tabIndex = -1;
+      node.scrollIntoView({block:"center", behavior:"auto"}); node.focus({preventScroll:true});
+      setTimeout(() => node.classList.remove("reply-target"),3000);
+    } catch (_) { if (selected === cid && jump === replyJump) showComposerMessage("Original message unavailable or could not be loaded.",true); }
   }
   function appendMessageText(element, value) {
     const body = String(value || ""), pattern = /https:\/\/[^\s<>"']+/g; let start = 0;
@@ -209,7 +238,7 @@
     const switching = selected !== id; selected = id;
     root.dataset.activeConversation = String(id);
     if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
-    if (switching) { conversationGeneration += 1; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); }
+    if (switching) { conversationGeneration += 1; replyJump++; replyHistory.clear(); conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); }
     if (conversationLoading) return;
     const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true; conversationMarkRead = markRead;
     try {
@@ -219,7 +248,7 @@
       root.dispatchEvent(new CustomEvent("inbox-conversation-data", {detail: {id, conversation: data.conversation}}));
       text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));
       const action = document.getElementById("mode-action"); text(action, data.conversation.mode === "AI" ? "Take Over" : "Return to AI"); action.dataset.mode = data.conversation.mode; document.getElementById("payment-banner").hidden = !data.conversation.payment_required;
-      reconcileMessages(data.messages); const nextDetailsSignature = JSON.stringify([data.conversation, data.order, data.sales_order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
+      reconcileMessages(withReplyHistory(data.messages)); const nextDetailsSignature = JSON.stringify([data.conversation, data.order, data.sales_order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
       if (markRead || switching) loadList();
     } catch (error) { if (error.name !== "AbortError" && !messages.children.length) messages.innerHTML = '<div class="empty">Conversation not found or could not be loaded.</div>'; }
     finally { if (conversationController === controller) { conversationLoading = false; conversationMarkRead = false; conversationController = null; } }
