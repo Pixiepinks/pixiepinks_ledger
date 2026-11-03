@@ -1,7 +1,7 @@
 # Private Inbox notes, mentions and explicit sharing
 
 The assigned owner remains responsible for each conversation. Administrators can
-share individual chats from **Private notes & sharing**. Sharing defaults to
+share individual chats from the **Team notes** popup in the chat header. Sharing defaults to
 **read and private notes**; a separate **Allow customer replies** checkbox grants
 messaging permission. Only active staff with WhatsApp Inbox access are eligible.
 Owners and admins already have access and need no additional share. Staff find
@@ -35,7 +35,8 @@ next four-second history poll, and notifications refresh every 15 seconds.
 
 Notes, mentions and sharing do not update lead stages, customer unread state,
 message timestamps or automatic reply queue timers. A private note does not
-answer a waiting customer. The note composer is visibly separate from customer
+answer a waiting customer. The Team notes button opens a responsive dialog with a Close button and Escape support.
+The note composer is visibly separate from customer
 Send, uses plain text rendering and has a retry key to avoid duplicate notes.
 The latest 50 notes are shown; Load older notes pages through earlier notes.
 The admin sharing panel displays the latest 30 permission audit entries.

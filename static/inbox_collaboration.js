@@ -2,6 +2,22 @@
   'use strict';
   const root=document.getElementById('inbox'), panel=document.getElementById('collaboration-panel');
   if (!root || !panel) return;
+  const openButton=document.getElementById('team-notes-open');
+  openButton.addEventListener('click',()=>{
+    if(!cid)return;
+    if(!panel.open)panel.showModal();
+    openButton.setAttribute('aria-expanded','true');load();
+  });
+  byClose();
+  function byClose(){
+    document.getElementById('team-notes-close').addEventListener('click',()=>panel.close());
+    panel.addEventListener('close',()=>openButton.setAttribute('aria-expanded','false'));
+    panel.addEventListener('click',event=>{
+      if(event.target!==panel)return;
+      const box=panel.getBoundingClientRect();
+      if(event.clientX<box.left || event.clientX>box.right || event.clientY<box.top || event.clientY>box.bottom)panel.close();
+    });
+  }
   const csrf=root.dataset.assignmentCsrf, admin=root.dataset.admin==='true';
   let cid=null, generation=0, version=0, loading=false, staff=[], before=null, noteKey=null;
   const byId=id=>document.getElementById(id);
@@ -80,11 +96,12 @@
     catch(e){if(gen===generation)say(e.message);}
   };
   root.addEventListener('inbox-conversation',e=>{
-    cid=e.detail.id;generation++;loading=false;before=null;noteKey=null;panel.open=false;
+    cid=e.detail.id;generation++;loading=false;before=null;noteKey=null;if(panel.open)panel.close();
     byId('private-note-body').value='';byId('private-notes').replaceChildren();byId('private-note-mentions').replaceChildren();byId('share-list')?.replaceChildren();byId('share-audit')?.replaceChildren();if(byId('share-reply'))byId('share-reply').checked=false;say('');
   });
   root.addEventListener('inbox-conversation-data',e=>{
     if(cid!==e.detail.id){cid=e.detail.id;generation++;loading=false;}
+    byId('team-notes-customer').textContent=e.detail.conversation.customer_name || 'WhatsApp customer';
     // Inbox renders its mode control after dispatching this event.
     queueMicrotask(()=>{if(cid===e.detail.id)rights(e.detail.conversation);});
     load();
