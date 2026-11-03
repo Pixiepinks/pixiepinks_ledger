@@ -45,6 +45,9 @@ STAFF=MANAGERS|{'STAFF','SALES_AGENT'}
 
 
 def authorize(user,role='read'):
+    if role=='manage':
+        from staff_access import manager_grant
+        if manager_grant(user):return
     allowed={'read':STAFF,'manage':MANAGERS,'admin':{'ADMIN'}}[role]
     if user.role not in allowed:raise HTTPException(403,'Not authorized for this learning action')
 

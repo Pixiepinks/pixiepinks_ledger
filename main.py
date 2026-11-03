@@ -162,6 +162,8 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["settings"] = settings
+import staff_access
+templates.env.globals['can_access_section']=staff_access.allowed
 
 # ---------------------- DB Session ----------------------
 def get_db():
@@ -1694,7 +1696,7 @@ def _generate_lead_no(db: Session, dt: date | None = None) -> str:
 def _is_safe_next(next_url: str) -> bool:
     try:
         u = urlparse(next_url)
-        return (not u.netloc) and next_url.startswith("/")
+        return (not u.netloc) and next_url.startswith("/") and not next_url.startswith('//') and '\\' not in next_url
     except Exception:
         return False
 
@@ -1702,7 +1704,9 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
     uid = request.session.get("uid")
     if uid:
         user = db.get(User, uid)
-        if user:
+        if user and user.is_active and request.session.get('auth_version',0)==(user.session_version or 0):
+            staff_access.enforce(user,request.url.path)
+            request.state.current_user=user
             return user
         request.session.clear()
     raise HTTPException(
@@ -1729,7 +1733,7 @@ def _require_sales_orders_enabled() -> None:
 
 
 def _require_sales_permission(user: User, permission: str) -> None:
-    if permission not in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()):
+    if permission not in staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS):
         raise HTTPException(status_code=403, detail="You are not authorized for this sales-order action")
 
 
@@ -1928,12 +1932,15 @@ def login_post(
     next: str = Form("/dashboard"),
     db: Session = Depends(get_db),
 ):
+    request.session.clear()
     user = db.query(User).filter(User.username == username).first()
-    if user and verify_password(password, user.password_hash):
+    if user and user.is_active and verify_password(password, user.password_hash):
         request.session["uid"] = user.id
+        request.session['auth_version']=user.session_version or 0
         request.session["user"] = {"username": user.username}
         if not _is_safe_next(next):
             next = "/"
+        next=staff_access.login_destination(user,next)
         return RedirectResponse(next, status_code=303)
     return RedirectResponse(f"{LOGIN_PATH}?error=Invalid&next={quote(next)}", status_code=303)
 
@@ -1944,10 +1951,8 @@ def logout(request: Request):
 
 # ---------------------- Protected Pages ----------------------
 @app.get("/", response_class=HTMLResponse)
-def root(request: Request):
-    if request.session.get("uid"):
-        return RedirectResponse("/dashboard", status_code=303)
-    return RedirectResponse("/login", status_code=303)
+def root(request: Request,user: User=Depends(require_user)):
+    return RedirectResponse(staff_access.landing(user),status_code=303)
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
@@ -1993,7 +1998,8 @@ def create_account(
     type: str = Form(...),
     subtype: str = Form(""),
     description: str = Form(""),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user)
 ):
     acc = Account(
         code=code.strip(),
@@ -2142,9 +2148,9 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
         "global_ai": global_ai_control.display_state(db),
         "sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
         "can_create_sales_order": settings.SALES_ORDERS_ENABLED and
-            "create" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()),
+            "create" in staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS),
         "can_approve_sales_discount": "approve_discount" in
-            SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()),
+            staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS),
     }, headers={"Cache-Control": "private, no-store"})
 
 
@@ -2321,7 +2327,7 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
         "view_url": f"/crm/sales-orders/{sales_order.id}",
         "edit_url": (f"/crm/whatsapp?conversation={conversation.id}&edit_order={sales_order.id}"
                      if sales_order.order_status == "DRAFT"
-                     and "edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()) else None),
+                     and "edit" in staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS) else None),
     }
     return {"conversation": {**_conversation_payload(db, conversation),
                              "phone_country": phone_country(conversation.phone_number)}, "messages": message_data,
@@ -2919,10 +2925,10 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
     if not order: raise HTTPException(404, "Sales order not found")
     history = db.query(SalesOrderStatusHistory).filter_by(sales_order_id=order.id).order_by(
         SalesOrderStatusHistory.created_at.desc()).all()
-    can_edit = ("edit" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set())
+    can_edit = ("edit" in staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS)
                 and order.order_status == "DRAFT" and not order.shopify_draft_order_id)
     can_sync = (settings.SHOPIFY_ORDER_SYNC_ENABLED
-                and "sync_shopify" in SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set()))
+                and "sync_shopify" in staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS))
     can_create_sync = (can_sync and not order.shopify_draft_order_id
                        and order.order_status in ELIGIBLE_ORDER_STATUSES
                        and order.shopify_sync_status in {"NOT_SYNCED", "SYNC_FAILED"})
@@ -2934,7 +2940,7 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
         SalesPayment.created_at.desc(), SalesPayment.id.desc()).all()
     payment_audit = db.query(SalesPaymentAuditEvent).filter_by(sales_order_id=order.id).order_by(
         SalesPaymentAuditEvent.created_at.desc(), SalesPaymentAuditEvent.id.desc()).limit(50).all()
-    payment_permissions = SALES_ORDER_PERMISSIONS.get(user.role or "STAFF", set())
+    payment_permissions = staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS)
     payment_enabled = settings.SALES_PAYMENT_TRACKING_ENABLED
     payment_sync_operations = db.query(ShopifyPaymentSyncOperation).filter_by(
         sales_order_id=order.id).order_by(ShopifyPaymentSyncOperation.created_at.desc()).limit(10).all()
@@ -4421,3 +4427,7 @@ from saved_voice_routes import build_router as build_saved_voice_router
 app.include_router(build_saved_voice_router(get_db, require_user, _require_csrf, _csrf_token, templates,
     _get_conversation, lambda raw: upload_whatsapp_audio(raw),
     lambda phone, media: send_whatsapp_audio(phone, media, voice=not ffmpeg_encoder_enabled(), return_outcome=True)))
+
+
+from staff_routes import build_router as build_staff_router
+app.include_router(build_staff_router(get_db,require_user,_csrf_token,templates))

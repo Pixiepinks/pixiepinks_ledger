@@ -85,6 +85,19 @@ class User(Base):
     username = Column(String(100), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(30), nullable=False, default="STAFF", server_default="STAFF", index=True)
+    section_access = Column(JSON, nullable=True)  # NULL preserves pre-existing role behavior.
+    is_active = Column(Boolean, nullable=False, default=True, server_default='1')
+    session_version = Column(Integer, nullable=False, default=0, server_default='0')
+
+
+class StaffAccessAudit(Base):
+    __tablename__ = 'staff_access_audits'
+    id = Column(Integer, primary_key=True)
+    actor_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    target_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    action = Column(String(40), nullable=False)
+    changes = Column(JSON, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
 # ---------------------- Commercial sales orders ----------------------

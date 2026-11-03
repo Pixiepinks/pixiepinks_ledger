@@ -11,6 +11,9 @@ FIELDS={'title','shortcut','category','language','body','active','display_order'
 
 
 def authorize(user,manage=False):
+    if manage:
+        from staff_access import manager_grant
+        if manager_grant(user):return
     if user.role not in (MANAGER_ROLES if manage else STAFF_ROLES):
         raise HTTPException(403,'You are not authorized for this Quick Messages action')
 
