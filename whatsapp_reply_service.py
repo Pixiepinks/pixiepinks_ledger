@@ -1,5 +1,6 @@
 """Persisted quote references and conversation-scoped, token-free reply previews."""
 import re
+from urllib.parse import urlsplit
 from collections import defaultdict
 
 from models import WhatsAppConversationMessage,WhatsAppMessageAttachment
@@ -43,10 +44,14 @@ def reply_previews(db,conversation,messages):
             summary=attachment.caption or attachment.filename or label
             if kind in {'image','sticker'}:
                 preview=f'/crm/whatsapp/api/conversations/{conversation.id}/messages/{original.id}/attachments/{attachment.id}/media'
-        elif original.media_id:
-            kind='audio';summary='Voice message'
         elif original.product_title:
             kind='product';summary=original.product_title
+            try:
+                image=urlsplit(original.product_image_url or '')
+                if image.scheme=='https' and image.netloc=='cdn.shopify.com':preview=original.product_image_url
+            except ValueError:pass
+        elif original.media_id:
+            kind='audio';summary='Voice message'
         result[message.id]={'available':True,'message_id':original.id,'author':author,'type':kind,
                             'text':(summary or '')[:300],'preview_url':preview}
     return result

@@ -48,3 +48,8 @@
 .badge.lead-status[data-lead-status="LOST"]{background:#9f1239;color:#ffffff}
 .badge.lead-status[data-lead-status="NOT_INTERESTED"]{background:#fff1f2;color:#be123c}
 .badge.lead-status[data-lead-status="INVALID_SPAM"]{background:#334155;color:#f8fafc}
+/* Clickable WhatsApp reply references and temporary destination highlight. */
+button.message-quote{font:inherit;text-align:left;color:#14213d;border:0;border-left:3px solid #c32269;cursor:pointer;white-space:normal}
+button.message-quote:hover{background:#eedfe9}button.message-quote:focus-visible{outline:2px solid #c32269;outline-offset:2px}
+.message-quote.has-preview img{position:absolute;right:7px;top:5px}
+.message.reply-target .bubble{outline:2px solid #c32269;outline-offset:3px;box-shadow:0 0 0 5px #c3226922}
