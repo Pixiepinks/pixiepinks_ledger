@@ -1,4 +1,5 @@
 import voice_trace
+import inbox_reply_queue
 import global_ai_control
 import asyncio
 import threading
@@ -2161,7 +2162,7 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
 
 @app.get("/crm/whatsapp/api/conversations")
 def whatsapp_conversations(response: Response, search: str = "", filter: str = "all", limit: int = 50,
-                           mailbox: str | None = None,
+                           mailbox: str | None = None, reply_queue: str = "all",
                            db: Session = Depends(get_db), user: User = Depends(require_user)):
     response.headers["Cache-Control"] = "private, no-store"
     query = conversation_access.scope(db.query(WhatsAppConversation),user)
@@ -2184,9 +2185,20 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
         query = query.filter(WhatsAppConversation.mode == value.upper())
     elif value == "payment":
         query = query.filter(WhatsAppConversation.phone_number.in_(payment_phones or {"__none__"}))
-    rows = query.order_by(WhatsAppConversation.last_message_at.desc(), WhatsAppConversation.id.desc()).limit(
+    if reply_queue not in {'all','needs_reply','waiting_customer'}:
+        raise HTTPException(422,'Choose All replies, Needs our reply or Waiting for customer')
+    pending, outgoing = inbox_reply_queue.summary(db)
+    query = query.outerjoin(pending,pending.c.phone == WhatsAppConversation.phone_number).outerjoin(
+        outgoing,outgoing.c.phone == WhatsAppConversation.phone_number)
+    if reply_queue == 'needs_reply':query = query.filter(pending.c.waiting_since.isnot(None))
+    elif reply_queue == 'waiting_customer':query = query.filter(pending.c.waiting_since.is_(None),outgoing.c.replies > 0)
+    queue_rows = query.add_columns(pending.c.waiting_since,outgoing.c.replies).order_by(
+        *([pending.c.waiting_since.asc()] if reply_queue == 'needs_reply' else []),
+        WhatsAppConversation.last_message_at.desc(), WhatsAppConversation.id.desc()).limit(
         min(max(limit, 1), 100)
     ).all()
+    rows = [row[0] for row in queue_rows]
+    queue_payloads = {row.id:inbox_reply_queue.payload(since,replies) for row,since,replies in queue_rows}
     phones = [row.phone_number for row in rows]
     recent_messages = db.query(WhatsAppConversationMessage).filter(
         WhatsAppConversationMessage.phone_number.in_(phones or {"__none__"})
@@ -2197,7 +2209,7 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
     unread_total = conversation_access.unread(db,user)
     owner_users=conversation_access.owners(db,rows)
     linked_leads={row.whatsapp_conversation_id:row for row in db.query(Lead.id,Lead.status,Lead.whatsapp_conversation_id).filter(Lead.whatsapp_conversation_id.in_([item.id for item in rows] or [-1])).all()}
-    return {"conversations": [_conversation_payload(db, row, payment_phones, latest_messages, linked_leads,owner_users) for row in rows],
+    return {"conversations": [{**_conversation_payload(db, row, payment_phones, latest_messages, linked_leads,owner_users), **queue_payloads[row.id]} for row in rows],
             "unread_total": unread_total}
 
 

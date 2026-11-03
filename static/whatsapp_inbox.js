@@ -6,6 +6,7 @@
   let textSending = false, textSendAttempt = null;
   const isAdmin = root.dataset.admin === "true";
   let mailbox = isAdmin ? "all" : "mine", assignees = [], assignmentDirty = false, assignmentExpected = 0;
+  let replyQueue = "all";
   let replyHistory = new Map(), replyJump = 0;
   let conversationController, conversationLoading = false, conversationMarkRead = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null, listGeneration = 0;
   const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
@@ -40,6 +41,12 @@
     const meta = document.createElement("div"); meta.className = "conversation-meta"; meta.append(badge(c.mode, c.mode.toLowerCase())); const leadStatus = badge(c.lead_status_label || "Not organized", "lead-status"); leadStatus.dataset.leadStatus = c.lead_status || "UNORGANIZED"; leadStatus.setAttribute("aria-label", `Lead status: ${c.lead_status_label || "Not organized"}`); meta.append(leadStatus);
     if (c.payment_required) meta.append(badge("PAYMENT REQUIRED", "payment"));
     meta.append(badge(c.owner ? c.owner.username + (c.owner.active ? "" : " (inactive)") : "Unassigned"));
+    if (c.reply_queue === "needs_reply") {
+      const seconds = Math.max(0, Number(c.waiting_seconds) || 0), minutes = Math.floor(seconds / 60);
+      const age = minutes < 1 ? "<1m" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`;
+      const wait = badge(`Waiting ${age}`, seconds >= 3600 ? "reply-overdue" : seconds >= 900 ? "reply-warning" : "reply-wait");
+      wait.title = `Needs our reply · since ${inboxTime(c.waiting_since)}`; meta.append(wait);
+    } else if (c.reply_queue === "waiting_customer") meta.append(badge("Waiting for customer"));
     if (c.unread_count) { const unread = document.createElement("span"); unread.className = "unread"; text(unread, c.unread_count); meta.append(unread); }
     button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true); return button;
   }
@@ -48,7 +55,7 @@
     const generation = ++listGeneration; listLoading = true;
     try {
       const search = document.getElementById("search").value;
-      const data = await api(`/crm/whatsapp/api/conversations?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}`);
+      const data = await api(`/crm/whatsapp/api/conversations?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}&reply_queue=${replyQueue}`);
       if (generation !== listGeneration) return;
       list.replaceChildren(...data.conversations.map(conversationRow)); text(document.getElementById("list-status"), `${data.conversations.length} shown`);
       if (!data.conversations.length) { const empty = document.createElement("div"); empty.className = "empty"; text(empty, search ? "No search results." : "No WhatsApp conversations."); list.replaceChildren(empty); }
@@ -470,5 +477,10 @@
       finally { button.disabled=false; select.disabled=false; }
     };
   }
+  document.querySelectorAll("[data-reply-queue]").forEach(button => button.onclick = () => {
+    replyQueue = button.dataset.replyQueue;
+    document.querySelectorAll("[data-reply-queue]").forEach(item => item.classList.toggle("selected",item === button));
+    loadList(true);
+  });
   loadList(); if (selected) openConversation(selected, true); setInterval(loadList, 7000); setInterval(() => { if (selected && !document.hidden) openConversation(selected, false); }, 4000);
 })();
