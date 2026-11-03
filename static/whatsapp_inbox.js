@@ -4,6 +4,8 @@
   let selected = Number(root.dataset.initial) || null, filter = new URLSearchParams(location.search).get("filter") || "all";
   let recorder, stream, timer, blob, blobUrl, started, duration, voiceKey, chunks = [], discard = false;
   let textSending = false, textSendAttempt = null;
+  const isAdmin = root.dataset.admin === "true";
+  let mailbox = isAdmin ? "all" : "mine", assignees = [], assignmentDirty = false, assignmentExpected = 0;
   let replyHistory = new Map(), replyJump = 0;
   let conversationController, conversationLoading = false, conversationMarkRead = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null, listGeneration = 0;
   const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
@@ -37,6 +39,7 @@
     const preview = document.createElement("p"); text(preview, c.latest_message || c.phone_number);
     const meta = document.createElement("div"); meta.className = "conversation-meta"; meta.append(badge(c.mode, c.mode.toLowerCase())); const leadStatus = badge(c.lead_status_label || "Not organized", "lead-status"); leadStatus.dataset.leadStatus = c.lead_status || "UNORGANIZED"; leadStatus.setAttribute("aria-label", `Lead status: ${c.lead_status_label || "Not organized"}`); meta.append(leadStatus);
     if (c.payment_required) meta.append(badge("PAYMENT REQUIRED", "payment"));
+    meta.append(badge(c.owner ? c.owner.username + (c.owner.active ? "" : " (inactive)") : "Unassigned"));
     if (c.unread_count) { const unread = document.createElement("span"); unread.className = "unread"; text(unread, c.unread_count); meta.append(unread); }
     button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true); return button;
   }
@@ -45,12 +48,38 @@
     const generation = ++listGeneration; listLoading = true;
     try {
       const search = document.getElementById("search").value;
-      const data = await api(`/crm/whatsapp/api/conversations?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}`);
+      const data = await api(`/crm/whatsapp/api/conversations?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}`);
       if (generation !== listGeneration) return;
       list.replaceChildren(...data.conversations.map(conversationRow)); text(document.getElementById("list-status"), `${data.conversations.length} shown`);
       if (!data.conversations.length) { const empty = document.createElement("div"); empty.className = "empty"; text(empty, search ? "No search results." : "No WhatsApp conversations."); list.replaceChildren(empty); }
     } catch (_) { if (generation === listGeneration) list.innerHTML = '<div class="empty">Could not load conversations.</div>'; }
     finally { if (generation === listGeneration) listLoading = false; }
+  }
+  function renderOwner(conversation) {
+    text(document.getElementById("conversation-owner"), conversation.owner ? `Assigned to ${conversation.owner.username}` : "Unassigned");
+    const select = document.getElementById("assignment-owner");
+    if (!select || assignmentDirty) return;
+    select.disabled=false; document.getElementById("assignment-save").disabled=false;
+    select.replaceChildren(new Option("Unassigned", ""), ...assignees.map(user => new Option(user.username, String(user.id))));
+    if (conversation.owner && !assignees.some(user => user.id === conversation.owner.id)) {
+      const current = new Option(`${conversation.owner.username} (unavailable)`,String(conversation.owner.id)); current.disabled = true; select.append(current);
+    }
+    select.value = conversation.owner ? String(conversation.owner.id) : "";
+    assignmentExpected = conversation.assignment_version;
+  }
+  function clearRevokedConversation() {
+    conversationGeneration++; replyJump++; replyHistory.clear(); selected = null; currentConversationData = null;
+    conversationController?.abort(); conversationController = null; conversationLoading = false;
+    root.dataset.activeConversation = ""; root.classList.remove("chat-open");
+    document.querySelectorAll("dialog[open]").forEach(dialog => dialog.close());
+    root.dispatchEvent(new CustomEvent("inbox-conversation", {detail:{id:null}}));
+    messages.querySelectorAll("audio,video").forEach(media => media.pause()); messages.replaceChildren();
+    discard = true; if (recorder?.state === "recording") recorder.stop(); resetRecording(); closeCatalog();
+    document.getElementById("message-input").value = "";
+    document.getElementById("profile").replaceChildren(); document.getElementById("order").replaceChildren();
+    document.getElementById("chat").hidden = true; document.getElementById("chat-empty").hidden = false;
+    text(document.getElementById("chat-empty"), "This conversation is no longer available to you. Choose an assigned conversation.");
+    loadList(true);
   }
   function detailRow(label, value) { const row = document.createElement("div"), name = document.createElement("span"), content = document.createElement("span"); row.className = "detail-row"; text(name, label); text(content, value); row.append(name, content); return row; }
   function detailLink(label, url, primary = false) { const link = document.createElement("a"); link.className = `btn ${primary ? "btn-primary" : "btn-secondary"}`; link.href = url; text(link, label); return link; }
@@ -241,19 +270,20 @@
     const switching = selected !== id; selected = id;
     root.dataset.activeConversation = String(id);
     if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
-    if (switching) { conversationGeneration += 1; replyJump++; replyHistory.clear(); conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); }
+    if (switching) { conversationGeneration += 1; replyJump++; replyHistory.clear(); assignmentDirty = false; currentConversationData=null; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); const feedback=document.getElementById("assignment-feedback"); if(feedback) { feedback.textContent=""; document.getElementById("assignment-owner").disabled=true; document.getElementById("assignment-save").disabled=true; } }
     if (conversationLoading) return;
     const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true; conversationMarkRead = markRead;
     try {
       if (markRead) await api(`/crm/whatsapp/api/conversations/${id}/read`, {method: "POST", signal: controller.signal}); const data = await api(`/crm/whatsapp/api/conversations/${id}`, {signal: controller.signal});
       if (generation !== conversationGeneration || selected !== id) return;
       currentConversationData = data;
+      renderOwner(data.conversation);
       root.dispatchEvent(new CustomEvent("inbox-conversation-data", {detail: {id, conversation: data.conversation}}));
       text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));
       const action = document.getElementById("mode-action"); text(action, data.conversation.mode === "AI" ? "Take Over" : "Return to AI"); action.dataset.mode = data.conversation.mode; document.getElementById("payment-banner").hidden = !data.conversation.payment_required;
       reconcileMessages(withReplyHistory(data.messages)); const nextDetailsSignature = JSON.stringify([data.conversation, data.order, data.sales_order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
       if (markRead || switching) loadList();
-    } catch (error) { if (error.name !== "AbortError" && !messages.children.length) messages.innerHTML = '<div class="empty">Conversation not found or could not be loaded.</div>'; }
+    } catch (error) { if ([403,404].includes(error.status) && selected === id && generation === conversationGeneration) clearRevokedConversation(); else if (error.name !== "AbortError" && !messages.children.length) messages.innerHTML = '<div class="empty">Conversation not found or could not be loaded.</div>'; }
     finally { if (conversationController === controller) { conversationLoading = false; conversationMarkRead = false; conversationController = null; } }
   }
   root.addEventListener("inbox-lead-status-updated", event => {
@@ -425,5 +455,20 @@
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadList(); if (selected) openConversation(selected, false); } });
   root.addEventListener("saved-voice-sent", () => { if (selected) openConversation(selected, false); loadList(true); });
+  document.querySelectorAll("[data-mailbox]").forEach(button => button.onclick = () => { mailbox=button.dataset.mailbox; document.querySelectorAll("[data-mailbox]").forEach(item => item.classList.toggle("selected",item===button)); loadList(true); });
+  if (isAdmin) {
+    api("/crm/whatsapp/api/assignees").then(data => { assignees=data.assignees; if(currentConversationData) renderOwner(currentConversationData.conversation); }).catch(() => showComposerMessage("Could not load staff accounts for assignment.",true));
+    const select=document.getElementById("assignment-owner"), form=document.getElementById("assignment-form"), feedback=document.getElementById("assignment-feedback");
+    select.onchange = () => { assignmentDirty=true; assignmentExpected=currentConversationData?.conversation.assignment_version; };
+    form.onsubmit = async event => {
+      event.preventDefault(); if(!selected || currentConversationData?.conversation.id!==selected) return;
+      const cid=selected, button=document.getElementById("assignment-save"); button.disabled=true; select.disabled=true; text(feedback,"Saving…");
+      try {
+        const saved=await api(`/crm/whatsapp/api/conversations/${cid}/assignment`,{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":root.dataset.assignmentCsrf},body:JSON.stringify({owner_id:select.value ? Number(select.value) : null,expected_version:assignmentExpected})});
+        if(selected===cid) { conversationController?.abort(); conversationLoading=false; conversationGeneration++; assignmentDirty=false; currentConversationData.conversation.owner=saved.owner; currentConversationData.conversation.assignment_version=saved.assignment_version; renderOwner(currentConversationData.conversation); await openConversation(cid); text(feedback,"Owner saved."); } loadList(true);
+      } catch(error) { if(selected===cid) { text(feedback,error.message); if(error.status===409) { assignmentDirty=false; await openConversation(cid); } } }
+      finally { button.disabled=false; select.disabled=false; }
+    };
+  }
   loadList(); if (selected) openConversation(selected, true); setInterval(loadList, 7000); setInterval(() => { if (selected && !document.hidden) openConversation(selected, false); }, 4000);
 })();

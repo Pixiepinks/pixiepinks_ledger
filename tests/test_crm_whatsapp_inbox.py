@@ -19,7 +19,7 @@ def setup_function():
         db.query(WhatsAppConversationMessage).delete()
         db.query(WhatsAppConversation).delete()
         if not db.query(User).filter_by(username="inbox-test").first():
-            db.add(User(username="inbox-test", password_hash=hash_password("password")))
+            db.add(User(username="inbox-test", password_hash=hash_password("password"),role='ADMIN'))
         db.commit()
 
 
@@ -36,8 +36,8 @@ def test_inbox_requires_authentication_and_renders_for_staff():
     response = authenticated_client().get("/crm/whatsapp")
     assert response.status_code == 200
     assert 'class="app-body whatsapp-page"' in response.text
-    assert '/static/crm.css?v=staff-access-3' in response.text
-    assert '/static/whatsapp_inbox.js?v=staff-access-3' in response.text
+    assert '/static/crm.css?v=conversation-assignment-4' in response.text
+    assert '/static/whatsapp_inbox.js?v=conversation-assignment-4' in response.text
     assert 'id="send-button">Send</button>' in response.text
     assert response.text.index('id="message-input"') < response.text.index('id="send-button"')
     assert all(control in response.text for control in (

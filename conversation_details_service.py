@@ -2,9 +2,11 @@
 from learning_models import LearningSource, LearningAnalysis, LearningJob
 from learning_service import configuration, learning_enabled
 from phone_country_service import phone_country
+from conversation_access import owner_data
 
 
 def conversation_details(db, conversation):
+    owner=owner_data(db,conversation)
     source = db.query(LearningSource).filter_by(conversation_id=conversation.id).one_or_none()
     config = configuration(db)
     consented = bool(source and source.allowed and source.consent_at and source.consent_reference)
@@ -28,9 +30,7 @@ def conversation_details(db, conversation):
         'phone_number': conversation.phone_number,
         'phone_country': phone_country(conversation.phone_number),
         'mode': conversation.mode,
-        # There is no assignment column/relation on WhatsAppConversation. A
-        # historical takeover is not represented as a current staff assignment.
-        'assigned_staff': None,
+        'assigned_staff': owner['username'] if owner else None,
         'taken_over_by': conversation.taken_over_by,
         'learning': {
             'eligibility': eligibility,

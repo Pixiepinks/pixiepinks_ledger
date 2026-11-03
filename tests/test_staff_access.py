@@ -198,7 +198,7 @@ def test_legacy_migration_keeps_accounts_and_repeats_safely(tmp_path,monkeypatch
         conn.execute(text("INSERT INTO users VALUES (1,'admin','retained-hash','ADMIN'),(2,'staff','retained-staff-hash','STAFF')"))
     monkeypatch.setattr(database,'engine',engine)
     config=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
-    command.stamp(config,'20261030_21');command.upgrade(config,'head');command.upgrade(config,'head')
+    command.stamp(config,'20261030_21');command.upgrade(config,'20261103_22');command.upgrade(config,'20261103_22')
     with engine.connect() as conn:
         rows=conn.execute(text('SELECT username,password_hash,section_access,is_active,session_version FROM users ORDER BY id')).all()
         assert rows[0]==('admin','retained-hash',None,1,0)

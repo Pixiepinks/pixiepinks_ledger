@@ -155,7 +155,7 @@ def test_unknown_send_scope_and_no_automatic_retry(voices, monkeypatch):
     assert v.send(row).json()["status"] == "UNKNOWN" and len(calls) == 1
     assert v.send(row, cid=v.ids[1]).status_code == 409
     v.login("quick-manager")
-    assert v.client.get(f"/crm/whatsapp/api/conversations/{v.ids[0]}/saved-voice-sends/saved-voice-attempt-0001").status_code == 409
+    assert v.client.get(f"/crm/whatsapp/api/conversations/{v.ids[0]}/saved-voice-sends/saved-voice-attempt-0001").status_code == 404
 
 
 def test_database_failure_after_provider_send_cannot_duplicate(voices):
@@ -231,12 +231,13 @@ def test_postgresql_upgrade_and_concurrent_claim(tmp_path, monkeypatch):
         config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
         command.stamp(config, "20261026_16"); command.upgrade(config, "head"); command.upgrade(config, "head")
         with engine.connect() as conn:
-            assert conn.execute(text("select version_num from alembic_version")).scalar() == "20261103_22"
+            assert conn.execute(text("select version_num from alembic_version")).scalar() == "20261103_23"
             assert conn.execute(text("select count(*) from whatsapp_conversations")).scalar() == 1
         monkeypatch.setattr(settings, "SAVED_VOICES_DIR", str(tmp_path / "pg-volume"))
         raw, duration = normalize_voice_audio(wav(), "audio/wav")
         name = service.write_audio(raw)
         with sessions() as db:
+            db.get(WhatsAppConversation,1).assigned_to_user_id=1
             row = SavedVoice(title="Greeting", category="Greeting", transcript="Ayubowan", language="singlish", active=True,
                 revision=1, storage_name=name, sha256=hashlib.sha256(raw).hexdigest(), size_bytes=len(raw), duration_seconds=duration,
                 normalization_version=1, processing_status="READY", created_by="voice-test", updated_by="voice-test")

@@ -38,6 +38,9 @@ def inbox(tmp_path,monkeypatch):
     with sessions() as db:
         db.add_all([User(username=name,password_hash=password,role=role) for name,role in [('quick-admin','ADMIN'),('quick-manager','SALES_MANAGER'),('quick-staff','STAFF'),('quick-agent','SALES_AGENT'),('quick-denied','OTHER')]])
         convos=[WhatsAppConversation(phone_number=f'9477001230{n}',customer_name=f'Quick customer {n}',mode=mode,last_customer_message_at=datetime.utcnow(),unread_count=2) for n,mode in [(1,'HUMAN'),(2,'AI')]]
+        # Non-admin messaging fixtures now represent explicitly assigned chats.
+        convos[0].assigned_to_user_id=db.query(User.id).filter_by(username='quick-staff').scalar()
+        convos[1].assigned_to_user_id=db.query(User.id).filter_by(username='quick-agent').scalar()
         db.add_all(convos);db.commit();ids=[row.id for row in convos]
     client=TestClient(main.app,base_url='https://testserver')
     def login(name='quick-admin'):
@@ -151,6 +154,8 @@ def test_use_is_successful_send_only_and_remains_editable(inbox):
         message=db.query(WhatsAppConversationMessage).one();assert message.direction=='outbound' and message.send_status=='sent' and message.response_kind=='staff'
         assert db.query(WhatsAppManualSend).one().quick_message_id==row['id']
         conversation=db.get(WhatsAppConversation,ids[0]);assert conversation.mode=='HUMAN' and conversation.unread_count==2
+    with sessions() as db:
+        db.get(WhatsAppConversation,ids[1]).assigned_to_user_id=db.query(User.id).filter_by(username='quick-staff').scalar();db.commit()
     assert send(client,ids[1],csrf,row['id'],key='second-conversation').json()['status']=='SENT'
     with sessions() as db:
         assert db.get(WhatsAppConversation,ids[1]).mode=='AI'
@@ -209,7 +214,7 @@ def test_idempotency_scope_active_replay_and_plain_text_regression(inbox):
         db.get(WhatsAppConversation,ids[0]).last_customer_message_at=datetime.utcnow()-timedelta(days=2);db.commit()
     assert send(client,ids[0],csrf,qid).json()['ok']
     csrf=login('quick-agent')
-    assert send(client,ids[0],csrf,qid).status_code==409
+    assert send(client,ids[0],csrf,qid).status_code==404  # Another staff owner's chat stays private even for a known send key.
     assert send(client,ids[1],csrf,key='ordinary-text',text='Ordinary text\nhttps://www.pixiepinks.shop').json()['ok']
     with sessions() as db:assert db.get(WhatsAppQuickMessage,qid).usage_count==1
 

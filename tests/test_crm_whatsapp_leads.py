@@ -104,7 +104,10 @@ def test_existing_manual_lead_requires_explicit_link_and_keeps_details(inbox):
 
 @pytest.mark.parametrize('name',['quick-admin','quick-manager','quick-agent','quick-staff'])
 def test_staff_auth_permissions_and_csrf(inbox,name):
-    client,_,ids,_,login,_=inbox;csrf=login(name)
+    client,sessions,ids,_,login,_=inbox;csrf=login(name)
+    from models import User
+    with sessions() as db:
+        db.get(WhatsAppConversation,ids[0]).assigned_to_user_id=db.query(User.id).filter_by(username=name).scalar();db.commit()
     assert client.get(BASE).status_code==200
     assert client.get(BASE).headers['cache-control']=='private, no-store'
     assert client.post(f'{BASE}/{ids[0]}/lead',json={}).status_code==403
@@ -115,7 +118,7 @@ def test_unauthorized_and_malformed_requests(inbox):
     client,sessions,ids,_,login,csrf=inbox
     assert TestClient(main.app).get(BASE,follow_redirects=False).status_code==303
     login('quick-denied');assert client.get(BASE).status_code==403
-    assert save(client,ids[0],csrf).status_code==403
+    assert save(client,ids[0],csrf).status_code==404
     csrf=login()
     assert client.get(f'{BASE}/999999').status_code==404
     for body in [{'status':'INVALID'},{'assigned_to':'Unknown'},{'next_followup':'tomorrow'},{'note':'x'*2001},{'lead_id':True}]:

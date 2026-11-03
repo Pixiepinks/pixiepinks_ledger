@@ -119,6 +119,10 @@ def test_preview_prepare_and_selection_never_send_then_each_product_uses_existin
 @pytest.mark.parametrize("name", ["quick-admin", "quick-manager", "quick-staff", "quick-agent"])
 def test_known_staff_can_send_in_ai_and_human_modes(inbox, catalog, name):
     client, sessions, ids, _, login, _ = inbox; csrf = login(name)
+    from models import User
+    with sessions() as db:
+        for cid in ids:db.get(WhatsAppConversation,cid).assigned_to_user_id=db.query(User.id).filter_by(username=name).scalar()
+        db.commit()
     for cid in ids:
         mode = "HUMAN" if cid == ids[0] else "AI"
         batch = prepare(client, cid, csrf, preview(client, cid)).json()
@@ -144,7 +148,7 @@ def test_staff_csrf_customer_scope_actor_scope_and_window(inbox, catalog):
     assert client.get(f"{BASE}/conversations/{ids[0]}/collection-batches/{bid}").status_code == 404
     csrf = login("quick-denied")
     assert client.get(f"{BASE}/collections").status_code == 403
-    assert prepare(client, ids[0], csrf, data).status_code == 403
+    assert prepare(client, ids[0], csrf, data).status_code == 404
     assert not catalog[2]
 
 

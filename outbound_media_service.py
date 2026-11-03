@@ -240,6 +240,8 @@ def perform_send(db, conversation, user, key, raw, data):
     # This committed unique claim is the only code path allowed to call Meta.
     diagnostic = None
     try:
+        from conversation_access import require_owned
+        require_owned(db,user,conversation.id)
         media_id = upload_media(raw, data)
     except MediaUploadFailed as error:
         media_id = None
@@ -254,6 +256,8 @@ def perform_send(db, conversation, user, key, raw, data):
     attempt.media_id = media_id
     attempt.status = 'SENDING'
     db.commit()  # Must succeed before a customer message can be sent.
+    from conversation_access import require_owned
+    require_owned(db,user,conversation.id)
     status, message_id = send_media(conversation.phone_number, media_id, data)
     attempt.status = status
     if status == 'SENT':

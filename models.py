@@ -601,6 +601,10 @@ class WhatsAppConversation(Base):
     taken_over_at = Column(DateTime)
     taken_over_by = Column(String(100))
     returned_to_ai_at = Column(DateTime)
+    assigned_to_user_id = Column(Integer,ForeignKey('users.id',name='fk_whatsapp_assigned_user'),nullable=True,index=True)
+    assigned_by_user_id = Column(Integer,ForeignKey('users.id',name='fk_whatsapp_assigning_user'),nullable=True)
+    assigned_at = Column(DateTime,nullable=True)
+    assignment_version = Column(Integer,nullable=False,default=0,server_default='0')
     # Authoritative, restart-safe discovery state.  Message history remains useful
     # for AI context, but must never be used as the bicycle state machine.
     active_product_category = Column(String(50))
@@ -610,6 +614,16 @@ class WhatsAppConversation(Base):
     bicycle_size = Column(Integer)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ConversationAssignmentAudit(Base):
+    __tablename__='conversation_assignment_audits'
+    id=Column(Integer,primary_key=True)
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id'),nullable=False,index=True)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    previous_owner_id=Column(Integer,ForeignKey('users.id'),nullable=True)
+    new_owner_id=Column(Integer,ForeignKey('users.id'),nullable=True)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
 
 
 class WhatsAppManualSend(Base):

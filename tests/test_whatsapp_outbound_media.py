@@ -63,6 +63,8 @@ def inbox(tmp_path, monkeypatch):
                     User(username='other-staff', password_hash=hash_password('password'), role='STAFF')])
         conversations = [WhatsAppConversation(phone_number=f'9477000000{n}', customer_name=f'Customer {n}',
             mode=mode, last_customer_message_at=datetime.utcnow(), unread_count=2) for n, mode in [(1,'HUMAN'), (2,'AI')]]
+        db.flush()
+        for conversation in conversations:conversation.assigned_to_user_id=db.query(User.id).filter_by(username='media-staff').scalar()
         db.add_all(conversations); db.commit(); ids = [c.id for c in conversations]
     client = TestClient(main.app, base_url='https://testserver')
     client.post('/login', data={'username':'media-staff', 'password':'password'})
@@ -146,7 +148,7 @@ def test_auth_authorization_csrf_and_scope(inbox):
     key='safe-idempotency-key-1234'
     assert client.get(f'/crm/whatsapp/api/conversations/{ids[1]}/media-sends/{key}').status_code==409
     client.post('/login',data={'username':'other-staff','password':'password'})
-    assert client.get(f'/crm/whatsapp/api/conversations/{ids[0]}/media-sends/{key}').status_code==409
+    assert client.get(f'/crm/whatsapp/api/conversations/{ids[0]}/media-sends/{key}').status_code==404
     with sessions() as db:
         db.query(User).filter_by(username='other-staff').one().role='UNKNOWN'; db.commit()
     assert client.get('/crm/whatsapp/api/media-policy').status_code == 403
@@ -325,7 +327,7 @@ def test_additive_migration_and_postgresql_concurrent_send(tmp_path,monkeypatch,
         Base.metadata.create_all(engine,tables=tables)
         with sessions() as db:
             conversation=WhatsAppConversation(phone_number='94771112222',mode='HUMAN',last_customer_message_at=datetime.utcnow())
-            user=User(username='pg-staff',password_hash='not-a-login');db.add_all([conversation,user]);db.commit();cid,uid=conversation.id,user.id
+            user=User(username='pg-staff',password_hash='not-a-login');db.add_all([conversation,user]);db.flush();conversation.assigned_to_user_id=user.id;db.commit();cid,uid=conversation.id,user.id
             db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number,direction='inbound',message_text='Preserved history'));db.commit()
         config=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
         command.stamp(config,'20261024_10');command.upgrade(config,'20261025_11');command.upgrade(config,'20261025_11')
