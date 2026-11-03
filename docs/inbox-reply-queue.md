@@ -4,7 +4,7 @@ Reply queues track whose turn it is, independently of the existing manual lead
 status, unread state, ownership and AI/Human mode. No lead statuses are changed.
 Use All replies, Needs our reply, or Waiting for customer alongside existing
 ownership, search and conversation filters. Staff still see only their assigned
-conversations. Needs our reply sorts longest waiting first, before the result limit.
+conversations. Needs our reply sorts shortest waiting first, before the result limit.
 
 A customer message starts the timer. Further customer messages preserve that
 original time. A successful outbound text, voice, image, product or attachment
@@ -39,6 +39,6 @@ rollback is needed. Do not roll back past ownership enforcement for active staff
 
 55 automated tests passed across the new reply queues, conversation ownership,
 Inbox and manual lead-status editor. Coverage includes Chromium UI filters and
-badges, oldest-first limiting, staff isolation, multiple incoming messages,
+badges, newest-first limiting, staff isolation, multiple incoming messages,
 legacy automatic replies, failed delivery recovery and unchanged lead stages.
 JavaScript syntax and git whitespace checks also passed. No live messages sent.

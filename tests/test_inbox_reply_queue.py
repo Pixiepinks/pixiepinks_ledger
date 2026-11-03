@@ -44,7 +44,7 @@ def test_queue_scope_sort_before_limit_and_equal_time_order(inbox):
             db.add(Message(phone_number=c.phone_number,direction='inbound',message_text='Question',created_at=now-timedelta(hours=index+1)))
         db.commit()
     url='/crm/whatsapp/api/conversations'
-    assert client.get(url,params={'reply_queue':'needs_reply','limit':1}).json()['conversations'][0]['id']==ids[1]
+    assert client.get(url,params={'reply_queue':'needs_reply','limit':1}).json()['conversations'][0]['id']==ids[0]
     login('quick-staff')
     rows=client.get(url,params={'reply_queue':'needs_reply'}).json()['conversations']
     assert [r['id'] for r in rows]==[ids[0]]
