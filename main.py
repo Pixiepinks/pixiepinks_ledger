@@ -2193,7 +2193,7 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
     if reply_queue == 'needs_reply':query = query.filter(pending.c.waiting_since.isnot(None))
     elif reply_queue == 'waiting_customer':query = query.filter(pending.c.waiting_since.is_(None),outgoing.c.replies > 0)
     queue_rows = query.add_columns(pending.c.waiting_since,outgoing.c.replies).order_by(
-        *([pending.c.waiting_since.asc()] if reply_queue == 'needs_reply' else []),
+        *([pending.c.waiting_since.desc()] if reply_queue == 'needs_reply' else []),
         WhatsAppConversation.last_message_at.desc(), WhatsAppConversation.id.desc()).limit(
         min(max(limit, 1), 100)
     ).all()
