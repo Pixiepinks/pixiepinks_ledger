@@ -13,6 +13,9 @@
   const syncLabel = value => ({NOT_SYNCED: "Not Synced", SYNCING: "Syncing", SYNCED: "Synced", SYNC_FAILED: "Failed", RECONCILIATION_REQUIRED: "Needs Reconciliation"})[value] || value.replaceAll("_", " ");
   async function api(url, options) {
     const response = await fetch(url, {credentials: "same-origin", ...options}); let data = {};
+    if (response.redirected && new URL(response.url).pathname === "/login") {
+      location.assign("/login"); throw new Error("Your session ended. Please sign in again.");
+    }
     try { data = await response.json(); } catch (_) { /* generic error below */ }
     if (!response.ok) { const error = new Error(data.detail || data.error || "Request failed"); error.status = response.status; throw error; }
     return data;

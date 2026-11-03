@@ -6,7 +6,7 @@
   <title>{{ page_title or request.app.title }}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/crm.css?v=reply-jump-2">
+  <link rel="stylesheet" href="/static/crm.css?v=staff-access-3">
 </head>
 <body class="app-body{{ ' whatsapp-page' if request.url.path.startswith('/crm/whatsapp') else '' }}">
 {% if request.url.path != '/login' %}
@@ -14,30 +14,32 @@
   <div class="sidebar-scrim" id="sidebar-scrim"></div>
   <aside class="sidebar" id="sidebar" aria-label="Primary navigation">
     <div class="brand"><span class="brand-mark">P</span><span><strong>PixiePinks</strong><small>Operations</small></span></div>
+    {% set nav_user = user if user is defined else request.state.current_user|default(none) %}
     <nav>
       <p class="nav-label">Overview</p>
-      <a href="/crm" class="{{ 'active' if request.url.path == '/crm' else '' }}"><span>▦</span> CRM Dashboard</a>
-      <a href="/dashboard" class="{{ 'active' if request.url.path == '/dashboard' else '' }}"><span>◫</span> Finance Overview</a>
+{% if can_access_section(nav_user,"crm") %}      <a href="/crm" class="{{ 'active' if request.url.path == '/crm' else '' }}"><span>▦</span> CRM Dashboard</a>{% endif %}
+{% if can_access_section(nav_user,"finance") %}      <a href="/dashboard" class="{{ 'active' if request.url.path == '/dashboard' else '' }}"><span>◫</span> Finance Overview</a>{% endif %}
+{% if nav_user and nav_user.role=="ADMIN" %}<a href="/admin/staff" class="{{ 'active' if request.url.path.startswith('/admin/staff') else '' }}"><span>♙</span> Staff &amp; Access</a>{% endif %}
       <p class="nav-label">Customer service</p>
-      <a href="/crm/whatsapp" class="{{ 'active' if request.url.path.startswith('/crm/whatsapp') else '' }}"><span>◉</span> WhatsApp Inbox{% if unread_whatsapp %}<b class="nav-count">{{ unread_whatsapp }}</b>{% endif %}</a>
-      {% if user is defined and user.role in ["ADMIN", "SALES_MANAGER"] %}<a href="/crm/quick-messages" class="{{ 'active' if request.url.path.startswith('/crm/quick-messages') else '' }}"><span>☷</span> Quick Messages</a>{% endif %}
-      <a href="/crm/saved-voices" class="{{ 'active' if request.url.path.startswith('/crm/saved-voices') else '' }}"><span>♫</span> Saved Voices</a>
-      <a href="/crm/leads" class="{{ 'active' if request.url.path.startswith('/crm/leads') else '' }}"><span>◎</span> CRM / Leads</a>
-      <a href="/crm/bot-management" class="{{ 'active' if request.url.path.startswith('/crm/bot-management') else '' }}"><span>✦</span> AI Bot Management</a>
-      <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>
+{% if can_access_section(nav_user,"whatsapp") %}      <a href="/crm/whatsapp" class="{{ 'active' if request.url.path.startswith('/crm/whatsapp') else '' }}"><span>◉</span> WhatsApp Inbox{% if unread_whatsapp %}<b class="nav-count">{{ unread_whatsapp }}</b>{% endif %}</a>{% endif %}
+{% if can_access_section(nav_user,"quick_messages") %}      <a href="/crm/quick-messages" class="{{ 'active' if request.url.path.startswith('/crm/quick-messages') else '' }}"><span>☷</span> Quick Messages</a>{% endif %}
+{% if can_access_section(nav_user,"saved_voices") %}      <a href="/crm/saved-voices" class="{{ 'active' if request.url.path.startswith('/crm/saved-voices') else '' }}"><span>♫</span> Saved Voices</a>{% endif %}
+{% if can_access_section(nav_user,"leads") %}      <a href="/crm/leads" class="{{ 'active' if request.url.path.startswith('/crm/leads') else '' }}"><span>◎</span> CRM / Leads</a>{% endif %}
+{% if can_access_section(nav_user,"bot") %}      <a href="/crm/bot-management" class="{{ 'active' if request.url.path.startswith('/crm/bot-management') else '' }}"><span>✦</span> AI Bot Management</a>{% endif %}
+{% if can_access_section(nav_user,"customers") %}      <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>{% endif %}
       <p class="nav-label">Sales</p>
-      <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>
-      {% if settings.SALES_ORDERS_ENABLED %}<a href="/crm/sales-orders" class="{{ 'active' if request.url.path.startswith('/crm/sales-orders') else '' }}"><span>▣</span> Sales Orders</a>{% endif %}
-      {% if settings.SALES_FULFILLMENT_ENABLED %}<a href="/crm/fulfillments" class="{{ 'active' if request.url.path.startswith('/crm/fulfillments') else '' }}"><span>▰</span> Fulfillments</a>{% endif %}
+{% if can_access_section(nav_user,"intents") %}      <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>{% endif %}
+{% if can_access_section(nav_user,"sales_orders") %}      {% if settings.SALES_ORDERS_ENABLED %}<a href="/crm/sales-orders" class="{{ 'active' if request.url.path.startswith('/crm/sales-orders') else '' }}"><span>▣</span> Sales Orders</a>{% endif %}{% endif %}
+{% if can_access_section(nav_user,"fulfillments") %}      {% if settings.SALES_FULFILLMENT_ENABLED %}<a href="/crm/fulfillments" class="{{ 'active' if request.url.path.startswith('/crm/fulfillments') else '' }}"><span>▰</span> Fulfillments</a>{% endif %}{% endif %}
       <p class="nav-label">Inventory / business</p>
-      <a href="/items" class="{{ 'active' if request.url.path == '/items' else '' }}"><span>□</span> Items</a>
-      <a href="/suppliers" class="{{ 'active' if request.url.path == '/suppliers' else '' }}"><span>♢</span> Suppliers</a>
+{% if can_access_section(nav_user,"items") %}      <a href="/items" class="{{ 'active' if request.url.path == '/items' else '' }}"><span>□</span> Items</a>{% endif %}
+{% if can_access_section(nav_user,"suppliers") %}      <a href="/suppliers" class="{{ 'active' if request.url.path == '/suppliers' else '' }}"><span>♢</span> Suppliers</a>{% endif %}
       <p class="nav-label">Accounting</p>
-      <a href="/entries" class="{{ 'active' if request.url.path == '/entries' else '' }}"><span>≡</span> Journal</a>
-      <a href="/accounts" class="{{ 'active' if request.url.path == '/accounts' else '' }}"><span>⌘</span> Chart of Accounts</a>
-      <a href="/reports/trial-balance" class="{{ 'active' if 'trial-balance' in request.url.path else '' }}"><span>⊜</span> Trial Balance</a>
-      <a href="/reports/income-statement" class="{{ 'active' if 'income-statement' in request.url.path else '' }}"><span>↗</span> Income Statement</a>
-      <a href="/reports/balance-sheet" class="{{ 'active' if 'balance-sheet' in request.url.path else '' }}"><span>▤</span> Balance Sheet</a>
+{% if can_access_section(nav_user,"journal") %}      <a href="/entries" class="{{ 'active' if request.url.path == '/entries' else '' }}"><span>≡</span> Journal</a>{% endif %}
+{% if can_access_section(nav_user,"accounts") %}      <a href="/accounts" class="{{ 'active' if request.url.path == '/accounts' else '' }}"><span>⌘</span> Chart of Accounts</a>{% endif %}
+{% if can_access_section(nav_user,"trial_balance") %}      <a href="/reports/trial-balance" class="{{ 'active' if 'trial-balance' in request.url.path else '' }}"><span>⊜</span> Trial Balance</a>{% endif %}
+{% if can_access_section(nav_user,"income_statement") %}      <a href="/reports/income-statement" class="{{ 'active' if 'income-statement' in request.url.path else '' }}"><span>↗</span> Income Statement</a>{% endif %}
+{% if can_access_section(nav_user,"balance_sheet") %}      <a href="/reports/balance-sheet" class="{{ 'active' if 'balance-sheet' in request.url.path else '' }}"><span>▤</span> Balance Sheet</a>{% endif %}
     </nav>
     <div class="sidebar-user"><span class="avatar">{{ (request.session.get('user', {}).get('username', 'S'))[:1]|upper }}</span><span><strong>{{ request.session.get('user', {}).get('username', 'Staff') }}</strong><small>Staff account</small></span><a href="/logout" title="Log out">↪</a></div>
   </aside>

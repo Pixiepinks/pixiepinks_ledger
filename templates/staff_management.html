@@ -1,0 +1,29 @@
+{% extends "base.html" %}{% block content %}
+<div class="staff-management">
+<section class="card"><h2>Staff &amp; Access</h2>
+<p>Create staff accounts and tick the sections each person can use. Unticked sections are blocked, including direct links and APIs. Administrators retain full access.</p>
+<p>Saving changes signs that staff member out. Existing admin-only approvals and Global AI controls stay admin-only.</p>
+{% if error %}<p role="alert" style="color:#b00020">{{ error }}</p>{% endif %}
+<h3>Create staff account</h3><form method="post" action="/admin/staff">
+<input type="hidden" name="csrf_token" value="{{ csrf }}">
+<div class="staff-credentials"><label>Username <input name="username" required minlength="3" maxlength="100" autocomplete="off"></label>
+<label>Initial password <input name="new_password" type="password" required minlength="12" autocomplete="new-password"></label></div>
+<fieldset><legend>Allowed sections</legend><div class="staff-access-grid">
+{% for key,label,path in sections %}<label><input type="checkbox" name="sections" value="{{ key }}"> {{ label }}</label>{% endfor %}
+</div></fieldset><button type="submit" class="btn btn-primary">Create staff account</button></form></section>
+<section class="card"><h2>Accounts</h2>
+{% for member in staff %}<article class="staff-account" data-staff-id="{{ member.id }}"><details {% if loop.first %}open{% endif %}><summary><h3>{{ member.username }} · {{ member.role }} · {{ 'Active' if member.is_active else 'Inactive' }}</h3></summary>
+{% if member.role=='ADMIN' %}<p>Administrator — full access. Protected from changes here.</p>{% else %}
+<form method="post" action="/admin/staff/{{ member.id }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
+<input type="hidden" name="expected_version" value="{{ member.session_version }}">
+<label class="staff-active-label"><input type="checkbox" name="active" value="true" {% if member.is_active %}checked{% endif %}> Account active</label>
+{% if member.section_access is none %}<p>Existing role-based account. Saving will replace its legacy access with the checked sections.</p>{% endif %}
+<fieldset><legend>Allowed sections for {{ member.username }}</legend><div class="staff-access-grid">
+{% for key,label,path in sections %}<label><input type="checkbox" name="sections" value="{{ key }}" {% if member.section_access is none or key in member.section_access %}checked{% endif %}> {{ label }}</label>{% endfor %}
+</div></fieldset><label>Reset password (optional) <input type="password" name="new_password" minlength="12" autocomplete="new-password"></label>
+<button type="submit" class="btn btn-primary">Save access for {{ member.username }}</button></form>{% endif %}</details></article>{% endfor %}</section>
+<section class="card"><h2>Recent access changes</h2><div class="staff-audit-table"><table><thead><tr><th>Time (Sri Lanka)</th><th>Administrator</th><th>Account</th><th>Action</th><th>Changes</th></tr></thead><tbody>
+{% for entry in audit %}<tr><td>{{ local_time(entry.created_at) }}</td><td>{{ account_names.get(entry.actor_id,entry.actor_id) }}</td><td>{{ account_names.get(entry.target_id,entry.target_id) }}</td><td>{{ entry.action }}</td><td>{{ entry.changes }}</td></tr>{% endfor %}
+</tbody></table></div></section>
+</div>
+{% endblock %}

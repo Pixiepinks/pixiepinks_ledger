@@ -16,6 +16,7 @@ from audio_service import (MAX_AUDIO_BYTES, NORMALIZATION_VERSION, normalize_voi
 from learning_routes import read_body
 from models import SavedVoice
 from quick_message_service import authorize, MANAGER_ROLES
+from staff_access import manager_grant
 from saved_voice_service import Edit, Send, metadata, public, read_audio, write_audio, storage_path, send, scoped_attempt, status, prepare
 
 UPLOAD_SLOTS = threading.BoundedSemaphore(2)
@@ -50,7 +51,7 @@ def build_router(get_db, require_user, require_csrf, csrf, templates, get_conver
     def page(request: Request, user=Depends(require_user)):
         authorize(user)
         return templates.TemplateResponse("saved_voices.html", {"request": request, "user": user,
-            "page_title": "Saved Voices", "can_manage": user.role in MANAGER_ROLES, "csrf_token": csrf(request)}, headers=HEADERS)
+            "page_title": "Saved Voices", "can_manage": user.role in MANAGER_ROLES or manager_grant(user), "csrf_token": csrf(request)}, headers=HEADERS)
 
     @router.get("/crm/saved-voices/api")
     def listing(request: Request, q: str = Query("", max_length=100), category: str = Query("", max_length=80),
@@ -67,7 +68,7 @@ def build_router(get_db, require_user, require_csrf, csrf, templates, get_conver
         categories = db.query(SavedVoice.category).filter(SavedVoice.active.is_(True)).distinct().order_by(SavedVoice.category).limit(100)
         return JSONResponse({"voices": [public(row) for row in rows], "total": total, "offset": offset,
             "limit": 50, "categories": [value for value, in categories], "csrf_token": csrf(request),
-            "staff_id": user.id, "can_manage": user.role in MANAGER_ROLES}, headers=HEADERS)
+            "staff_id": user.id, "can_manage": user.role in MANAGER_ROLES or manager_grant(user)}, headers=HEADERS)
 
     @router.get("/crm/saved-voices/api/{voice_id}/audio")
     def preview(voice_id: int, request: Request, db=Depends(get_db), user=Depends(require_user)):
