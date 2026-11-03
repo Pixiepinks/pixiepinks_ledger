@@ -1,21 +1,25 @@
 # Conversation owners and private staff inboxes
 
-Administrators have **Mine**, **Unassigned** and **All** ownership views, separate
+Administrators have **Mine**, **Shared with me**, **Unassigned** and **All** ownership views, separate
 from the existing unread/AI/human/payment status filters. Open a chat, choose an
 active account in Owner, and click Save owner. Choose Unassigned to clear it.
 Admins can assign chats to themselves. Eligible owners need WhatsApp Inbox access.
 Deactivated accounts or accounts without Inbox access cannot receive new chats;
 their existing ownership is retained until an admin deliberately reassigns it.
 
-Every non-ADMIN account (including existing managers/agents) sees only conversations
-whose assigned_to_user_id is their user ID. Staff have Mine only, cannot fetch
+Every non-ADMIN account (including existing managers/agents) sees only assigned
+conversations or chats explicitly shared by an admin. Staff have Mine and Shared
+with me, cannot fetch
 All/Unassigned, cannot enumerate assignees, and cannot claim/reassign conversations.
 The database scopes list/search/results/unread counts and the WhatsApp lead list,
 and the central authenticated dependency checks conversation-specific paths before
 reading or mutating anything. Direct details, reply-jump context, referrals,
 attachments, voice playback, sends, status receipts, read/mode changes and linked
-WhatsApp lead endpoints reject unowned or unassigned chats with a non-disclosing
+WhatsApp lead endpoints reject chats with neither ownership nor an explicit share with a non-disclosing
 404. These checks also cover legacy accounts with NULL section grants.
+
+See [private notes and explicit sharing](inbox-collaboration.md) for read-only
+versus reply grants, revocation and the latest deployment migration.
 
 The existing section permission is still required: ownership does not grant Inbox,
 Leads, Saved Voices or other module access. CRM Dashboard WhatsApp summaries are
