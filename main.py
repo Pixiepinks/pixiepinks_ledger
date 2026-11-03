@@ -1708,7 +1708,7 @@ def require_user(request: Request, db: Session = Depends(get_db)) -> User:
         user = db.get(User, uid)
         if user and user.is_active and request.session.get('auth_version',0)==(user.session_version or 0):
             staff_access.enforce(user,request.url.path)
-            conversation_access.enforce_path(db,user,request.url.path,request.query_params)
+            conversation_access.enforce_path(db,user,request.url.path,request.query_params,request.method)
             request.state.current_user=user
             return user
         request.session.clear()
@@ -2132,6 +2132,7 @@ def _conversation_payload(db: Session, conversation: WhatsAppConversation,
         "id": conversation.id,
         'owner':conversation_access.owner_data(db,conversation,owner_users),
         'assignment_version':conversation.assignment_version,
+        **(conversation_access.permissions(db,db.info['inbox_user'],conversation) if db.info.get('inbox_user') else {}),
         "phone_number": conversation.phone_number,
         "customer_name": conversation.customer_name or "WhatsApp customer",
         "mode": conversation.mode,
@@ -2167,9 +2168,12 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
     response.headers["Cache-Control"] = "private, no-store"
     query = conversation_access.scope(db.query(WhatsAppConversation),user)
     mailbox=mailbox or ('all' if user.role=='ADMIN' else 'mine')
-    if mailbox not in {'mine','unassigned','all'}:raise HTTPException(422,'Choose Mine, Unassigned or All')
-    if user.role!='ADMIN' and mailbox!='mine':raise HTTPException(403,'Staff can only access their assigned inbox')
+    if mailbox not in {'mine','shared','unassigned','all'}:raise HTTPException(422,'Choose Mine, Shared with me, Unassigned or All')
+    if user.role!='ADMIN' and mailbox not in {'mine','shared'}:raise HTTPException(403,'Staff can only access their assigned or explicitly shared inbox')
     if mailbox=='mine':query=query.filter(WhatsAppConversation.assigned_to_user_id==user.id)
+    elif mailbox=='shared':
+        from models import ConversationShare
+        query=query.filter(ConversationShare.__table__.select().with_only_columns(ConversationShare.id).where(conversation_access.shared(user)).exists(),or_(WhatsAppConversation.assigned_to_user_id.is_(None),WhatsAppConversation.assigned_to_user_id!=user.id))
     elif mailbox=='unassigned':query=query.filter(WhatsAppConversation.assigned_to_user_id.is_(None))
     term = search.strip()
     if term:
@@ -2214,7 +2218,7 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
 
 
 def _get_conversation(db: Session, conversation_id: int) -> WhatsAppConversation:
-    if db.info.get('inbox_user') is not None:return conversation_access.require_owned(db,db.info['inbox_user'],conversation_id)
+    if db.info.get('inbox_user') is not None:return conversation_access.require_visible(db,db.info['inbox_user'],conversation_id)
     conversation = db.get(WhatsAppConversation, conversation_id)
     if conversation is None:
         raise HTTPException(status_code=404, detail="Conversation not found")
@@ -2491,8 +2495,9 @@ def whatsapp_message_media(conversation_id: int, message_id: int, request: Reque
 def whatsapp_mark_read(conversation_id: int, db: Session = Depends(get_db),
                        user: User = Depends(require_user)):
     conversation = _get_conversation(db, conversation_id)
-    conversation.unread_count = 0
-    db.commit()
+    if user.role=='ADMIN' or conversation.assigned_to_user_id==user.id:
+        conversation.unread_count = 0
+        db.commit()
     return {"ok": True}
 
 
@@ -4463,3 +4468,6 @@ app.include_router(build_staff_router(get_db,require_user,_csrf_token,templates)
 
 from conversation_assignment_routes import build_router as build_assignment_router
 app.include_router(build_assignment_router(get_db,require_user,_require_csrf))
+
+from conversation_collaboration_routes import build_router as build_collaboration_router
+app.include_router(build_collaboration_router(get_db,require_user,_require_csrf))

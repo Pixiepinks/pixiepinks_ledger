@@ -903,3 +903,45 @@ class VoicePlaybackVariant(Base):
     delivery_status = Column(String(24))
     delivery_error_code = Column(Integer)
     __table_args__ = (UniqueConstraint("run_id", "variant", name="uq_voice_playback_variant"),)
+
+
+class ConversationShare(Base):
+    __tablename__='conversation_shares'
+    __table_args__=(UniqueConstraint('conversation_id','user_id',name='uq_conversation_share_user'),)
+    id=Column(Integer,primary_key=True)
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id'),nullable=False,index=True)
+    user_id=Column(Integer,ForeignKey('users.id'),nullable=False,index=True)
+    can_reply=Column(Boolean,nullable=False,default=False)
+    granted_by=Column(Integer,ForeignKey('users.id'),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class ConversationShareAudit(Base):
+    __tablename__='conversation_share_audits'
+    id=Column(Integer,primary_key=True)
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id'),nullable=False,index=True)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    user_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    action=Column(String(20),nullable=False)
+    can_reply=Column(Boolean,nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class ConversationNote(Base):
+    __tablename__='conversation_notes'
+    __table_args__=(UniqueConstraint('conversation_id','author_id','client_key',name='uq_conversation_note_key'),)
+    id=Column(Integer,primary_key=True)
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id'),nullable=False,index=True)
+    author_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    client_key=Column(String(80),nullable=False)
+    body=Column(Text,nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class ConversationMention(Base):
+    __tablename__='conversation_mentions'
+    __table_args__=(UniqueConstraint('note_id','user_id',name='uq_conversation_mention_user'),)
+    id=Column(Integer,primary_key=True)
+    note_id=Column(Integer,ForeignKey('conversation_notes.id'),nullable=False,index=True)
+    user_id=Column(Integer,ForeignKey('users.id'),nullable=False,index=True)
+    read_at=Column(DateTime)
