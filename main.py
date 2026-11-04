@@ -2152,6 +2152,7 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
         "request": request, "initial_conversation_id": conversation, "unread_whatsapp": unread,
         "page_title": "WhatsApp Inbox", "user": user, "edit_order_id": edit_order,
         'assignment_csrf':_csrf_token(request),
+        'inbox_filter_statuses':[(value,LEAD_STATUS_LABELS.get(value,value.replace('_',' '))) for value in LEAD_STATUSES],
         "global_ai": global_ai_control.display_state(db),
         "sales_orders_enabled": settings.SALES_ORDERS_ENABLED,
         "can_create_sales_order": settings.SALES_ORDERS_ENABLED and
@@ -2164,17 +2165,35 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
 @app.get("/crm/whatsapp/api/conversations")
 def whatsapp_conversations(response: Response, search: str = "", filter: str = "all", limit: int = 50,
                            mailbox: str | None = None, reply_queue: str = "all", offset: int = Query(0,ge=0),
+                           unread: bool = False, mode: str | None = None, payment_required: bool = False,
+                           owner_id: int | None = Query(None,ge=1), lead_status: str | None = None,
                            db: Session = Depends(get_db), user: User = Depends(require_user)):
     response.headers["Cache-Control"] = "private, no-store"
     query = conversation_access.scope(db.query(WhatsAppConversation),user)
     mailbox=mailbox or ('all' if user.role=='ADMIN' else 'mine')
-    if mailbox not in {'mine','shared','unassigned','all'}:raise HTTPException(422,'Choose Mine, Shared with me, Unassigned or All')
-    if user.role!='ADMIN' and mailbox not in {'mine','shared'}:raise HTTPException(403,'Staff can only access their assigned or explicitly shared inbox')
+    if mailbox not in {'mine','shared','unassigned','all','accessible'}:raise HTTPException(422,'Choose Mine, Shared with me, Unassigned or All')
+    if user.role!='ADMIN' and mailbox not in {'mine','shared','accessible'}:raise HTTPException(403,'Staff can only access their assigned or explicitly shared inbox')
     if mailbox=='mine':query=query.filter(WhatsAppConversation.assigned_to_user_id==user.id)
     elif mailbox=='shared':
         from models import ConversationShare
         query=query.filter(ConversationShare.__table__.select().with_only_columns(ConversationShare.id).where(conversation_access.shared(user)).exists(),or_(WhatsAppConversation.assigned_to_user_id.is_(None),WhatsAppConversation.assigned_to_user_id!=user.id))
     elif mailbox=='unassigned':query=query.filter(WhatsAppConversation.assigned_to_user_id.is_(None))
+    if owner_id is not None:
+        if user.role!='ADMIN':raise HTTPException(403,'Only administrators can filter by assigned staff')
+        target=db.get(User,owner_id)
+        if not target or not target.is_active or target.role not in {'ADMIN','STAFF','SALES_AGENT','SALES_MANAGER'} or not staff_access.allowed(target,'whatsapp'):
+            raise HTTPException(422,'Choose an active account with WhatsApp Inbox access')
+        query=query.filter(WhatsAppConversation.assigned_to_user_id==owner_id)
+    if lead_status is not None:
+        if lead_status=='UNORGANIZED':
+            query=query.filter(~db.query(Lead.id).filter(Lead.whatsapp_conversation_id==WhatsAppConversation.id).exists())
+        elif lead_status in LEAD_STATUSES:
+            query=query.filter(db.query(Lead.id).filter(Lead.whatsapp_conversation_id==WhatsAppConversation.id,Lead.status==lead_status).exists())
+        else:raise HTTPException(422,'Choose an existing lead status or Unorganized')
+    if mode is not None:
+        if mode not in {'AI','HUMAN'}:raise HTTPException(422,'Choose AI or HUMAN mode')
+        query=query.filter(WhatsAppConversation.mode==mode)
+    if unread:query=query.filter(WhatsAppConversation.unread_count>0)
     term = search.strip()
     if term:
         name_match = WhatsAppConversation.customer_name.ilike(f"%{term}%")
@@ -2182,6 +2201,7 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
         query = query.filter(or_(name_match, WhatsAppConversation.phone_number.ilike(f"%{phone_term}%"))
                              if phone_term else name_match)
     payment_phones = _payment_required_phones(db)
+    if payment_required:query=query.filter(WhatsAppConversation.phone_number.in_(payment_phones or {"__none__"}))
     value = filter.casefold()
     if value == "unread":
         query = query.filter(WhatsAppConversation.unread_count > 0)

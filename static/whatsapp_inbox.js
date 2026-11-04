@@ -6,7 +6,7 @@
   let textSending = false, textSendAttempt = null;
   const isAdmin = root.dataset.admin === "true";
   let mailbox = isAdmin ? "all" : "mine", assignees = [], assignmentDirty = false, assignmentExpected = 0;
-  let replyQueue = "all";
+  let replyQueue = "all", inboxFilters=null;
   let replyHistory = new Map(), replyJump = 0;
   let conversationController, conversationLoading = false, conversationMarkRead = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null, listGeneration = 0;
   const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
@@ -67,7 +67,8 @@
   }
   async function loadList(force = false, append = false) {
     const search=document.getElementById('search').value;
-    const query=`filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}&reply_queue=${replyQueue}`;
+    let query=`filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}&reply_queue=${replyQueue}${inboxFilters ? `&unread=${inboxFilters.unread}&mode=${encodeURIComponent(inboxFilters.mode || "")}&payment_required=${inboxFilters.payment}&owner_id=${encodeURIComponent(inboxFilters.ownerId || "")}&lead_status=${encodeURIComponent(inboxFilters.leadStatus || "")}` : ""}`;
+    const params=new URLSearchParams(query);['mode','owner_id','lead_status'].forEach(key=>{if(!params.get(key))params.delete(key);});query=params.toString();
     const changed=query!==chatQuery;
     if ((listLoading && !force && !changed) || document.hidden || (append && (!chatHasMore || changed))) return;
     const generation=++listGeneration;listLoading=true;
@@ -405,7 +406,7 @@
   document.addEventListener("keydown", event => { if (event.key === "Escape" && !catalogModal.hidden) closeCatalog(); });
 
   document.getElementById("search").addEventListener("input", () => { clearTimeout(window._searchTimer); window._searchTimer = setTimeout(loadList, 250); });
-  document.querySelectorAll("#filters button").forEach(button => { if (button.dataset.filter === filter) { document.querySelectorAll("#filters button").forEach(item => item.classList.remove("selected")); button.classList.add("selected"); } button.onclick = () => { filter = button.dataset.filter; document.querySelectorAll("#filters button").forEach(item => item.classList.toggle("selected", item === button)); loadList(); }; });
+
   document.getElementById("mode-action").onclick = async event => { if (!selected) return; event.currentTarget.disabled = true; try { await api(`/crm/whatsapp/api/conversations/${selected}/${event.currentTarget.dataset.mode === "AI" ? "takeover" : "return-to-ai"}`, {method: "POST"}); await openConversation(selected); } finally { event.currentTarget.disabled = false; } };
   document.getElementById("composer").onsubmit = async event => {
     event.preventDefault(); if (textSending) return;
@@ -496,7 +497,7 @@
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadList(); if (selected) openConversation(selected, false); } });
   root.addEventListener("saved-voice-sent", () => { if (selected) openConversation(selected, false); loadList(true); });
-  document.querySelectorAll("[data-mailbox]").forEach(button => button.onclick = () => { mailbox=button.dataset.mailbox; document.querySelectorAll("[data-mailbox]").forEach(item => item.classList.toggle("selected",item===button)); loadList(true); });
+
   if (isAdmin) {
     api("/crm/whatsapp/api/assignees").then(data => { assignees=data.assignees; if(currentConversationData) renderOwner(currentConversationData.conversation); }).catch(() => showComposerMessage("Could not load staff accounts for assignment.",true));
     const select=document.getElementById("assignment-owner"), form=document.getElementById("assignment-form"), feedback=document.getElementById("assignment-feedback");
@@ -511,10 +512,7 @@
       finally { button.disabled=false; select.disabled=false; }
     };
   }
-  document.querySelectorAll("[data-reply-queue]").forEach(button => button.onclick = () => {
-    replyQueue = button.dataset.replyQueue;
-    document.querySelectorAll("[data-reply-queue]").forEach(item => item.classList.toggle("selected",item === button));
-    loadList(true);
-  });
+  function applyInboxFilters(state,refresh=true){inboxFilters=state;mailbox=state.mailbox;replyQueue=state.replyQueue;filter='all';if(refresh)loadList(true);}
+  applyInboxFilters(window.createInboxFilters(root,state=>applyInboxFilters(state)),false);
   loadList(); if (selected) openConversation(selected, true); setInterval(loadList, 7000); setInterval(() => { if (selected && !document.hidden) openConversation(selected, false); }, 4000);
 })();
