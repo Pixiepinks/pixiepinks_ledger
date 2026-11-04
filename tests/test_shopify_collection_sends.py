@@ -382,7 +382,7 @@ def test_chromium_mobile_preview_stop_resume_and_edit_selection_without_auto_sen
                 route.fulfill(status=result.status_code, body=result.content, headers={key: value for key, value in result.headers.items() if key not in {"set-cookie", "content-length", "content-encoding"}})
             page.route("**/*", serve); page.goto("https://inbox.test/crm/whatsapp")
             page.locator(f'.conversation-row[data-conversation-id="{ids[0]}"]').click()
-            page.locator("#catalog-button").click(); page.locator("#collection-open").click()
+            page.locator("#mobile-chat-plus").click(); page.locator("#catalog-button").click(); page.locator("#collection-open").click()
             page.locator("#collection-select option").wait_for(state="attached")
             page.locator("#collection-preview").click(); page.locator(".collection-card").first.wait_for()
             assert len(catalog[2]) == 0 and page.locator(".collection-card").count() == 3
@@ -396,7 +396,7 @@ def test_chromium_mobile_preview_stop_resume_and_edit_selection_without_auto_sen
             page.locator("#collection-send").click()
             page.locator("#collection-status").filter(has_text="2/2 sent").wait_for()
             assert len(catalog[2]) == 2
-            page.locator("#collection-close").click(); page.locator("#catalog-button").click(); page.locator("#collection-open").click()
+            page.locator("#collection-close").click(); page.locator("#mobile-chat-plus").click(); page.locator("#catalog-button").click(); page.locator("#collection-open").click()
             page.locator("#collection-status").filter(has_text="2/2 sent").wait_for()
             assert page.locator("#collection-send").is_disabled() and len(catalog[2]) == 2 and not errors
             # A lost retry-reset response must retain its action key, including

@@ -193,6 +193,7 @@ def test_sharing_browser_notes_and_revoke(assignments):
             api.expect(page.locator('#collaboration-panel')).not_to_be_visible()
             api.expect(page.locator('#team-notes-open')).to_be_focused()
             page.set_viewport_size({'width':390,'height':760})
+            page.locator('#mobile-chat-menu').click()
             page.locator('#team-notes-open').click()
             api.expect(page.locator('#collaboration-panel')).to_be_visible()
             assert page.locator('#collaboration-panel').bounding_box()['width']<=390
