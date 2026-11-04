@@ -50,6 +50,8 @@ def test_compact_header_scrolls_beyond_first_page_and_refresh_keeps_loaded_chats
             api.expect(page.locator('.topbar h1')).to_have_text('WhatsApp')
             assert page.locator('.topbar small').count()==0 and page.locator('#list-status').count()==0
             assert page.locator('.conversation-panel>.panel-head').count()==0
+            assert page.locator('#mention-notifications').count()==0
+            assert page.locator('.conversation-panel').evaluate("el=>el.firstElementChild.classList.contains('inbox-search')")
             api.expect(page.locator('.conversation-row')).to_have_count(50)
             for total in [100,122]:
                 page.locator('#conversation-list').evaluate('el=>el.scrollTop=el.scrollHeight')
