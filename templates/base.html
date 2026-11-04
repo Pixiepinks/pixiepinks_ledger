@@ -6,7 +6,7 @@
   <title>{{ page_title or request.app.title }}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <link rel="stylesheet" href="/static/crm.css?v=inbox-ai-dot-1">
+  <link rel="stylesheet" href="/static/crm.css?v=compact-whatsapp-1">
 </head>
 <body class="app-body{{ ' whatsapp-page' if request.url.path.startswith('/crm/whatsapp') else '' }}">
 {% if request.url.path != '/login' %}
@@ -44,7 +44,7 @@
     <div class="sidebar-user"><span class="avatar">{{ (request.session.get('user', {}).get('username', 'S'))[:1]|upper }}</span><span><strong>{{ request.session.get('user', {}).get('username', 'Staff') }}</strong><small>Staff account</small></span><a href="/logout" title="Log out">↪</a></div>
   </aside>
   <div class="app-shell">
-    <header class="topbar"><div><small>PixiePinks Workspace</small><h1>{{ page_title or 'Business Operations' }}</h1></div>{% if global_ai is defined and request.url.path.startswith('/crm/whatsapp') %}{% with compact=true %}{% include '_global_ai_status.html' %}{% endwith %}{% else %}<div class="topbar-status"><span class="status-dot"></span> System online</div>{% endif %}</header>
+    <header class="topbar"><div>{% if request.url.path != "/crm/whatsapp" %}<small>PixiePinks Workspace</small>{% endif %}<h1>{{ "WhatsApp" if request.url.path == "/crm/whatsapp" else page_title or "Business Operations" }}</h1></div>{% if global_ai is defined and request.url.path.startswith('/crm/whatsapp') %}{% with compact=true %}{% include '_global_ai_status.html' %}{% endwith %}{% else %}<div class="topbar-status"><span class="status-dot"></span> System online</div>{% endif %}</header>
     <main class="main-content">
 {% else %}
   <main>
