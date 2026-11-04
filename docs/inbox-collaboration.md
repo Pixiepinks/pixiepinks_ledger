@@ -27,11 +27,11 @@ sent to Meta, used as customer-visible messages or included in AI conversation
 history. Notes are immutable, author/time stamped and limited to 4000 characters.
 Up to 10 staff with current conversation access can be selected for a mention.
 Typing @name as plain text does not create a notification or grant access.
-Selecting a mention creates an internal Inbox notification only; no email,
-WhatsApp message or external staff notification is sent. Notification links mark
-the mention read and open the conversation. Revoked users cannot fetch notes or
+Selected mentions remain attached to private notes. The Inbox Mentions row and
+its background notification polling have been removed to give chats more space.
+No email, WhatsApp message or external staff notification is sent. Revoked users cannot fetch notes or
 notifications for that chat. The UI normally clears revoked open chats on the
-next four-second history poll, and notifications refresh every 15 seconds.
+next four-second history poll, with no Mentions strip taking up list space.
 
 Notes, mentions and sharing do not update lead stages, customer unread state,
 message timestamps or automatic reply queue timers. A private note does not

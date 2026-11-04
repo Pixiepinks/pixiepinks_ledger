@@ -106,15 +106,4 @@
     queueMicrotask(()=>{if(cid===e.detail.id)rights(e.detail.conversation);});
     load();
   });
-  async function notifications() {
-    try{
-      const data=await api('/mentions');byId('mention-count').textContent=data.unread;
-      byId('mention-items').replaceChildren(...data.mentions.map(m=>{
-        const link=el('a',`${m.author} mentioned you · ${m.customer_name}: ${m.preview}`);link.href=`/crm/whatsapp?conversation=${m.conversation_id}`;
-        link.onclick=async e=>{e.preventDefault();try{await api(`/mentions/${m.id}/read`,{});location.assign(link.href);}catch(err){say(err.message);}};
-        return link;
-      }));
-    }catch(_){}
-  }
-  notifications();setInterval(()=>{if(!document.hidden)notifications();},15000);
 })();
