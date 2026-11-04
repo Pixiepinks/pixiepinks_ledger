@@ -48,7 +48,7 @@
       wait.title = `Needs our reply · since ${inboxTime(c.waiting_since)}`; meta.append(wait);
     } else if (c.reply_queue === "waiting_customer") meta.append(badge("Waiting for customer"));
     if (c.unread_count) { const unread = document.createElement("span"); unread.className = "unread"; text(unread, c.unread_count); meta.append(unread); }
-    button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true); return button;
+    button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true, true); return button;
   }
   let chatRows=[], chatHasMore=false, chatQuery="";
   const pageSize=50;
@@ -307,11 +307,13 @@
     if (wasNearBottom) messages.scrollTop = messages.scrollHeight;
     else if (anchorId) { const retained = messages.querySelector(`[data-message-id="${CSS.escape(anchorId)}"]`); if (retained) messages.scrollTop += retained.getBoundingClientRect().top - containerTop - anchorOffset; }
   }
-  async function openConversation(id, markRead = false) {
+  async function openConversation(id, markRead = false, navigate = false) {
+    // Polling and send completions refresh data; only an explicit selection opens the pane.
+    if (!navigate && selected !== id) return;
     if (selected !== id && (window.inboxMediaBusy || textSending)) return;
     const switching = selected !== id; selected = id;
     root.dataset.activeConversation = String(id);
-    if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
+    if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); if (navigate) root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
     if (switching) { conversationGeneration += 1; replyJump++; replyHistory.clear(); assignmentDirty = false; currentConversationData=null; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); const feedback=document.getElementById("assignment-feedback"); if(feedback) { feedback.textContent=""; document.getElementById("assignment-owner").disabled=true; document.getElementById("assignment-save").disabled=true; } }
     if (conversationLoading) return;
     const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true; conversationMarkRead = markRead;
@@ -514,5 +516,5 @@
   }
   function applyInboxFilters(state,refresh=true){inboxFilters=state;mailbox=state.mailbox;replyQueue=state.replyQueue;filter='all';if(refresh)loadList(true);}
   applyInboxFilters(window.createInboxFilters(root,state=>applyInboxFilters(state)),false);
-  loadList(); if (selected) openConversation(selected, true); setInterval(loadList, 7000); setInterval(() => { if (selected && !document.hidden) openConversation(selected, false); }, 4000);
+  loadList(); if (selected) openConversation(selected, true, true); setInterval(loadList, 7000); setInterval(() => { if (selected && !document.hidden) openConversation(selected, false); }, 4000);
 })();
