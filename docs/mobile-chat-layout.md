@@ -46,3 +46,12 @@ editing, voice staging, Saved Voices, attachments, customer details, filters and
 collection sends; 5 optional integration checks were skipped. Existing mobile
 browser tests now open the management/action menus before using moved controls.
 No live customer messages or production setting changes were performed.
+
+## Back-navigation refresh fix
+
+Background history polling, visibility refreshes and send-completion refreshes
+update data without reopening the mobile pane. Only explicitly selecting a row or
+opening an initial conversation link navigates into a chat. Back therefore remains
+on the list even when a request completes late; explicitly reopening the same chat
+continues to work. The navigation regression runs a real four-second poll, a late
+response, visibility refresh and a send-completion event after Back.
