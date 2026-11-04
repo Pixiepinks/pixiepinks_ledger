@@ -67,7 +67,7 @@ def test_on_off_on_preserves_modes_learning_and_configuration(crm):
     assert receive(client, "on-first").status_code == 200 and len(sends) == 1
     assert toggle(client, csrf, False).status_code == 303
     assert receive(client, "off-message").status_code == 200 and len(sends) == 1
-    assert "AI OFFLINE — HUMAN STAFF ONLY" in client.get("/crm/whatsapp").text
+    assert 'aria-label="Global AI auto replies off"' in client.get("/crm/whatsapp").text
     assert "AI OFFLINE — HUMAN STAFF ONLY" in client.get("/crm/bot-management").text
     assert toggle(client, csrf, True, generation=1).status_code == 303
     # An OFF-period receipt cannot be retried once ON.
@@ -456,13 +456,13 @@ def test_chromium_confirmation_status_refresh_and_inbox_layout(crm):
             api.expect(page.locator('[data-global-ai-label]')).to_have_text("AI OFFLINE — HUMAN STAFF ONLY")
             assert posts == ["/crm/bot-management/global-ai"]
             page.goto("https://global-ai.test/crm/whatsapp")
-            api.expect(page.locator('header [data-global-ai-label]')).to_have_text("AI OFFLINE — HUMAN STAFF ONLY")
+            api.expect(page.locator('header [data-global-ai-label]')).to_have_text("Global AI auto replies off")
             page.locator('.conversation-row').first.click()
             api.expect(page.locator('#send-button')).to_be_visible()
             box=page.locator('#send-button').bounding_box();assert box["y"]+box["height"] <= 800
             set_state(sessions,True)
             page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
-            api.expect(page.locator('[data-global-ai-label]')).to_have_text("AI ONLINE")
+            api.expect(page.locator('[data-global-ai-label]')).to_have_text("Global AI auto replies on")
             page.set_viewport_size({"width":375,"height":812})
             assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             assert not sends and not errors
