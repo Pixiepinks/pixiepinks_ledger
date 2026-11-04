@@ -50,18 +50,52 @@
     if (c.unread_count) { const unread = document.createElement("span"); unread.className = "unread"; text(unread, c.unread_count); meta.append(unread); }
     button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true); return button;
   }
-  async function loadList(force = false) {
-    if ((listLoading && !force) || document.hidden) return;
-    const generation = ++listGeneration; listLoading = true;
-    try {
-      const search = document.getElementById("search").value;
-      const data = await api(`/crm/whatsapp/api/conversations?filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}&reply_queue=${replyQueue}`);
-      if (generation !== listGeneration) return;
-      list.replaceChildren(...data.conversations.map(conversationRow)); text(document.getElementById("list-status"), `${data.conversations.length} shown`);
-      if (!data.conversations.length) { const empty = document.createElement("div"); empty.className = "empty"; text(empty, search ? "No search results." : "No WhatsApp conversations."); list.replaceChildren(empty); }
-    } catch (_) { if (generation === listGeneration) list.innerHTML = '<div class="empty">Could not load conversations.</div>'; }
-    finally { if (generation === listGeneration) listLoading = false; }
+  let chatRows=[], chatHasMore=false, chatQuery="";
+  const pageSize=50;
+  function renderChatList(search) {
+    const top=list.scrollTop, anchor=[...list.querySelectorAll('.conversation-row')].find(row=>row.offsetTop>=top);
+    const anchorId=anchor?.dataset.conversationId, anchorOffset=anchor ? anchor.getBoundingClientRect().top : 0;
+    list.replaceChildren(...chatRows.map(conversationRow));
+    if (!chatRows.length) {const empty=document.createElement('div');empty.className='empty';text(empty,search?'No search results.':'No WhatsApp conversations.');list.append(empty);}
+    if(chatHasMore) {
+      const more=document.createElement('button');more.type='button';more.className='chat-load-more';text(more,'Load more chats');
+      more.onclick=()=>loadList(false,true);list.append(more);
+    }
+    list.scrollTop=top;
+    const retained=anchorId && list.querySelector(`[data-conversation-id="${CSS.escape(anchorId)}"]`);
+    if(retained)list.scrollTop+=retained.getBoundingClientRect().top-anchorOffset;
   }
+  async function loadList(force = false, append = false) {
+    const search=document.getElementById('search').value;
+    const query=`filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}&reply_queue=${replyQueue}`;
+    const changed=query!==chatQuery;
+    if ((listLoading && !force && !changed) || document.hidden || (append && (!chatHasMore || changed))) return;
+    const generation=++listGeneration;listLoading=true;
+    const target=changed ? pageSize : Math.max(pageSize,chatRows.length);
+    if(changed){chatQuery=query;chatRows=[];chatHasMore=false;list.scrollTop=0;}
+    const more=list.querySelector('.chat-load-more');if(more){more.disabled=true;text(more,'Loading chats…');}
+    try {
+      // Refresh the loaded range, rather than collapsing back to the first 50.
+      let offset=append ? chatRows.length : 0, collected=append ? [...chatRows] : [], hasMore=false;
+      do {
+        const count=append ? pageSize : Math.min(100,target-offset);
+        const data=await api(`/crm/whatsapp/api/conversations?${query}&limit=${count}&offset=${offset}`);
+        if(generation!==listGeneration)return;
+        collected.push(...data.conversations);hasMore=data.has_more===true;
+        offset=data.next_offset;
+      } while(!append && hasMore && offset<target);
+      chatRows=[...new Map(collected.map(row=>[row.id,row])).values()];chatHasMore=hasMore;
+      renderChatList(search);
+    } catch (_) {
+      if(generation===listGeneration){
+        if(chatRows.length){renderChatList(search);const retry=list.querySelector('.chat-load-more');if(retry)text(retry,'Load more chats — retry');}
+        else {const empty=document.createElement('div');empty.className='empty';text(empty,'Could not load conversations.');const retry=document.createElement('button');retry.type='button';text(retry,'Retry');retry.onclick=()=>loadList(true);empty.append(retry);list.replaceChildren(empty);}
+      }
+    } finally {
+      if(generation===listGeneration){listLoading=false;if(chatHasMore && list.scrollHeight<=list.clientHeight+1)setTimeout(()=>loadList(false,true),0);}
+    }
+  }
+  list.addEventListener('scroll',()=>{if(list.scrollHeight-list.scrollTop-list.clientHeight<160)loadList(false,true);},{passive:true});
   function renderOwner(conversation) {
     text(document.getElementById("conversation-owner"), conversation.owner ? `Assigned to ${conversation.owner.username}` : "Unassigned");
     const select = document.getElementById("assignment-owner");

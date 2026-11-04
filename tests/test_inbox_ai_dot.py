@@ -30,7 +30,7 @@ def test_inbox_ai_dot_status_refresh_mobile_layout_and_accessibility(inbox):
             api.expect(button).to_have_attribute('aria-label','Global AI auto replies off')
             api.expect(dot).to_have_css('background-color','rgb(171, 38, 52)')
             assert dot.bounding_box()['width']==8 and dot.bounding_box()['height']==8
-            assert page.locator('.topbar').bounding_box()['height']==72
+            assert page.locator('.topbar').bounding_box()['height']==44
             assert page.locator('.topbar .global-ai-status').count()==0
             assert page.locator('.topbar a[href="/crm/bot-management/settings"]').count()==0
             assert button.inner_text()==''
@@ -39,7 +39,7 @@ def test_inbox_ai_dot_status_refresh_mobile_layout_and_accessibility(inbox):
                 title=page.locator('.topbar h1').bounding_box();target=button.bounding_box();menu=page.locator('#mobile-menu').bounding_box()
                 assert target['x']>=title['x']+title['width']
                 assert title['x']>=menu['x']+menu['width']
-                assert page.locator('.topbar').bounding_box()['height']==64
+                assert page.locator('.topbar').bounding_box()['height']==44
                 assert page.evaluate('document.documentElement.scrollWidth <= window.innerWidth')
                 button.click()
                 api.expect(tip).to_be_visible();api.expect(tip).to_have_text('Global AI auto replies off')

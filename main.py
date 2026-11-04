@@ -2163,7 +2163,7 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
 
 @app.get("/crm/whatsapp/api/conversations")
 def whatsapp_conversations(response: Response, search: str = "", filter: str = "all", limit: int = 50,
-                           mailbox: str | None = None, reply_queue: str = "all",
+                           mailbox: str | None = None, reply_queue: str = "all", offset: int = Query(0,ge=0),
                            db: Session = Depends(get_db), user: User = Depends(require_user)):
     response.headers["Cache-Control"] = "private, no-store"
     query = conversation_access.scope(db.query(WhatsAppConversation),user)
@@ -2196,11 +2196,14 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
         outgoing,outgoing.c.phone == WhatsAppConversation.phone_number)
     if reply_queue == 'needs_reply':query = query.filter(pending.c.waiting_since.isnot(None))
     elif reply_queue == 'waiting_customer':query = query.filter(pending.c.waiting_since.is_(None),outgoing.c.replies > 0)
+    page_size=min(max(limit,1),100)
     queue_rows = query.add_columns(pending.c.waiting_since,outgoing.c.replies).order_by(
         *([pending.c.waiting_since.desc()] if reply_queue == 'needs_reply' else []),
         WhatsAppConversation.last_message_at.desc(), WhatsAppConversation.id.desc()).limit(
-        min(max(limit, 1), 100)
-    ).all()
+        page_size+1
+    ).offset(offset).all()
+    has_more=len(queue_rows)>page_size
+    queue_rows=queue_rows[:page_size]
     rows = [row[0] for row in queue_rows]
     queue_payloads = {row.id:inbox_reply_queue.payload(since,replies) for row,since,replies in queue_rows}
     phones = [row.phone_number for row in rows]
@@ -2214,7 +2217,7 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
     owner_users=conversation_access.owners(db,rows)
     linked_leads={row.whatsapp_conversation_id:row for row in db.query(Lead.id,Lead.status,Lead.whatsapp_conversation_id).filter(Lead.whatsapp_conversation_id.in_([item.id for item in rows] or [-1])).all()}
     return {"conversations": [{**_conversation_payload(db, row, payment_phones, latest_messages, linked_leads,owner_users), **queue_payloads[row.id]} for row in rows],
-            "unread_total": unread_total}
+            "unread_total": unread_total,"has_more":has_more,"next_offset":offset+len(rows) if has_more else None}
 
 
 def _get_conversation(db: Session, conversation_id: int) -> WhatsAppConversation:
