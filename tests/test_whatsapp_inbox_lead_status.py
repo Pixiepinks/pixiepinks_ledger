@@ -118,10 +118,12 @@ def test_chromium_mobile_badges_edit_errors_polling_switches_and_media_identity(
             assert '02:35:00 pm' in page.locator('#messages').inner_text().lower()
             page.evaluate('window.retainedImage=document.querySelector("#messages .message-attachment img");document.getElementById("inbox").addEventListener("inbox-conversation-data",e=>{if(e.detail.conversation.lead_status==="FUTURE_BUYER")window.leadStatusRefreshed=true;});')
             initial_media_requests=len(media_requests)
+            page.locator('#mobile-chat-menu').click()
             page.locator('#inbox-lead-status-select').select_option('FUTURE_BUYER');page.locator('#inbox-lead-status-save').click()
             page.locator('#inbox-lead-status-feedback').filter(has_text='Saved: Future Buyer').wait_for()
             page.wait_for_function('window.leadStatusRefreshed&&window.retainedImage===document.querySelector("#messages .message-attachment img")')
             assert len(media_requests)==initial_media_requests
+            page.locator('#mobile-chat-management [data-mobile-close]').click()
             page.locator('#back-list').click()
             first_row.locator('.lead-status').filter(has_text='Future Buyer').wait_for()
             assert first_row.locator('.lead-status').evaluate('(node)=>getComputedStyle(node).backgroundColor')=='rgb(237, 233, 254)'
