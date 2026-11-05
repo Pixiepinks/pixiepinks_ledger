@@ -108,3 +108,41 @@ def test_browser_shows_422_error_without_clearing_it_or_retrying(voices,monkeypa
             api.expect(page.locator('#saved-voice-send')).to_be_disabled()
             assert len(calls)==1 and not v.uploads and not v.sends
         finally:browser.close()
+
+
+@pytest.mark.parametrize('seconds,padding',[(2,65536),(10.56,0)])
+def test_new_m4a_upload_with_ffmpeg_on_prepares_pipe_safe_input_and_retains_original(voices,monkeypatch,seconds,padding):
+    import struct
+    from test_voice_audio_compatibility import encoded
+    v=voices;raw=encoded(seconds=seconds)
+    if padding:
+        # Valid free atom before the trailing moov: original media offsets stay
+        # unchanged, but even a short clip needs seeking after a long scan.
+        position=raw.index(b'moov')-4
+        raw=raw[:position]+struct.pack('>I4s',padding+8,b'free')+b'\0'*padding+raw[position:]
+    assert audio_service.source_audio_info(raw)['duration_seconds']==pytest.approx(seconds,abs=.05)
+    with pytest.raises(ValueError):tools.production_encode(raw)
+    monkeypatch.setenv('VOICE_FFMPEG_ENCODER_ENABLED','true')
+    response=v.client.post('/crm/saved-voices/api',data={'title':'M4A seek fixture','transcript':'Private test fixture','language':'si','category':'Test'},
+        files={'audio':('voice.m4a',raw,'audio/x-m4a')},headers={'X-CSRF-Token':v.csrf})
+    assert response.status_code==201,response.text
+    item=response.json()['voice'];assert item['ready_to_send'] is True
+    assert item['duration_seconds']==pytest.approx(seconds,abs=.08)
+    with v.sessions() as db:
+        voice=db.get(SavedVoice,item['id'])
+        assert (v.directory/voice.original_storage_name).read_bytes()==raw
+        output=(v.directory/voice.storage_name).read_bytes()
+        assert audio_service.validate_voice_audio(output)['codec']=='opus'
+        assert tools.production_decode(output)['passed'] is True
+        assert voice.audio_diagnostics['source']['codec']=='aac'
+    assert not v.uploads and not v.sends  # Saving never contacts Meta.
+
+
+def test_new_upload_still_fails_closed_if_final_ffmpeg_fails(voices,monkeypatch):
+    v=voices
+    monkeypatch.setenv('VOICE_FFMPEG_ENCODER_ENABLED','true')
+    monkeypatch.setattr(tools,'production_encode',lambda raw:(_ for _ in ()).throw(ValueError('mock final encoder failure')))
+    response=v.create()
+    assert response.status_code==422 and 'No PyAV fallback' in response.json()['detail']
+    with v.sessions() as db:assert db.query(SavedVoice).count()==0
+    assert not v.uploads and not v.sends
