@@ -30,3 +30,17 @@ Validation: 20 existing Saved Voices checks passed with 1 optional integration
 check skipped; 2 additional mobile feedback checks passed. Coverage includes desktop
 and mobile lost acknowledgments, a long transcript, closed-window feedback and
 repeated clicks on UNKNOWN producing only one mocked message submission.
+
+The owner subsequently reported the production message "Delivery is uncertain"
+on both desktop and mobile. This confirms the picker received UNKNOWN for the
+existing attempt, so its recovery guard checks that attempt instead of issuing
+a duplicate POST. It does not establish the underlying cause. UNKNOWN can be an
+explicit transport outcome (timeout/connection error, retryable Meta HTTP failure
+or missing response message ID), or the read-only presentation of an old UPLOADING/
+SENDING claim after an interrupted process.
+
+The existing admin Voice delivery diagnostics page can read the affected attempt
+without sending: /crm/bot-management/voice-diagnostics. Use Recent attempt IDs,
+then Read trace. Compare the stored status with trace.stages.send_http and
+send_exception. Do not share recipient fields, credentials or WhatsApp message IDs.
+No recovery send or stale-claim clearing is authorized by this diagnostic patch.
