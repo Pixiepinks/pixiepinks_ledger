@@ -12,7 +12,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import UploadFile
 
 from audio_service import (MAX_AUDIO_BYTES, NORMALIZATION_VERSION, normalize_voice_audio,
-    validate_voice_audio, source_audio_info, VoiceAudioError)
+    validate_voice_audio, source_audio_info, stage_browser_voice, VoiceAudioError)
 from learning_routes import read_body
 from models import SavedVoice
 from quick_message_service import authorize, MANAGER_ROLES
@@ -117,7 +117,12 @@ def build_router(get_db, require_user, require_csrf, csrf, templates, get_conver
             if mime.split(";", 1)[0].casefold() == "audio/x-m4a": mime = "audio/mp4"
             source = await run_in_threadpool(source_audio_info, raw)
             source["sha256"] = hashlib.sha256(raw).hexdigest()
-            normalized, duration = await run_in_threadpool(normalize_voice_audio, raw, mime)
+            # Use the already-working browser input preparation for containers
+            # such as M4A that cannot reliably be demuxed from FFmpeg's pipe.
+            # This is staging, not an encoder fallback: final FFmpeg validation
+            # still runs, and the untouched original is retained below.
+            staged = await run_in_threadpool(stage_browser_voice, raw, mime)
+            normalized, duration = await run_in_threadpool(normalize_voice_audio, staged, mime)
             diagnostics={"source":source,"normalized":validate_voice_audio(normalized)}
             original = await run_in_threadpool(write_audio, raw, original=True)
             stored = await run_in_threadpool(write_audio, normalized)
