@@ -259,14 +259,15 @@ def test_postgresql_upgrade_and_concurrent_claim(tmp_path, monkeypatch):
         admin.dispose()
 
 
-def test_chromium_library_preview_selection_and_lost_ack_recovery(voices):
+@pytest.mark.parametrize("viewport_width",[1366,390])
+def test_chromium_library_preview_selection_and_lost_ack_recovery(voices,viewport_width):
     api = pytest.importorskip("playwright.sync_api"); chromium = shutil.which("chromium")
     if not chromium: pytest.skip("Chromium unavailable")
     v = voices; row = v.create(title="Delivery recording", transcript="Api islandwide delivery karanawa.").json()["voice"]
     with api.sync_playwright() as runtime:
         browser = runtime.chromium.launch(executable_path=chromium, headless=True, args=["--no-sandbox"])
         try:
-            page = browser.new_page(); errors = []; requests = []; lost = [True]
+            page = browser.new_page(viewport={"width":viewport_width,"height":812}); errors = []; requests = []; lost = [True]
             page.on("pageerror", lambda error: errors.append(str(error)))
             def serve(route):
                 req = route.request; url = urlsplit(req.url)
@@ -282,6 +283,7 @@ def test_chromium_library_preview_selection_and_lost_ack_recovery(voices):
             page.route("**/*", serve)
             page.goto(f"https://voices.test/crm/whatsapp?conversation_id={v.ids[0]}")
             page.locator(f'[data-conversation-id="{v.ids[0]}"]').click()
+            if viewport_width<=700:page.locator("#mobile-chat-plus").click()
             page.locator("#saved-voices-open").click()
             page.locator("#saved-voice-list button").filter(has_text="Choose recording").click()
             assert "94770012301" in page.locator("#saved-voice-recipient").inner_text()
@@ -300,3 +302,46 @@ def test_chromium_library_preview_selection_and_lost_ack_recovery(voices):
             assert page.locator("#saved-voice-list").inner_text().find(row["transcript"]) >= 0
             assert not errors
         finally: browser.close()
+
+
+@pytest.mark.parametrize('outcome',['UNKNOWN','WINDOW_CLOSED'])
+def test_mobile_saved_voice_failure_feedback_visible_and_unknown_not_resent(voices,monkeypatch,outcome):
+    from datetime import datetime,timedelta
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    v=voices
+    created=v.create(title='Long recording details',transcript='Private test transcript. '*80)
+    assert created.status_code==201,created.text
+    if outcome=='UNKNOWN':
+        monkeypatch.setattr(main,'send_whatsapp_audio',lambda *a,**kw:v.sends.append(a) or ('UNKNOWN',None))
+    else:
+        with v.sessions() as db:
+            db.get(WhatsAppConversation,v.ids[0]).last_customer_message_at=datetime.utcnow()-timedelta(hours=25);db.commit()
+    with api.sync_playwright() as runtime:
+        browser=runtime.chromium.launch(executable_path=chromium,headless=True,args=['--no-sandbox'])
+        try:
+            page=browser.new_page(viewport={'width':390,'height':760});requests=[];errors=[]
+            page.on('pageerror',lambda e:errors.append(str(e)))
+            def serve(route):
+                req=route.request;url=urlsplit(req.url)
+                if url.hostname!='voices.test':route.fulfill(status=200,body='');return
+                requests.append((req.method,url.path))
+                response=v.client.request(req.method,url.path+('?' +url.query if url.query else ''),content=req.post_data_buffer,
+                    headers={k:value for k,value in req.headers.items() if k in {'content-type','x-csrf-token','idempotency-key','range'}},follow_redirects=False)
+                route.fulfill(status=response.status_code,body=response.content,headers={k:value for k,value in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+            page.route('**/*',serve);page.goto(f'https://voices.test/crm/whatsapp?conversation={v.ids[0]}')
+            page.locator('#mobile-chat-plus').click();page.locator('#saved-voices-open').click()
+            page.locator('#saved-voice-list button').filter(has_text='Choose recording').click()
+            page.locator('#saved-voice-send').click()
+            expected='Delivery is uncertain' if outcome=='UNKNOWN' else 'WhatsApp reply window is closed'
+            api.expect(page.locator('#saved-voice-status')).to_contain_text(expected)
+            box=page.locator('#saved-voice-status').bounding_box()
+            assert box['y']>=0 and box['y']+box['height']<=760
+            if outcome=='UNKNOWN':
+                page.locator('#saved-voice-send').click()
+                api.expect(page.locator('#saved-voice-status')).to_contain_text('Delivery is uncertain')
+                assert len(v.sends)==1
+                assert sum(method=='POST' and path.endswith('/send-saved-voice') for method,path in requests)==1
+            else:assert not v.sends and not v.uploads
+            assert not errors
+        finally:browser.close()

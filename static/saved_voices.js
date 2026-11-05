@@ -132,7 +132,9 @@
     if (busy || !chosen || !target) return;
     const cid = target, recording = {...chosen}, slot = pendingKey();
     let attempt = pending(), outcome;
-    busy = true; send.disabled = true; check.disabled = true; render();
+    busy = true; send.disabled = true; check.disabled = true;
+    status.textContent = attempt ? "Checking the previous send attempt…" : checkOnly ? "Checking send status…" : "Preparing and submitting the recording. Please wait…";
+    render();
     try {
       if (attempt) {
         try { outcome = await api(`/crm/whatsapp/api/conversations/${cid}/saved-voice-sends/${encodeURIComponent(attempt.key)}`); }
