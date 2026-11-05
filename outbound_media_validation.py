@@ -7,39 +7,78 @@ import struct
 import zlib
 
 
+MAX_IMAGE_PIXELS = 20_000_000
+
+
+class ValidationFailure(ValueError):
+    def __init__(self, code):self.code=code
+
+
+def check_jpeg_dimensions(raw):
+    # Read bounded segment headers before opening the decoder. Entropy-coded
+    # scan data is not parsed here; full decoding still validates the content.
+    offset=2
+    while offset<len(raw):
+        if raw[offset]!=0xff:return
+        while offset<len(raw) and raw[offset]==0xff:offset+=1
+        if offset>=len(raw):return
+        marker=raw[offset];offset+=1
+        if marker in {0xda,0xd9}:return
+        if marker in {0x01,0xd8} or 0xd0<=marker<=0xd7:continue
+        if offset+2>len(raw):return
+        length=struct.unpack('>H',raw[offset:offset+2])[0]
+        if length<2 or offset+length>len(raw):return
+        if marker in {0xc0,0xc1,0xc2,0xc3,0xc5,0xc6,0xc7,0xc9,0xca,0xcb,0xcd,0xce,0xcf} and length>=8:
+            height,width=struct.unpack('>HH',raw[offset+3:offset+7])
+            if width*height>MAX_IMAGE_PIXELS:raise ValidationFailure('image_pixels')
+            return
+        offset+=length
+
+
+def validate_image(raw, extension):
+    expected='png' if extension=='.png' else 'mjpeg'
+    signature=raw.startswith(b'\x89PNG\r\n\x1a\n') if expected=='png' else raw.startswith(b'\xff\xd8\xff') and raw.endswith(b'\xff\xd9')
+    if not signature:raise ValidationFailure('image_signature')
+    if expected=='png':
+        offset,kinds=8,[]
+        while offset<len(raw):
+            if offset+12>len(raw):raise ValidationFailure('png_structure')
+            length=struct.unpack('>I',raw[offset:offset+4])[0]
+            kind=raw[offset+4:offset+8];end=offset+12+length
+            if end>len(raw):raise ValidationFailure('png_structure')
+            if zlib.crc32(raw[offset+4:end-4])!=struct.unpack('>I',raw[end-4:end])[0]:raise ValidationFailure('png_checksum')
+            kinds.append(kind)
+            if kind==b'acTL':raise ValidationFailure('image_animation')
+            if kind==b'IHDR':
+                if length!=13:raise ValidationFailure('png_structure')
+                width,height,depth,color,compression,filtering,interlace=struct.unpack('>IIBBBBB',raw[offset+8:end-4])
+                if not width or not height:raise ValidationFailure('png_structure')
+                if width*height>MAX_IMAGE_PIXELS:raise ValidationFailure('image_pixels')
+                depths={0:{1,2,4,8,16},2:{8,16},3:{1,2,4,8},4:{8,16},6:{8,16}}
+                if depth not in depths.get(color,set()) or compression!=0 or filtering!=0 or interlace not in {0,1}:
+                    raise ValidationFailure('image_encoding')
+            offset=end
+        if kinds.count(b'IHDR')!=1 or not kinds or kinds[0]!=b'IHDR' or kinds[-1]!=b'IEND' or b'IDAT' not in kinds:
+            raise ValidationFailure('png_structure')
+    else:check_jpeg_dimensions(raw)
+    import av
+    try:
+        with av.open(io.BytesIO(raw),options={'protocol_whitelist':'pipe'}) as source:
+            if not source.streams.video:raise ValidationFailure('image_decode')
+            stream=source.streams.video[0]
+            if stream.codec_context.name!=expected:raise ValidationFailure('image_signature')
+            if not 0<stream.width*stream.height<=MAX_IMAGE_PIXELS:raise ValidationFailure('image_pixels')
+            stream.thread_count=1;stream.codec_context.options={'err_detect':'explode'}
+            frame=next(source.decode(stream))
+            if frame.width!=stream.width or frame.height!=stream.height:raise ValidationFailure('image_decode')
+    except (ValidationFailure,MemoryError,ImportError):raise
+    except Exception:raise ValidationFailure('image_decode') from None
+    return {}
+
+
 def validate(raw, extension):
-    if extension in {'.jpg', '.jpeg', '.png'}:
-        import av
-        expected = 'png' if extension == '.png' else 'mjpeg'
-        signature = raw.startswith(b'\x89PNG\r\n\x1a\n') if expected == 'png' else raw.startswith(b'\xff\xd8\xff') and raw.endswith(b'\xff\xd9')
-        if not signature:
-            raise ValueError()
-        if extension == '.png':
-            offset, kinds = 8, []
-            while offset < len(raw):
-                if offset + 12 > len(raw):
-                    raise ValueError()
-                length = struct.unpack('>I', raw[offset:offset+4])[0]
-                kind = raw[offset+4:offset+8]
-                end = offset + 12 + length
-                if end > len(raw) or zlib.crc32(raw[offset+4:end-4]) != struct.unpack('>I', raw[end-4:end])[0]:
-                    raise ValueError()
-                kinds.append(kind)
-                if kind == b'acTL':
-                    raise ValueError()
-                offset = end
-            if kinds.count(b'IHDR') != 1 or kinds[0] != b'IHDR' or kinds[-1] != b'IEND' or b'IDAT' not in kinds:
-                raise ValueError()
-        with av.open(io.BytesIO(raw), options={'protocol_whitelist': 'pipe'}) as source:
-            stream = source.streams.video[0]
-            if stream.codec_context.name != expected or not 0 < stream.width * stream.height <= 20_000_000:
-                raise ValueError()
-            stream.thread_count = 1
-            stream.codec_context.options = {"err_detect": "explode"}
-            frame = next(source.decode(stream))
-            if frame.width != stream.width or frame.height != stream.height:
-                raise ValueError()
-        return {}
+    if extension in {'.jpg','.jpeg','.png'}:
+        return validate_image(raw,extension)
     if extension == '.pdf':
         from pypdf import PdfReader
         if not raw.startswith(b'%PDF-') or b'%%EOF' not in raw[-1024:]:
@@ -172,6 +211,10 @@ if __name__ == '__main__':
             raise ValueError()
         result = validate(raw, extension)
         sys.stdout.write(json.dumps(result))
+    except ValidationFailure as exc:
+        sys.stdout.write(json.dumps({'error_code':exc.code}));sys.exit(1)
+    except MemoryError:
+        sys.stdout.write(json.dumps({'error_code':'validation_memory'}));sys.exit(1)
     except ImportError:
         # A missing native/Python dependency is an operational failure, not bad
         # customer content. Never print import diagnostics or deployment paths.

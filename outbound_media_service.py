@@ -92,14 +92,36 @@ def safe_filename(filename):
     return name
 
 
+VALIDATION_ERRORS = {
+    'image_signature':'The file contents do not match the PNG/JPEG filename. Export a new PNG or JPEG; renaming the file is not enough.',
+    'png_structure':'The PNG is incomplete or has an invalid file structure. Export a fresh copy as PNG or JPEG.',
+    'png_checksum':'The PNG failed its integrity check. Export a fresh copy as PNG or JPEG.',
+    'image_animation':'Animated PNG images are not supported. Export one still frame as PNG or JPEG.',
+    'image_pixels':'The image exceeds the 20-megapixel safety limit. Resize it to 20 million pixels or fewer; reducing file size alone is not enough.',
+    'image_encoding':'The PNG uses an invalid or unsupported color/encoding combination. Export it as an 8-bit RGB/RGBA PNG or JPEG.',
+    'image_decode':'The image data could not be fully decoded. Export a fresh PNG or JPEG; a browser preview does not guarantee the file is valid.',
+    'validation_memory':'The attachment exceeded the validation memory limit. Resize the image or export a simpler file.',
+    'validation_timeout':'The attachment took too long to validate. Resize the image or export a simpler file.',
+    'validation_interrupted':'Attachment validation was interrupted or exceeded processing limits. Try a smaller file, or try again later.',
+    'invalid_document':'The document or video could not be validated. It may be damaged, encrypted, unsupported or exceed processing limits.',
+}
+
+
+def validation_failure(code, returncode=None):
+    code=code if code in VALIDATION_ERRORS else 'invalid_document'
+    logger.warning('Outbound attachment rejected stage=content_validation reason=%s worker_returncode=%s',code,returncode)
+    return HTTPException(422,VALIDATION_ERRORS[code]+' No message was sent.')
+
+
 def validate_file(raw, filename, caption):
     filename = safe_filename(filename)
     extension = Path(filename).suffix.lower()
     if extension not in FORMATS:
         raise HTTPException(422, 'Unsupported attachment format')
     kind, mime = FORMATS[extension]
-    if not raw or len(raw) > size_limit(kind):
-        raise HTTPException(413, 'Attachment exceeds the configured size limit or is empty')
+    if not raw:raise HTTPException(413,'The attachment is empty. Select a file with content. No message was sent.')
+    if len(raw)>size_limit(kind):
+        raise HTTPException(413,f'The {kind} exceeds the current {size_limit(kind):,}-byte upload limit. Choose a smaller file. No message was sent.')
     if not isinstance(caption, str) or len(caption) > 1024 or '\x00' in caption:
         raise HTTPException(422, 'Caption must contain at most 1024 characters')
     try:
@@ -113,12 +135,19 @@ def validate_file(raw, filename, caption):
         if error.returncode == 70:
             logger.warning('Outbound attachment validator unavailable: runtime dependency')
             raise ValidationUnavailable() from None
-        raise HTTPException(422, 'The attachment is corrupt, unsupported, encrypted or exceeds processing limits') from None
+        try:
+            payload=json.loads(error.stdout) if error.stdout and len(error.stdout)<=1024 else {}
+            code=payload.get('error_code') if isinstance(payload,dict) else None
+        except (ValueError,TypeError):code=None
+        if error.returncode<0:code='validation_interrupted'
+        raise validation_failure(code or ('image_decode' if kind=='image' else 'invalid_document'),error.returncode) from None
     except OSError:
         logger.warning('Outbound attachment validator unavailable: process launch')
         raise ValidationUnavailable() from None
+    except subprocess.TimeoutExpired:
+        raise validation_failure('validation_timeout') from None
     except (subprocess.SubprocessError, ValueError):
-        raise HTTPException(422, 'The attachment is corrupt, unsupported, encrypted or exceeds processing limits') from None
+        raise validation_failure('image_decode' if kind=='image' else 'invalid_document') from None
     return {'filename': filename, 'media_type': kind, 'mime_type': mime, 'caption': caption.strip(),
             'sha256': hashlib.sha256(raw).hexdigest(), 'file_size_bytes': len(raw), **metadata}
 
