@@ -26,6 +26,7 @@
 {% if can_access_section(nav_user,"saved_voices") %}      <a href="/crm/saved-voices" class="{{ 'active' if request.url.path.startswith('/crm/saved-voices') else '' }}"><span>♫</span> Saved Voices</a>{% endif %}
 {% if can_access_section(nav_user,"leads") %}      <a href="/crm/leads" class="{{ 'active' if request.url.path.startswith('/crm/leads') else '' }}"><span>◎</span> CRM / Leads</a>{% endif %}
 {% if can_access_section(nav_user,"bot") %}      <a href="/crm/bot-management" class="{{ 'active' if request.url.path.startswith('/crm/bot-management') else '' }}"><span>✦</span> AI Bot Management</a>{% endif %}
+{% if can_access_section(nav_user,"marketing") %}<div class="nav-label">Marketing</div><a href="/crm/marketing-consent" class="{{ 'active' if request.url.path.startswith('/crm/marketing-consent') else '' }}"><span>✓</span> Consent Management</a>{% endif %}
 {% if can_access_section(nav_user,"customers") %}      <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>{% endif %}
       <p class="nav-label">Sales</p>
 {% if can_access_section(nav_user,"intents") %}      <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>{% endif %}

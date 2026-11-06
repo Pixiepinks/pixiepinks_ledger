@@ -228,7 +228,7 @@ def test_browser_admin_creates_account_with_section_checkboxes(staff):
                 route.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding'}})
             page.route('**/*',serve);page.goto('https://staff.test/admin/staff')
             form=page.locator('form[action="/admin/staff"]')
-            assert form.locator('input[name="sections"]').count()==18
+            assert form.locator('input[name="sections"]').count()==len(access.SECTIONS)
             form.locator('[name="username"]').fill('front-staff');form.locator('[name="new_password"]').fill(PASSWORD)
             form.locator('[name="sections"][value="whatsapp"]').check()
             form.get_by_role('button',name='Create staff account',exact=True).click()
