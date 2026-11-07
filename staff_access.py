@@ -2,6 +2,7 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('marketing','Consent Management','/crm/marketing-consent'),
     ('crm','CRM Dashboard','/crm'),('finance','Finance Overview','/dashboard'),
     ('whatsapp','WhatsApp Inbox','/crm/whatsapp'),('quick_messages','Quick Messages','/crm/quick-messages'),
     ('saved_voices','Saved Voices','/crm/saved-voices'),('leads','CRM / Leads','/crm/leads'),

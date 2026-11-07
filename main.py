@@ -404,6 +404,10 @@ def _store_conversation_message(
             if direction == "inbound":
                 conversation.last_customer_message_at = when
                 conversation.unread_count = (conversation.unread_count or 0) + 1
+            db.flush()
+            if direction == 'inbound':
+                import marketing_consent_service
+                marketing_consent_service.inbound(db,message)
             db.commit()
             return "stored"
     except IntegrityError:
@@ -1509,6 +1513,8 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     db.query(WhatsAppConversationMessage).filter_by(
                         whatsapp_message_id=outbound_id
                     ).update({"send_status": delivery_status})
+                    import marketing_consent_service
+                    marketing_consent_service.delivery(db,outbound_id,delivery_status)
                     from models import SavedVoiceSend
                     errors = delivery.get("errors")
                     code = errors[0].get("code") if isinstance(errors,list) and errors and isinstance(errors[0],dict) else None
@@ -2693,6 +2699,11 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         raise HTTPException(status_code=422, detail="Message must contain 1–2000 characters")
     if not key or len(key) > 100:
         raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+    marketing_request_id=payload.get('marketing_request_id')
+    marketing_request=None
+    if marketing_request_id is not None:
+        _require_csrf(request)
+        if type(marketing_request_id) is not int or marketing_request_id<1:raise HTTPException(422,'Invalid consent request reference')
     quick_message_id = payload.get("quick_message_id")
     if quick_message_id is not None:
         quick_messages.authorize(user)
@@ -2707,6 +2718,9 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
                             status_code=200 if existing.status == "SENT" else 409)
     quick_messages.require_reply_window(db,conversation)
+    if marketing_request_id is not None:
+        import marketing_consent_service
+        marketing_request=marketing_consent_service.validate_request_send(db,user,conversation,marketing_request_id,key,body.strip())
     if quick_message_id is not None:
         quick_message=db.get(WhatsAppQuickMessage,quick_message_id)
         if quick_message is None or not quick_message.active:
@@ -2714,6 +2728,7 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
                                 message_text=body.strip(), sent_by=user.username,quick_message_id=quick_message_id)
     db.add(attempt)
+    if marketing_request is not None:marketing_consent_service.start_request(db,marketing_request)
     try:
         db.commit()
     except IntegrityError:
@@ -2726,9 +2741,13 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         result = send_whatsapp_text(conversation.phone_number, body.strip())
     if not result:
         attempt.status = "FAILED"
+        if marketing_request is not None:marketing_consent_service.finish_request(db,marketing_request,None,outcome='UNKNOWN')
         db.commit()
         return JSONResponse({"ok": False, "error": "Meta could not send this message."}, status_code=502)
-    if quick_message_id is not None and (not isinstance(result,str) or not result.strip()):
+    if (quick_message_id is not None or marketing_request_id is not None) and (not isinstance(result,str) or not result.strip()):
+        if marketing_request is not None:
+            marketing_consent_service.finish_request(db,marketing_request,None)
+            db.commit()
         return JSONResponse({"ok":False,"status":"PROCESSING","error":"Text send outcome is unconfirmed. Check the conversation before retrying."},status_code=503)
     message_id = result if isinstance(result, str) else None
     attempt.status = "SENT"
@@ -2736,6 +2755,9 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number, direction="outbound",
         message_text=body.strip(), whatsapp_message_id=message_id, response_kind="staff",
         send_status="sent", sent_by=user.username))
+    if marketing_request is not None:
+        db.flush()
+        marketing_consent_service.finish_request(db,marketing_request,message_id)
     conversation.last_message_at = datetime.utcnow()
     if quick_message_id is not None:
         db.query(WhatsAppQuickMessage).filter_by(id=quick_message_id).update(
@@ -4494,3 +4516,8 @@ app.include_router(build_assignment_router(get_db,require_user,_require_csrf))
 
 from conversation_collaboration_routes import build_router as build_collaboration_router
 app.include_router(build_collaboration_router(get_db,require_user,_require_csrf))
+
+# Register additive, transactional marketing identity hooks after models load.
+import marketing_identity
+from marketing_consent_routes import build_router as build_marketing_router
+app.include_router(build_marketing_router(get_db,require_user,_require_csrf,_csrf_token,templates))
