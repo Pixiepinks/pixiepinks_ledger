@@ -8,7 +8,7 @@ window.createInboxFilters = (root,onChange) => {
   const params=new URLSearchParams(location.search), legacy=params.get('filter');
   let state=defaults(),clearDraft=false,openGeneration=0;
   if(['mine','shared',...(admin?['all','unassigned']:['accessible'])].includes(params.get('mailbox')))state.mailbox=params.get('mailbox');
-  if(['needs_reply','waiting_customer'].includes(params.get('reply_queue')))state.replyQueue=params.get('reply_queue');
+  if(['needs_reply','waiting_customer','follow_up_later','followups_due','resolved','window_expired'].includes(params.get('reply_queue')))state.replyQueue=params.get('reply_queue');
   state.unread=legacy==='unread'||params.get('unread')==='true';state.payment=legacy==='payment'||params.get('payment_required')==='true';
   state.mode=legacy==='ai'?'AI':legacy==='human'?'HUMAN':['AI','HUMAN'].includes(params.get('mode'))?params.get('mode'):'';
   if(admin && /^\d+$/.test(params.get('owner_id')||'')){state.ownerId=params.get('owner_id');state.ownerLabel='Assigned staff';}
