@@ -395,3 +395,26 @@ def download_whatsapp_attachment(media_id: str, media_type: str, *,
         raise AttachmentMediaError(502, "Attachment is temporarily unavailable") from None
     except (httpx.HTTPError, httpx.InvalidURL, ValueError, TypeError):
         raise AttachmentMediaError(502, "Attachment is temporarily unavailable") from None
+
+
+@global_ai_control.transport_send
+def send_whatsapp_consent_buttons(recipient: str, body: str, buttons: list[dict]) -> str | None:
+    """One explicit consent send; never retry or fall back to a text message."""
+    if not isinstance(body,str) or not 1<=len(body)<=1024 or not isinstance(buttons,list) or len(buttons)!=2:
+        return None
+    if any(not isinstance(b,dict) or not isinstance(b.get('id'),str) or not 1<=len(b['id'])<=200
+           or not isinstance(b.get('title'),str) or not 1<=len(b['title'])<=20 for b in buttons):return None
+    if len({b['id'] for b in buttons})!=2:return None
+    if not settings.META_WHATSAPP_ACCESS_TOKEN or not settings.META_WHATSAPP_PHONE_NUMBER_ID:return None
+    version=settings.META_GRAPH_API_VERSION.strip().lstrip('/') or 'v26.0'
+    payload={'messaging_product':'whatsapp','to':recipient,'type':'interactive',
+        'interactive':{'type':'button','body':{'text':body},'action':{'buttons':[
+            {'type':'reply','reply':{'id':button['id'],'title':button['title']}} for button in buttons]}}}
+    try:
+        response=httpx.post(f'https://graph.facebook.com/{version}/{settings.META_WHATSAPP_PHONE_NUMBER_ID}/messages',
+            headers={'Authorization':f'Bearer {settings.META_WHATSAPP_ACCESS_TOKEN}'},json=payload,timeout=10.0)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        logger.warning('Explicit consent button send outcome is unconfirmed; no automatic retry')
+        return None
+    return _message_id(response)

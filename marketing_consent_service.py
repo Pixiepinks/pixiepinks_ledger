@@ -175,12 +175,14 @@ def apply_action(db,row,user,body):
         if isinstance(item,Event) and item.dedup_key==dedup:item.action_fingerprint=fingerprint
 
 
-def prepare_request(db,row,conversation,user,language,key):
+def prepare_request(db,row,conversation,user,language,key,request_format="text"):
+    import marketing_consent_buttons as buttons
+    if not isinstance(request_format,str) or request_format not in {"text","buttons"}:raise HTTPException(422,"Choose text or buttons for the consent request.")
     conversation_access.require_owned(db,user,conversation.id);require_reply_window(db,conversation)
     if not isinstance(language,str) or language not in WORDING or not isinstance(key,str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,100}',key):raise HTTPException(422,'Choose a request language and unique key.')
     prior=db.query(ConsentRequest).filter_by(idempotency_key=key).one_or_none()
     if prior:
-        if (prior.consent_id,prior.actor_id,prior.conversation_id,prior.language,prior.phone_e164)!=(row.id,user.id,conversation.id,language,row.phone_e164):raise HTTPException(409,'Request key belongs to another contact, language or actor.')
+        if (prior.consent_id,prior.actor_id,prior.conversation_id,prior.language,prior.phone_e164)!=(row.id,user.id,conversation.id,language,row.phone_e164) or buttons.enabled(prior)!=(request_format=='buttons'):raise HTTPException(409,'Request key belongs to another contact, language or actor.')
         if prior.status=='PREPARED' and prior.expires_at<datetime.utcnow():raise HTTPException(409,'This preview expired. Start a new review.')
         return prior
     if not valid_identity(db,row) or row.status!='NOT_REQUESTED':raise HTTPException(409,'Consent is already pending, granted or opted out, or this identity needs review. Do not repeatedly request permission.')
@@ -191,14 +193,16 @@ def prepare_request(db,row,conversation,user,language,key):
         raise HTTPException(409,'A consent request was already sent in the last 24 hours. Do not repeatedly ask.')
     active=db.query(ConsentRequest).filter(ConsentRequest.consent_id==row.id,or_(ConsentRequest.status.in_(['SENDING','UNKNOWN']), (ConsentRequest.status=='PREPARED') & (ConsentRequest.expires_at>now))).first()
     if active:
-        if active.status=='PREPARED' and active.actor_id==user.id and active.language!=language:active.status='CANCELLED'
+        if active.status=='PREPARED' and active.actor_id==user.id and (active.language!=language or buttons.enabled(active)!=(request_format=='buttons')):active.status='CANCELLED'
         else:raise HTTPException(409,'An existing consent request must be reviewed first.')
     # Reserve a version to serialize previews from different staff. No state becomes pending yet.
     change(db,row,row.version,{'updated_by':user.id})
     request=ConsentRequest(consent_id=row.id,conversation_id=conversation.id,phone_e164=row.phone_e164,actor_id=user.id,
-        idempotency_key=key,language=language,wording_version=WORDING_VERSION+language,message_text=WORDING[language],
+        idempotency_key=key,language=language,wording_version=(buttons.VERSION if request_format=='buttons' else WORDING_VERSION)+language,message_text=(buttons.BODY if request_format=='buttons' else WORDING)[language],
         base_version=row.version,expires_at=now+timedelta(minutes=30))
-    db.add(request);db.flush();return request
+    db.add(request);db.flush()
+    if request_format=="buttons":buttons.prepare(db,request,row,user)
+    return request
 
 
 def validate_request_send(db,user,conversation,request_id,key,text):

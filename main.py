@@ -86,6 +86,7 @@ from whatsapp_service import (
     send_whatsapp_audio,
     send_whatsapp_image,
     send_whatsapp_text,
+    send_whatsapp_consent_buttons,
     upload_whatsapp_audio,
 )
 from audio_service import NORMALIZATION_VERSION, MAX_AUDIO_BYTES, VoiceAudioError, normalize_voice_audio, ffmpeg_encoder_enabled, stage_browser_voice
@@ -363,6 +364,7 @@ def _store_conversation_message(
     referral_metadata: dict | None = None,
     reply_to_whatsapp_message_id: str | None = None,
     processed_record: ProcessedWhatsAppMessage | None = None,
+    consent_button_id: str | None = None,
 ) -> str:
     processed_message_id = processed_record.message_id if processed_record is not None else None
     try:
@@ -407,7 +409,10 @@ def _store_conversation_message(
             db.flush()
             if direction == 'inbound':
                 import marketing_consent_service
-                marketing_consent_service.inbound(db,message)
+                if consent_button_id is not None:
+                    import marketing_consent_buttons
+                    marketing_consent_buttons.inbound(db,message,consent_button_id)
+                else:marketing_consent_service.inbound(db,message)
             db.commit()
             return "stored"
     except IntegrityError:
@@ -1591,6 +1596,19 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                 reply_id = extract_reply_id(message)
                 profile_name = profile_names.get(sender)
                 profile_name = profile_name[:255] if isinstance(profile_name, str) else None
+                interactive=message.get('interactive')
+                button=interactive.get('button_reply') if isinstance(interactive,dict) and interactive.get('type')=='button_reply' else None
+                if message_type=='interactive' and isinstance(button,dict) and isinstance(button.get('id'),str) and button['id'].startswith('ppmc:'):
+                    if not settings.META_APP_SECRET:
+                        raise HTTPException(503,'Secure consent button processing requires webhook signature verification')
+                    title=button.get('title')
+                    if not isinstance(title,str) or not title or len(title)>100 or len(button['id'])>200:
+                        continue
+                    result=_store_conversation_message(sender,'inbound',title,customer_name=profile_name,
+                        whatsapp_message_id=message_id,reply_to_whatsapp_message_id=reply_id,
+                        response_kind='customer_consent_button',created_at=received_at,processed_record=record,consent_button_id=button['id'])
+                    if result=='failed':raise HTTPException(503,'Consent response registration unavailable')
+                    continue
                 if message_type in INCOMING_MEDIA_TYPES:
                     metadata = _incoming_media_metadata(message)
                     # Keep audio's legacy fields for the existing authenticated
@@ -2725,6 +2743,9 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         quick_message=db.get(WhatsAppQuickMessage,quick_message_id)
         if quick_message is None or not quick_message.active:
             raise HTTPException(409,"Quick Message is inactive or unavailable; choose an active reply")
+    import marketing_consent_buttons as consent_buttons
+    prepared_buttons=consent_buttons.configuration(db,marketing_request) if marketing_request is not None else None
+    if prepared_buttons and not settings.META_APP_SECRET:raise HTTPException(409,'Secure consent buttons require Meta webhook signature verification.')
     attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
                                 message_text=body.strip(), sent_by=user.username,quick_message_id=quick_message_id)
     db.add(attempt)
@@ -2736,9 +2757,12 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         return JSONResponse({"ok": False, "status": "PROCESSING"}, status_code=409)
     try:
         conversation_access.require_owned(db,user,conversation.id)
-        result = send_whatsapp_text(conversation.phone_number, body.strip(), return_message_id=True)
+        if prepared_buttons:
+            result=send_whatsapp_consent_buttons(conversation.phone_number,body.strip(),prepared_buttons)
+        else:result = send_whatsapp_text(conversation.phone_number, body.strip(), return_message_id=True)
     except TypeError:
-        result = send_whatsapp_text(conversation.phone_number, body.strip())
+        if prepared_buttons:result=None
+        else:result = send_whatsapp_text(conversation.phone_number, body.strip())
     if not result:
         attempt.status = "FAILED"
         if marketing_request is not None:marketing_consent_service.finish_request(db,marketing_request,None,outcome='UNKNOWN')
