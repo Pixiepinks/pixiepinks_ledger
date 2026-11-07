@@ -638,6 +638,7 @@ class WhatsAppManualSend(Base):
     audio_trace = Column(JSON)
     idempotency_key = Column(String(100), unique=True, nullable=False, index=True)
     conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), nullable=False)
+    reply_to_whatsapp_message_id = Column(String(255), nullable=True)
     quick_message_id = Column(Integer, ForeignKey("whatsapp_quick_messages.id", ondelete="RESTRICT"))
     analytics_actor_id = Column(Integer, nullable=True, index=True)
     message_text = Column(Text, nullable=False)

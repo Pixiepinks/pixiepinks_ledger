@@ -3,7 +3,7 @@
   const root = document.getElementById("inbox"), list = document.getElementById("conversation-list"), messages = document.getElementById("messages"), errorBox = document.getElementById("send-error"), statusBox = document.getElementById("send-status");
   let selected = Number(root.dataset.initial) || null, filter = new URLSearchParams(location.search).get("filter") || "all";
   let recorder, stream, timer, blob, blobUrl, started, duration, voiceKey, chunks = [], discard = false;
-  let textSending = false, textSendAttempt = null;
+  let textSending = false, textSendAttempt = null, quotedReply = null;
   const isAdmin = root.dataset.admin === "true";
   let mailbox = isAdmin ? "all" : "mine", assignees = [], assignmentDirty = false, assignmentExpected = 0;
   let replyQueue = "all", inboxFilters=null;
@@ -110,6 +110,7 @@
     assignmentExpected = conversation.assignment_version;
   }
   function clearRevokedConversation() {
+    clearQuotedReply();
     conversationGeneration++; replyJump++; replyHistory.clear(); selected = null; currentConversationData = null;
     conversationController?.abort(); conversationController = null; conversationLoading = false;
     root.dataset.activeConversation = ""; root.classList.remove("chat-open");
@@ -271,6 +272,22 @@
     }
     element.append(document.createTextNode(body.slice(start)));
   }
+  function clearQuotedReply() {
+    quotedReply=null;
+    document.getElementById("quoted-reply").hidden=true;
+    text(document.getElementById("quoted-reply-author"), "");
+    text(document.getElementById("quoted-reply-text"), "");
+  }
+  function selectQuotedReply(message) {
+    if(textSending || window.inboxMediaBusy) return;
+    quotedReply={id:message.id,conversation:selected};
+    const summary=message.product?.title || message.attachments?.[0]?.caption || message.attachments?.[0]?.filename ||
+      (message.message_type==='audio'?'Voice message':message.attachments?.length?'Attachment':message.text);
+    text(document.getElementById("quoted-reply-author"),message.direction==='inbound'?'Replying to customer':'Replying to PixiePinks');
+    text(document.getElementById("quoted-reply-text"),String(summary || 'Message').slice(0,300));
+    document.getElementById("quoted-reply").hidden=false;
+    document.getElementById("message-input").focus();
+  }
   function renderMessage(message) {
     const wrapper = document.createElement("div"), bubble = document.createElement("div"), metadata = document.createElement("small"); wrapper.className = `message ${message.direction}`; bubble.className = "bubble";
     if (message.product) {
@@ -286,9 +303,15 @@
     text(metadata, messageMetadata(message));
     if (message.direction === "inbound" && message.referral) wrapper.append(renderReferral(message.referral));
     if (message.reply_context) wrapper.append(renderReplyContext(message.reply_context));
-    wrapper.append(bubble, metadata); return wrapper;
+    wrapper.append(bubble, metadata);
+    if(message.can_reply){
+      const reply=document.createElement('button');reply.type='button';reply.className='message-reply-action';
+      reply.textContent='Reply';reply.setAttribute('aria-label','Reply to this message');
+      reply.onclick=()=>selectQuotedReply(message);wrapper.append(reply);
+    }
+    return wrapper;
   }
-  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context]);
+  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context, message.can_reply]);
   const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${inboxTime(message.timestamp)} · ${message.status}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
@@ -314,7 +337,7 @@
     const switching = selected !== id; selected = id;
     root.dataset.activeConversation = String(id);
     if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); if (navigate) root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
-    if (switching) { conversationGeneration += 1; replyJump++; replyHistory.clear(); assignmentDirty = false; currentConversationData=null; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); const feedback=document.getElementById("assignment-feedback"); if(feedback) { feedback.textContent=""; document.getElementById("assignment-owner").disabled=true; document.getElementById("assignment-save").disabled=true; } }
+    if (switching) { clearQuotedReply(); conversationGeneration += 1; replyJump++; replyHistory.clear(); assignmentDirty = false; currentConversationData=null; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); const feedback=document.getElementById("assignment-feedback"); if(feedback) { feedback.textContent=""; document.getElementById("assignment-owner").disabled=true; document.getElementById("assignment-save").disabled=true; } }
     if (conversationLoading) return;
     const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true; conversationMarkRead = markRead;
     try {
@@ -416,19 +439,28 @@
     if (!target) { showComposerMessage("Select a conversation first.", true); return; }
     if (!body) { showComposerMessage("Type a message before sending.", true); input.focus(); return; }
     const quickId = Number(input.dataset.quickMessageId) || null;
-    const signature = JSON.stringify([target, body, quickId]);
+    const replyId=quotedReply?.conversation===target ? quotedReply.id : null;
+    const signature = JSON.stringify([target, body, quickId, replyId]);
     if (!textSendAttempt || textSendAttempt.signature !== signature) textSendAttempt = {signature, key: crypto.randomUUID()};
     textSending = true; input.disabled = true; button.disabled = true; text(button, "Sending…"); showComposerMessage("Sending message…");
     try {
       await api(`/crm/whatsapp/api/conversations/${target}/send`, {method: "POST", headers: {"Content-Type": "application/json", "Idempotency-Key": textSendAttempt.key,
-        ...(quickId ? {"X-CSRF-Token": root.dataset.quickMessageCsrf || ""} : {})}, body: JSON.stringify({message: body, ...(quickId ? {quick_message_id: quickId} : {})})});
-      input.value = ""; delete input.dataset.quickMessageId; textSendAttempt = null; showComposerMessage("Message sent."); await openConversation(target);
+        ...((quickId || replyId) ? {"X-CSRF-Token": root.dataset.quickMessageCsrf || root.dataset.assignmentCsrf || ""} : {})}, body: JSON.stringify({message: body, ...(quickId ? {quick_message_id: quickId} : {}), ...(replyId ? {reply_to_message_id:replyId} : {})})});
+      clearQuotedReply(); input.value = ""; delete input.dataset.quickMessageId; textSendAttempt = null; showComposerMessage("Message sent."); await openConversation(target);
     } catch (error) { showComposerMessage(error.message, true); }
     finally { textSending = false; input.disabled = false; button.disabled = false; text(button, "Send"); }
   };
+  document.getElementById("quoted-reply-cancel").onclick=()=>{if(!textSending){clearQuotedReply();document.getElementById("message-input").focus();}};
+  // Preserve other sending workflows; do not silently drop a selected text quote.
+  root.addEventListener('click',event=>{
+    if(!quotedReply)return;
+    if(event.target.closest('#record-button,#saved-voices-open,#catalog-button,#attachment-send,#send-voice,[data-media-category]')){
+      event.preventDefault();event.stopImmediatePropagation();showComposerMessage('Cancel the selected text reply before sending voice, files or products.',true);
+    }
+  },true);
   document.getElementById("message-input").addEventListener("keydown", event => { if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); document.getElementById("composer").requestSubmit(); } });
   document.getElementById("record-button").onclick = startRecording; document.getElementById("stop-recording").onclick = () => { if (recorder?.state === "recording") recorder.stop(); }; document.getElementById("cancel-recording").onclick = () => { discard = true; if (recorder?.state === "recording") recorder.stop(); else resetRecording(); }; document.getElementById("delete-recording").onclick = resetRecording; document.getElementById("send-voice").onclick = sendVoice;
-  document.getElementById("close-details").onclick = () => document.getElementById("details").classList.remove("open"); document.getElementById("back-list").onclick = () => root.classList.remove("chat-open");
+  document.getElementById("close-details").onclick = () => document.getElementById("details").classList.remove("open"); document.getElementById("back-list").onclick = () => {clearQuotedReply();root.classList.remove("chat-open");};
 
   // Phase 2 commercial-order drawer. It reuses the authenticated Shopify picker API;
   // Shopify is re-queried server-side when saving, so these browser snapshots are never authoritative.

@@ -2381,6 +2381,7 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
         "attachments": attachments_by_message.get(item.id, []),
         "referral": referrals_by_message.get(item.id),
         "reply_context": replies_by_message.get(item.id),
+        "can_reply": bool(item.whatsapp_message_id and item.whatsapp_message_id.strip()),
         "product": ({"title": item.product_title, "variant": item.variant_title,
                      "sku": item.product_sku, "price": float(item.product_price),
                      "currency": item.product_currency or "LKR", "image": item.product_image_url,
@@ -2727,7 +2728,19 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         raise HTTPException(status_code=422, detail="Message must contain 1–2000 characters")
     if not key or len(key) > 100:
         raise HTTPException(status_code=400, detail="A valid Idempotency-Key is required")
+    reply_to_id=payload.get('reply_to_message_id')
+    reply_reference=None
+    if reply_to_id is not None:
+        _require_csrf(request)
+        if type(reply_to_id) is not int or reply_to_id<1:raise HTTPException(422,'Choose a valid message to reply to.')
+        original=db.query(WhatsAppConversationMessage).filter_by(id=reply_to_id,phone_number=conversation.phone_number).one_or_none()
+        from whatsapp_reply_service import extract_reply_id
+        reply_reference=extract_reply_id({'context':{'id':original.whatsapp_message_id}}) if original else None
+        if not reply_reference:raise HTTPException(404,'Original message is unavailable for reply. Cancel the quote or choose another message.')
+        if db.query(WhatsAppConversationMessage.id).filter_by(phone_number=conversation.phone_number,whatsapp_message_id=reply_reference).count()!=1:
+            raise HTTPException(409,'Original message reference is ambiguous. Choose another message.')
     marketing_request_id=payload.get('marketing_request_id')
+    if reply_reference and marketing_request_id is not None:raise HTTPException(422,'Consent requests must be sent separately from quoted replies.')
     marketing_request=None
     if marketing_request_id is not None:
         _require_csrf(request)
@@ -2741,7 +2754,8 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     existing = db.query(WhatsAppManualSend).filter_by(idempotency_key=key).one_or_none()
     if existing:
         if (existing.conversation_id != conversation.id or existing.sent_by != user.username
-                or existing.message_text != body.strip() or existing.quick_message_id != quick_message_id):
+                or existing.message_text != body.strip() or existing.quick_message_id != quick_message_id
+                or existing.reply_to_whatsapp_message_id != reply_reference):
             raise HTTPException(409,"Idempotency key belongs to another request")
         return JSONResponse({"ok": existing.status == "SENT", "status": existing.status},
                             status_code=200 if existing.status == "SENT" else 409)
@@ -2757,7 +2771,7 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     prepared_buttons=consent_buttons.configuration(db,marketing_request) if marketing_request is not None else None
     if prepared_buttons and not settings.META_APP_SECRET:raise HTTPException(409,'Secure consent buttons require Meta webhook signature verification.')
     attempt = WhatsAppManualSend(idempotency_key=key, conversation_id=conversation.id,
-                                message_text=body.strip(), sent_by=user.username,quick_message_id=quick_message_id)
+                                message_text=body.strip(), sent_by=user.username,quick_message_id=quick_message_id,reply_to_whatsapp_message_id=reply_reference)
     db.add(attempt)
     if marketing_request is not None:marketing_consent_service.start_request(db,marketing_request)
     try:
@@ -2769,16 +2783,16 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
         conversation_access.require_owned(db,user,conversation.id)
         if prepared_buttons:
             result=send_whatsapp_consent_buttons(conversation.phone_number,body.strip(),prepared_buttons)
-        else:result = send_whatsapp_text(conversation.phone_number, body.strip(), return_message_id=True)
+        else:result = send_whatsapp_text(conversation.phone_number, body.strip(), return_message_id=True, **({"reply_to_message_id":reply_reference} if reply_reference else {}))
     except TypeError:
-        if prepared_buttons:result=None
+        if prepared_buttons or reply_reference:result=None
         else:result = send_whatsapp_text(conversation.phone_number, body.strip())
     if not result:
         attempt.status = "FAILED"
         if marketing_request is not None:marketing_consent_service.finish_request(db,marketing_request,None,outcome='UNKNOWN')
         db.commit()
         return JSONResponse({"ok": False, "error": "Meta could not send this message."}, status_code=502)
-    if (quick_message_id is not None or marketing_request_id is not None) and (not isinstance(result,str) or not result.strip()):
+    if (quick_message_id is not None or marketing_request_id is not None or reply_reference is not None) and (not isinstance(result,str) or not result.strip()):
         if marketing_request is not None:
             marketing_consent_service.finish_request(db,marketing_request,None)
             db.commit()
@@ -2787,7 +2801,7 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     attempt.status = "SENT"
     attempt.whatsapp_message_id = message_id
     db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number, direction="outbound",
-        message_text=body.strip(), whatsapp_message_id=message_id, response_kind="staff",
+        message_text=body.strip(), whatsapp_message_id=message_id, reply_to_whatsapp_message_id=reply_reference, response_kind="staff",
         send_status="sent", sent_by=user.username,analytics_category="consent" if marketing_request is not None else "quick_messages" if quick_message_id is not None else "text"))
     if marketing_request is not None:
         db.flush()
