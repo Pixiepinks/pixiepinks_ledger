@@ -125,17 +125,49 @@ def test_browser_quote_preview_cancel_send_and_chat_switch(inbox,monkeypatch):
         request_route.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
     with api.sync_playwright() as p:
         browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1280,'height':900});page.route('**/*',route)
-        page.goto(f'https://inbox.test/crm/whatsapp?conversation={ids[0]}');page.locator(f'[data-message-id="{mid}"] .message-reply-action').click()
+        page.goto(f'https://inbox.test/crm/whatsapp?conversation={ids[0]}');page.locator(f'[data-message-id="{mid}"] .message-reply-action').focus();page.keyboard.press("Enter")
         assert page.locator('#quoted-reply').is_visible() and page.locator('#message-input').evaluate('(el)=>el===document.activeElement')
         assert 'pink' in page.locator('#quoted-reply-text').inner_text()
         page.locator('#quoted-reply-cancel').click();assert page.locator('#quoted-reply').is_hidden() and not calls
-        page.locator(f'[data-message-id="{mid}"] .message-reply-action').click();page.locator('#message-input').fill('Yes, pink is available.')
+        page.locator(f'[data-message-id="{mid}"] .message-reply-action').focus();page.keyboard.press("Enter");page.locator('#message-input').fill('Yes, pink is available.')
         page.screenshot(path='/tmp/inbox-quoted-reply-desktop.png',full_page=True)
         page.set_viewport_size({'width':390,'height':844})
         page.screenshot(path='/tmp/inbox-quoted-reply-mobile.png',full_page=True)
+        page.locator('#quoted-reply-cancel').click()
+        def swipe(dx,dy=0,cancel=False,interactive=False):
+            return page.locator(f'[data-message-id="{mid}"]').evaluate("""(el,args)=>{
+              let target=el.querySelector('.bubble');
+              if(args.interactive){const control=document.createElement('audio');control.controls=true;target.append(control);target=control;}
+              const touch=(x,y)=>new Touch({identifier:1,target,clientX:x,clientY:y});
+              target.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,touches:[touch(200,200)]}));
+              const move=new TouchEvent('touchmove',{bubbles:true,cancelable:true,touches:[touch(200+args.dx,200+args.dy)]});
+              target.dispatchEvent(move);
+              target.dispatchEvent(new TouchEvent(args.cancel?'touchcancel':'touchend',{bubbles:true,touches:[],changedTouches:[touch(200+args.dx,200+args.dy)]}));
+              if(args.interactive)target.remove();return move.defaultPrevented;
+            }""",{'dx':dx,'dy':dy,'cancel':cancel,'interactive':interactive})
+        assert not swipe(-5) and page.locator('#quoted-reply').is_hidden()
+        assert not swipe(-15,90) and page.locator('#quoted-reply').is_hidden()
+        assert not swipe(90) and page.locator('#quoted-reply').is_hidden()
+        swipe(-80,cancel=True);assert page.locator('#quoted-reply').is_hidden()
+        assert not swipe(-80,interactive=True) and page.locator('#quoted-reply').is_hidden()
+        assert swipe(-80) and page.locator('#quoted-reply').is_visible()
+        assert page.locator(f'[data-message-id="{mid}"]').evaluate('(el)=>!el.style.transform && !el.classList.contains("reply-swiping")')
+        assert not calls  # A gesture selects the quote; it never sends.
+        page.locator('#quoted-reply-cancel').click()
+        # Real browser touch delivery, in addition to directional event edge cases.
+        target=page.locator(f'[data-message-id="{mid}"] .bubble');target.scroll_into_view_if_needed();box=target.bounding_box()
+        cdp=page.context.new_cdp_session(page);cdp.send('Emulation.setTouchEmulationEnabled',{'enabled':True})
+        x=box['x']+box['width']*.75;y=box['y']+box['height']*.5
+        cdp.send('Input.dispatchTouchEvent',{'type':'touchStart','touchPoints':[{'x':x,'y':y}]})
+        for distance in [20,45,80]:
+            cdp.send('Input.dispatchTouchEvent',{'type':'touchMove','touchPoints':[{'x':x-distance,'y':y}]})
+        cdp.send('Input.dispatchTouchEvent',{'type':'touchEnd','touchPoints':[]})
+        page.locator('#quoted-reply').wait_for(state='visible')
+        assert not calls
+        page.screenshot(path='/tmp/inbox-swipe-reply-mobile.png',full_page=True)
         page.locator('#send-button').click();page.wait_for_function('document.querySelector("#quoted-reply").hidden')
         assert len(calls)==1 and calls[0]['reply_to_message_id']=='wamid.customer-original'
-        page.locator(f'[data-message-id="{mid}"] .message-reply-action').click()
+        page.locator(f'[data-message-id="{mid}"] .message-reply-action').focus();page.keyboard.press("Enter")
         page.locator('#back-list').click();assert page.locator('#quoted-reply').is_hidden()
         page.locator(f'.conversation-row[data-conversation-id="{ids[1]}"]').click();assert page.locator('#quoted-reply').is_hidden()
         for width in [320,360,390,430]:

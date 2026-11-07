@@ -288,6 +288,37 @@
     document.getElementById("quoted-reply").hidden=false;
     document.getElementById("message-input").focus();
   }
+  function enableSwipeReply(wrapper, message) {
+    let gesture=null, suppressClickUntil=0;
+    const reset=()=>{gesture=null;wrapper.classList.remove('reply-swiping','reply-swipe-ready');wrapper.style.removeProperty('--reply-drag');};
+    wrapper.addEventListener('touchstart',event=>{
+      reset();
+      if(event.touches.length!==1 || textSending || window.inboxMediaBusy || window.getSelection()?.isCollapsed===false ||
+        event.target.closest('a,button,audio,video,input,textarea,select,[contenteditable]'))return;
+      const touch=event.touches[0];gesture={id:touch.identifier,x:touch.clientX,y:touch.clientY,dx:0,cid:selected};
+    },{passive:true});
+    wrapper.addEventListener('touchmove',event=>{
+      if(!gesture)return;
+      if(event.touches.length!==1){reset();return;}
+      const touch=event.touches[0];if(touch.identifier!==gesture.id){reset();return;}
+      const dx=touch.clientX-gesture.x,dy=touch.clientY-gesture.y;
+      // Yield early to vertical scrolling, rightward movement and browser gestures.
+      if(Math.abs(dy)>10 && Math.abs(dy)>=Math.abs(dx) || dx>10){reset();return;}
+      gesture.dx=dx;
+      if(dx>=-12 || Math.abs(dx)<Math.abs(dy)*1.5){wrapper.classList.remove('reply-swipe-ready');return;}
+      if(!event.cancelable){reset();return;}
+      event.preventDefault();gesture.dx=dx;
+      wrapper.classList.add('reply-swiping');wrapper.classList.toggle('reply-swipe-ready',dx<=-64);
+      wrapper.style.setProperty('--reply-drag',Math.max(-80,dx)+'px');
+    },{passive:false});
+    wrapper.addEventListener('touchend',event=>{
+      const end=gesture && [...event.changedTouches].find(t=>t.identifier===gesture.id);
+      const complete=end && wrapper.isConnected && gesture.cid===selected && gesture.dx<=-64 && end.clientX-gesture.x<=-64 && Math.abs(end.clientX-gesture.x)>Math.abs(end.clientY-gesture.y)*1.5;
+      reset();if(complete){suppressClickUntil=Date.now()+400;selectQuotedReply(message);}
+    },{passive:true});
+    wrapper.addEventListener('touchcancel',reset,{passive:true});
+    wrapper.addEventListener('click',event=>{if(Date.now()<suppressClickUntil){event.preventDefault();event.stopImmediatePropagation();}},true);
+  }
   function renderMessage(message) {
     const wrapper = document.createElement("div"), bubble = document.createElement("div"), metadata = document.createElement("small"); wrapper.className = `message ${message.direction}`; bubble.className = "bubble";
     if (message.product) {
@@ -306,8 +337,8 @@
     wrapper.append(bubble, metadata);
     if(message.can_reply){
       const reply=document.createElement('button');reply.type='button';reply.className='message-reply-action';
-      reply.textContent='Reply';reply.setAttribute('aria-label','Reply to this message');
-      reply.onclick=()=>selectQuotedReply(message);wrapper.append(reply);
+      reply.textContent='↩';reply.title='Reply to this message';reply.setAttribute('aria-label','Reply to this message');
+      reply.onclick=()=>selectQuotedReply(message);wrapper.append(reply);enableSwipeReply(wrapper,message);
     }
     return wrapper;
   }

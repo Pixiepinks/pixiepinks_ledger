@@ -1,6 +1,6 @@
 # Staff quoted replies in the WhatsApp Inbox
 
-Choose **Reply** beneath a customer message, type a response (or select and edit a Quick Message), then send. The selected message appears in a compact preview above the composer. Cancel removes only the quote; leaving/switching the conversation clears the quote. Replying with text to a customer's voice, photo or document is supported when the original provider message reference is retained. Old messages without a provider reference have no Reply action.
+On mobile, **swipe left on a customer message**; on desktop, hover over the message and choose the reply icon (or Tab to it and press Enter). Then type a response (or select and edit a Quick Message), then send. The selected message appears in a compact preview above the composer. Cancel removes only the quote; leaving/switching the conversation clears the quote. Replying with text to a customer's voice, photo or document is supported when the original provider message reference is retained. Old messages without a provider reference have no Reply action.
 
 This version sends quoted **text and Quick Messages**. Voice recordings, Saved Voices, products and attachments keep their existing sending workflows. While a text quote is selected, their controls ask staff to cancel it first, so the application cannot silently send an unquoted message instead. Consent requests are kept separate from quoted replies.
 
@@ -13,3 +13,5 @@ No customer messages, production migrations, deployments, environment changes, G
 Fixture screenshots: [desktop](screenshots/inbox-quoted-reply-desktop.png), [mobile](screenshots/inbox-quoted-reply-mobile.png). Browser coverage includes 320/360/390/430px widths.
 
 Validation: 15 new tests passed. The broad existing selection had 322 passes and 12 PostgreSQL skips; its only failure was the stale CSS/JS cache-version assertion. After updating that assertion to the new asset versions, all 14 Inbox tests passed. The 12 skipped PostgreSQL cases passed separately (16 selected checks including four repeated SQLite variants). JavaScript syntax and diff whitespace checks passed. Existing dependency/UTC deprecation warnings remain.
+
+Swipe interaction update: reply icons are positioned over messages and do not reserve a row. Leftward touch gestures require 64px travel and horizontal intent. Vertical scrolling, short/rightward gestures, cancellation, multitouch, text selection and media/link controls do not initiate a reply. The selected chat is checked at completion; swipe never sends by itself. No backend, schema, audio or AI changes are needed. Validation: 67 reply/Inbox checks passed with one unchanged PostgreSQL migration case skipped; the final browser gesture check also passed with real Chromium touch input.
