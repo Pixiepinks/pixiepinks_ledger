@@ -72,7 +72,7 @@ def test_mobile_inbox_request_is_previewed_then_sent_through_existing_route(cons
             api.expect(page.locator('#marketing-consent-dialog')).to_be_visible()
             api.expect(page.locator('#marketing-consent-content .marketing-status')).to_have_text('NOT REQUESTED')
             page.get_by_role('button',name='Request consent — preview',exact=True).click()
-            api.expect(page.locator('#marketing-consent-content')).to_contain_text('Reply YES if you agree.')
+            api.expect(page.locator('#marketing-consent-content')).to_contain_text('WhatsApp හි Reply')
             assert not v.sends
             page.get_by_role('button',name='Send reviewed consent request',exact=True).click();assert not v.sends
             page.get_by_label('I reviewed this exact request for this customer.',exact=True).check()
@@ -81,4 +81,39 @@ def test_mobile_inbox_request_is_previewed_then_sent_through_existing_route(cons
             assert len(v.sends)==1
             assert page.locator('#marketing-consent-dialog').bounding_box()['width']<=390
             with v.sessions() as db:assert db.get(Consent,v.contact).status=='PENDING' and db.query(Event).filter_by(event_type='CONSENT_REQUESTED').count()==1
+        finally:browser.close()
+
+
+def test_response_review_mobile_desktop_and_audited_approval(consent):
+    from test_marketing_consent import prepare,send_request,incoming
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    v=consent;preview=prepare(v,'si').json();assert send_request(v,preview).status_code==200;incoming(v,'Yes')
+    with api.sync_playwright() as runtime:
+        browser=runtime.chromium.launch(executable_path=chromium,headless=True,args=['--no-sandbox'])
+        try:
+            page=browser.new_page(viewport={'width':1366,'height':900});errors=[];page.on('pageerror',lambda e:errors.append(str(e)));serve(page,v)
+            page.goto('https://consent.test/crm/marketing-consent')
+            page.get_by_label('Needs Staff Review',exact=True).check();page.locator('#marketing-search button').click()
+            api.expect(page.locator('#marketing-rows tr')).to_have_count(1)
+            page.get_by_role('button',name='View details').click()
+            section=page.locator('.marketing-review')
+            api.expect(section).to_contain_text('Customer response has no WhatsApp Reply reference.')
+            api.expect(section).to_contain_text('PixiePinks WhatsApp Updates')
+            api.expect(section).to_contain_text('Yes')
+            page.screenshot(path='/tmp/phase1b-desktop.png')
+            for width in [320,360,390,430]:
+                page.set_viewport_size({'width':width,'height':812})
+                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert section.evaluate('(el)=>el.scrollWidth<=el.clientWidth')
+            page.screenshot(path='/tmp/phase1b-mobile.png')
+            page.get_by_label('Review outcome',exact=True).select_option('approve')
+            page.get_by_label('Review decision reason',exact=True).fill('Verified original request and explicit customer agreement.')
+            page.get_by_role('button',name='Save review decision',exact=True).click()
+            api.expect(page.locator('#marketing-consent-feedback')).to_contain_text('Explicit verification confirmation is required.')
+            page.get_by_label('I verified that this customer explicitly agreed to receive PixiePinks WhatsApp promotional messages.',exact=True).check()
+            page.get_by_role('button',name='Save review decision',exact=True).click()
+            api.expect(page.locator('#marketing-consent-content .marketing-status')).to_have_text('OPTED IN')
+            with v.sessions() as db:assert db.query(Event).filter_by(event_type='CONSENT_VERIFIED').count()==1
+            assert len(v.sends)==1 and not errors
         finally:browser.close()
