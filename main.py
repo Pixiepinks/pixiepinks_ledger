@@ -1526,6 +1526,10 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     ).update({"send_status": delivery_status})
                     import marketing_consent_service
                     marketing_consent_service.delivery(db,outbound_id,delivery_status)
+                    import crm_analytics_tracking
+                    try:delivery_time=datetime.utcfromtimestamp(int(delivery.get('timestamp')))
+                    except (TypeError,ValueError,OSError,OverflowError):delivery_time=datetime.utcnow()
+                    crm_analytics_tracking.delivery(db,outbound_id,delivery_status,delivery_time)
                     from models import SavedVoiceSend
                     errors = delivery.get("errors")
                     code = errors[0].get("code") if isinstance(errors,list) and errors and isinstance(errors[0],dict) else None
@@ -2784,7 +2788,7 @@ async def whatsapp_manual_send(conversation_id: int, request: Request,
     attempt.whatsapp_message_id = message_id
     db.add(WhatsAppConversationMessage(phone_number=conversation.phone_number, direction="outbound",
         message_text=body.strip(), whatsapp_message_id=message_id, response_kind="staff",
-        send_status="sent", sent_by=user.username))
+        send_status="sent", sent_by=user.username,analytics_category="consent" if marketing_request is not None else "quick_messages" if quick_message_id is not None else "text"))
     if marketing_request is not None:
         db.flush()
         marketing_consent_service.finish_request(db,marketing_request,message_id)
@@ -4003,44 +4007,10 @@ async def bot_add_guided_rule(handle: str, request: Request, db: Session = Depen
 
 @app.get("/crm", response_class=HTMLResponse)
 def crm_dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    today = date.today()
-    total_leads = db.query(func.count(Lead.id)).scalar() or 0
-    new_leads = db.query(func.count(Lead.id)).filter(Lead.status == "NEW").scalar() or 0
-    followups_today = db.query(func.count(Lead.id)).filter(Lead.next_followup == today, Lead.status.notin_(CLOSED_LEAD_STATUSES)).scalar() or 0
-    completed_sales = db.query(func.count(Lead.id)).filter(Lead.status == "DELIVERED").scalar() or 0
-    lost_leads = db.query(func.count(Lead.id)).filter(Lead.status == "LOST").scalar() or 0
-
-    pending_followups = (
-        db.query(Lead)
-        .filter(Lead.next_followup.is_not(None), Lead.next_followup <= today, Lead.status.notin_(CLOSED_LEAD_STATUSES))
-        .order_by(Lead.next_followup.asc(), Lead.created_at.desc())
-        .all()
-    )
-
-    recent_leads = db.query(Lead).order_by(Lead.created_at.desc(), Lead.id.desc()).limit(10).all()
-    unread_whatsapp = conversation_access.unread(db,user)
-    human_handovers = conversation_access.scope(db.query(func.count(WhatsAppConversation.id)),user).filter(WhatsAppConversation.mode == "HUMAN").scalar() or 0
-    payment_required = db.query(func.count(WhatsAppOrderIntent.id)).filter(WhatsAppOrderIntent.status == PAYMENT_REQUIRED_STATUS).scalar() or 0
-    active_order_intents = db.query(func.count(WhatsAppOrderIntent.id)).filter(
-        WhatsAppOrderIntent.status.notin_(["CANCELLED", "HANDED_TO_TEAM"])).scalar() or 0
-    recent_conversations = conversation_access.scope(db.query(WhatsAppConversation),user).order_by(
-        WhatsAppConversation.last_message_at.desc()).limit(6).all()
-    recent_orders = db.query(WhatsAppOrderIntent).order_by(WhatsAppOrderIntent.updated_at.desc()).limit(6).all()
-
-    return templates.TemplateResponse("crm_dashboard.html", {
-        "request": request,
-        "total_leads": total_leads,
-        "new_leads": new_leads,
-        "followups_today": followups_today,
-        "completed_sales": completed_sales,
-        "lost_leads": lost_leads,
-        "recent_leads": recent_leads,
-        "pending_followups": pending_followups,
-        "unread_whatsapp": unread_whatsapp, "human_handovers": human_handovers,
-        "payment_required": payment_required, "active_order_intents": active_order_intents,
-        "recent_conversations": recent_conversations, "recent_orders": recent_orders,
-        "page_title": "CRM Dashboard", "user": user,
-    })
+    import crm_dashboard_service
+    return templates.TemplateResponse('crm_dashboard.html',{'request':request,'user':user,'page_title':'CRM Dashboard',
+        'dashboard_presets':crm_dashboard_service.PRESETS,'dashboard_sources':crm_dashboard_service.SOURCES,
+        'dashboard_whatsapp':staff_access.allowed(user,'whatsapp'),'dashboard_leads':staff_access.allowed(user,'leads')},headers={'Cache-Control':'private, no-store'})
 
 
 from crm_whatsapp_leads import build_router as build_whatsapp_leads_router
@@ -4551,3 +4521,8 @@ app.include_router(build_collaboration_router(get_db,require_user,_require_csrf)
 import marketing_identity
 from marketing_consent_routes import build_router as build_marketing_router
 app.include_router(build_marketing_router(get_db,require_user,_require_csrf,_csrf_token,templates))
+
+import crm_analytics_tracking
+
+from crm_dashboard_routes import build_router as build_dashboard_router
+app.include_router(build_dashboard_router(get_db,require_user,templates,LEAD_STATUSES,LEAD_STATUS_LABELS))

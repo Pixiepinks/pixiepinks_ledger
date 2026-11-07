@@ -29,6 +29,7 @@ def managed_grant(user,section):
 
 
 def section_for(path):
+    if path.startswith("/crm/dashboard/"):return "crm"
     if path.startswith('/api/fulfillments/') or (path.startswith('/api/sales-orders/') and '/fulfillments' in path):return 'fulfillments'
     if path=='/api/sales-orders' or path.startswith('/api/sales-orders/'):return 'sales_orders'
     # Longest path wins; /crm does not implicitly grant its child sections.

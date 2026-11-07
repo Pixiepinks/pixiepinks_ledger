@@ -517,6 +517,9 @@ class WhatsAppConversationMessage(Base):
     whatsapp_message_id = Column(String(255), nullable=True, index=True)
     reply_to_whatsapp_message_id = Column(String(255), nullable=True)
     response_kind = Column(String(20), nullable=True)
+    analytics_actor_id = Column(Integer, nullable=True, index=True)
+    analytics_actor_kind = Column(String(16), nullable=True)
+    analytics_category = Column(String(24), nullable=True)
     send_status = Column(String(20), nullable=True)
     sent_by = Column(String(100), nullable=True)
     media_id = Column(String(255), nullable=True)
@@ -636,6 +639,7 @@ class WhatsAppManualSend(Base):
     idempotency_key = Column(String(100), unique=True, nullable=False, index=True)
     conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), nullable=False)
     quick_message_id = Column(Integer, ForeignKey("whatsapp_quick_messages.id", ondelete="RESTRICT"))
+    analytics_actor_id = Column(Integer, nullable=True, index=True)
     message_text = Column(Text, nullable=False)
     status = Column(String(20), nullable=False, default="PROCESSING")
     whatsapp_message_id = Column(String(255))
@@ -1039,3 +1043,19 @@ class MarketingConsentEvent(Base):
 @event.listens_for(MarketingConsentEvent,'before_delete')
 def _marketing_audit_immutable(*args):
     raise ValueError('Marketing consent events are append-only')
+
+
+class CRMAnalyticsPhone(Base):
+    __tablename__='crm_analytics_phones'
+    raw_phone=Column(String(64),primary_key=True)
+    canonical_phone=Column(String(18),index=True)
+    country=Column(String(2),nullable=False,index=True)
+    country_name=Column(String(100),nullable=False)
+
+
+class CRMAnalyticsDelivery(Base):
+    __tablename__='crm_analytics_deliveries'
+    provider_id=Column(String(255),primary_key=True)
+    status=Column(String(16),nullable=False)
+    status_at=Column(DateTime,nullable=False)
+    rank=Column(Integer,nullable=False)
