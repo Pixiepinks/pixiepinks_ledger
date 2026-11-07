@@ -1,0 +1,7 @@
+# Clickable Inbox links and interactive previews
+
+The Inbox previously linked only lowercase `https://` text. It now recognizes HTTP/HTTPS URLs, `www` addresses and bare domains in message bodies and attachment captions. Scheme-less addresses open using HTTPS; the original displayed text, punctuation and line breaks are preserved. Links open in a new tab with noopener/noreferrer and no referrer. Rendering uses text nodes rather than HTML; non-web schemes, credential-bearing URLs and email substrings do not become website links.
+
+Stored outgoing consent requests also display the customer-facing reply-button labels from their persisted prepared evidence. This is a read-only preview: staff cannot click these labels to approve/decline for a customer. The scoped batch query returns labels only, never button IDs or tokens. Other interactive message formats without retained evidence are not reconstructed or invented. This change does not create web-page thumbnail previews or fetch external metadata.
+
+Validation: 94 Inbox/reply/consent checks passed, with two unchanged PostgreSQL-only cases skipped. Final link/caption and attachment suite: 5 passed. Browser checks cover scheme-less addresses, uppercase schemes, punctuation/balanced parentheses, line breaks, unsafe text/credentials/email exclusion, new-tab attributes, mobile overflow and nonactionable consent labels. No schema, sending, consent eligibility, AI, Saved Voices or audio encoding changes. No live customer traffic, deployment or merge.

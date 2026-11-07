@@ -55,3 +55,26 @@ def reply_previews(db,conversation,messages):
         result[message.id]={'available':True,'message_id':original.id,'author':author,'type':kind,
                             'text':(summary or '')[:300],'preview_url':preview}
     return result
+
+
+def interactive_previews(db,conversation,messages):
+    """Display retained consent button labels only; never disclose actionable tokens."""
+    import json
+    from models import MarketingConsentRequest as Request,MarketingConsentEvent as Event
+    from marketing_consent_buttons import VERSION,LABELS
+    ids={m.whatsapp_message_id for m in messages if m.direction=='outbound' and m.whatsapp_message_id}
+    if not ids:return {}
+    from sqlalchemy import cast,String
+    rows=db.query(Request.whatsapp_message_id,Request.wording_version,Event.reason).join(
+        Event,Event.dedup_key=='request-buttons:'+cast(Request.id,String)).filter(
+        Request.conversation_id==conversation.id,Request.whatsapp_message_id.in_(ids),Event.consent_id==Request.consent_id,
+        Event.event_type=='CONSENT_BUTTONS_PREPARED').all()
+    result={}
+    for provider,version,reason in rows:
+        if not (version or '').startswith(VERSION):continue
+        try:
+            evidence=json.loads(reason)
+            titles=[b['title'] for b in evidence['buttons']]
+            if evidence.get('v')==1 and titles==list(LABELS.values()):result[provider]=titles
+        except (ValueError,TypeError,KeyError):continue
+    return result

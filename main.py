@@ -36,7 +36,7 @@ from starlette.datastructures import UploadFile as StarletteUploadFile
 import outbound_media_service as outbound_media
 import quick_message_service as quick_messages
 from phone_country_service import phone_country
-from whatsapp_reply_service import extract_reply_id, reply_previews
+from whatsapp_reply_service import extract_reply_id, reply_previews, interactive_previews
 from sqlalchemy import func, inspect, text, or_, and_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, selectinload
@@ -2368,6 +2368,7 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
             SalesOrder.updated_at.desc(), SalesOrder.id.desc()
         ).first()
     replies_by_message = reply_previews(db, conversation, messages)
+    buttons_by_provider = interactive_previews(db, conversation, messages)
     message_data = [{
         "id": item.id,
         "direction": item.direction, "text": item.message_text,
@@ -2381,6 +2382,7 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
         "attachments": attachments_by_message.get(item.id, []),
         "referral": referrals_by_message.get(item.id),
         "reply_context": replies_by_message.get(item.id),
+        "interactive_buttons": buttons_by_provider.get(item.whatsapp_message_id, []),
         "can_reply": bool(item.whatsapp_message_id and item.whatsapp_message_id.strip()),
         "product": ({"title": item.product_title, "variant": item.variant_title,
                      "sku": item.product_sku, "price": float(item.product_price),
