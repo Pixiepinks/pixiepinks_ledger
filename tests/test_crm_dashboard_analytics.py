@@ -75,7 +75,7 @@ def test_scope_section_grants_shared_access_and_filters(inbox):
     login('quick-staff')
     response=client.get('/crm/dashboard/api');assert response.status_code==200,response.text
     data=response.json();assert data['metrics']['unique_contacts']==1 and data['staff_activity'] is None and data['pipeline'] is None
-    assert data['attention']['counts']['followups'] is None and data['attention']['counts']['payment'] is None
+    assert data['attention']['counts']['followups']==0 and data['attention']['counts']['payment'] is None
     assert 'GB' not in [c['value'] for c in data['filters']['countries']]
     assert [u['id'] for u in data['filters']['staff']]==[sid]
     assert client.get('/crm/dashboard/api?staff_id='+str(oid)).status_code==403

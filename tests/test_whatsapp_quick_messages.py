@@ -277,7 +277,7 @@ def test_chromium_picker_shortcuts_editing_urls_conversations_and_management(inb
             page.locator('#message-input').fill(page.locator('#message-input').input_value()+'\nStaff edited before sending.')
             page.locator('#send-button').click();page.wait_for_function('document.getElementById("send-status").textContent==="Message sent."')
             assert len(sends)==1 and sends[0][1].endswith('Staff edited before sending.')
-            link=page.locator('.message .bubble a');assert link.get_attribute('href')=='https://www.pixiepinks.shop'
+            link=page.locator('.message .bubble a');assert link.get_attribute('href')=='https://www.pixiepinks.shop/'
             assert link.get_attribute('rel')=='noopener noreferrer'
             page.locator('#message-input').fill('/website');page.get_by_role('option').filter(has_text='Unrelated website mention').wait_for();page.locator('#message-input').press('Enter')
             assert page.locator('#message-input').input_value().startswith('🌐 Visit our website:') and len(sends)==1
@@ -297,7 +297,7 @@ def test_chromium_picker_shortcuts_editing_urls_conversations_and_management(inb
             assert page.evaluate('window.injected') is None
             page.get_by_role('option').filter(has_text='<script>').click();assert '<img' in page.locator('#message-input').input_value()
             page.locator('#send-button').click();page.wait_for_function('document.getElementById("send-status").textContent==="Message sent."')
-            page.locator('.message .bubble a').wait_for();assert page.locator('.message .bubble img').count()==0 and page.evaluate('window.injected') is None
+            page.locator('.message .bubble a[href^="https://www.pixiepinks.shop"]').wait_for();assert page.locator('.message .bubble img').count()==0 and page.evaluate('window.injected') is None
             # Management stores plain text, supports create/edit/deactivate and shows usage.
             page.goto('https://inbox.test/crm/quick-messages');page.locator('#quick-new').click()
             for name,value in {'title':'Browser-created reply','shortcut':'browserreply','category':'Browser','body':'Browser https://www.pixiepinks.shop'}.items():page.locator(f'#quick-editor [name="{name}"]').fill(value)

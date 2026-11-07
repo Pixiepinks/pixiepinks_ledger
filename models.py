@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON, UniqueConstraint, CheckConstraint, event, func
+from sqlalchemy import Boolean, Column, Integer, String, Date, DateTime, ForeignKey, Numeric, Text, Float, Enum, JSON, UniqueConstraint, CheckConstraint, event, func, false
 from sqlalchemy.orm import relationship, Mapped, mapped_column
 from datetime import datetime
 from database import Base
@@ -1060,3 +1060,47 @@ class CRMAnalyticsDelivery(Base):
     status=Column(String(16),nullable=False)
     status_at=Column(DateTime,nullable=False)
     rank=Column(Integer,nullable=False)
+
+
+class ConversationWorkState(Base):
+    __tablename__='conversation_work_states'
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id',ondelete='RESTRICT'),primary_key=True)
+    status=Column(String(24),nullable=False,default='NEEDS_REPLY',server_default='NEEDS_REPLY',index=True)
+    version=Column(Integer,nullable=False,default=0,server_default='0')
+    updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    updated_by=Column(Integer,nullable=True)  # Retained actor snapshot, including deleted accounts.
+    reason=Column(String(1000))
+    resolved_at=Column(DateTime)
+    due_at=Column(DateTime,index=True)
+    followup_user_id=Column(Integer,nullable=True,index=True)
+    inbound_id=Column(Integer,nullable=True)
+    inbound_at=Column(DateTime)
+    force_reply=Column(Boolean,nullable=False,default=False,server_default=false())
+    baseline_id=Column(Integer,nullable=False,default=0,server_default='0')
+    review_cutoff_at=Column(DateTime)
+    ack_inbound_id=Column(Integer,nullable=False,default=0,server_default='0')
+    __table_args__=(CheckConstraint("status IN ('NEEDS_REPLY','FOLLOW_UP_LATER','RESOLVED')",name='ck_conversation_work_status'),)
+
+
+class ConversationWorkEvent(Base):
+    __tablename__='conversation_work_events'
+    id=Column(Integer,primary_key=True)
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id',ondelete='RESTRICT'),nullable=False,index=True)
+    dedup_key=Column(String(160),nullable=False,unique=True)
+    fingerprint=Column(String(64),nullable=False)
+    previous_status=Column(String(24),nullable=False)
+    new_status=Column(String(24),nullable=False)
+    actor_id=Column(Integer)
+    actor_name=Column(String(100))
+    trigger=Column(String(16),nullable=False)
+    reason=Column(String(1000))
+    inbound_id=Column(Integer)
+    due_at=Column(DateTime)
+    followup_user_id=Column(Integer)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow,index=True)
+
+
+@event.listens_for(ConversationWorkEvent,'before_update')
+@event.listens_for(ConversationWorkEvent,'before_delete')
+def _conversation_work_event_immutable(*args):
+    raise ValueError('Conversation status history is append-only')

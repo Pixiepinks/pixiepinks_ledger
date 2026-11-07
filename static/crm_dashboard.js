@@ -55,6 +55,7 @@
      const row=node('div');row.className='dash-work';const name=node('div');name.append(node('strong',item.name),node('small',item.reason));
      const wait=node('span',waiting(item.waiting_since));wait.className='dash-wait';wait.dataset.overdue=String(item.waiting_since && Date.now()-new Date(item.waiting_since).getTime()>3600000);
      const owner=node('span',item.owner);owner.className='dash-owner';row.append(name,wait,owner);
+     if(item.work && item.can_manage){const actions=node('div');actions.className='work-actions';window.CRMWorkActions?.buttons(actions,{id:item.conversation_id,name:item.name,work:item.work,can_manage:true},()=>{});row.append(actions);}
      if(item.url){const link=node('a','Open →');link.href=item.url;link.setAttribute('aria-label','Open '+item.name);row.append(link);}attention.append(row);
    }
    if(!data.attention.items.length)attention.append(caption(available.length?'No matching current work in this queue.':'Current work is unavailable with your section access.'));
@@ -119,5 +120,6 @@
  for(const name of ['staff_id','country'])if(state[name]){form.elements[name].append(new Option(state[name],state[name]));form.elements[name].value=state[name];}
  if(matchMedia('(max-width:600px)').matches)document.getElementById('dash-advanced').open=false;
  for(let i=0;i<5;i++){const el=node('div');el.className='dash-loading';document.getElementById('dash-kpis').append(el);}
+ document.addEventListener('conversation-work-updated',()=>refresh());
  refresh();setInterval(()=>{if(!document.hidden&&!dialog.open)refresh();},30000);
 })();

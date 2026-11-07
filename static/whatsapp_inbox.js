@@ -32,6 +32,11 @@
       ...(compact ? {month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}
         : {year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit"})});
   }
+  const workSelection=new Map();
+  function updateWorkSelection(){
+    const count=document.getElementById('work-selected-count');if(count)count.textContent=`${workSelection.size} selected`;
+    const action=document.getElementById('work-bulk-resolve');if(action)action.disabled=!workSelection.size;
+  }
   function conversationRow(c) {
     const button = document.createElement("button"); button.dataset.conversationId = String(c.id); button.className = "conversation-row" + (c.id === selected ? " selected" : "");
     const line = document.createElement("div"); line.className = "conversation-line";
@@ -46,13 +51,21 @@
       const age = minutes < 1 ? "<1m" : minutes < 60 ? `${minutes}m` : minutes < 1440 ? `${Math.floor(minutes / 60)}h ${minutes % 60}m` : `${Math.floor(minutes / 1440)}d ${Math.floor(minutes % 1440 / 60)}h`;
       const wait = badge(`Waiting ${age}`, seconds >= 3600 ? "reply-overdue" : seconds >= 900 ? "reply-warning" : "reply-wait");
       wait.title = `Needs our reply · since ${inboxTime(c.waiting_since)}`; meta.append(wait);
-    } else if (c.reply_queue === "waiting_customer") meta.append(badge("Waiting for customer"));
+    } else if (c.reply_queue === "waiting_customer" && (!c.work || c.work.status==='NEEDS_REPLY')) meta.append(badge("Waiting for customer"));
     if (c.unread_count) { const unread = document.createElement("span"); unread.className = "unread"; text(unread, c.unread_count); meta.append(unread); }
-    button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true, true); return button;
+    if(c.work?.status==='RESOLVED')meta.append(badge('Resolved'));
+    if(c.work?.status==='FOLLOW_UP_LATER')meta.append(badge('Follow up '+inboxTime(c.work.due_at,true)));
+    if(c.work?.window_closed)meta.append(badge('Window closed'));
+    button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true, true);
+    if(!isAdmin)return button;
+    const row=document.createElement('div');row.className='work-select-row';
+    const check=document.createElement('input');check.type='checkbox';check.className='work-select';check.dataset.workCid=String(c.id);check.checked=workSelection.has(c.id);check.setAttribute('aria-label','Select '+c.customer_name);
+    check.onchange=()=>{if(check.checked){if(workSelection.size>=100){check.checked=false;showComposerMessage('Select at most 100 conversations.',true);return;}workSelection.set(c.id,{id:c.id,name:c.customer_name,work:{...c.work}});}else workSelection.delete(c.id);updateWorkSelection();};row.append(check,button);return row;
   }
   let chatRows=[], chatHasMore=false, chatQuery="";
   const pageSize=50;
   function renderChatList(search) {
+    const focusedWork=document.activeElement?.dataset.workCid;
     const top=list.scrollTop, anchor=[...list.querySelectorAll('.conversation-row')].find(row=>row.offsetTop>=top);
     const anchorId=anchor?.dataset.conversationId, anchorOffset=anchor ? anchor.getBoundingClientRect().top : 0;
     list.replaceChildren(...chatRows.map(conversationRow));
@@ -64,6 +77,7 @@
     list.scrollTop=top;
     const retained=anchorId && list.querySelector(`[data-conversation-id="${CSS.escape(anchorId)}"]`);
     if(retained)list.scrollTop+=retained.getBoundingClientRect().top-anchorOffset;
+    if(focusedWork)list.querySelector(`[data-work-cid="${CSS.escape(focusedWork)}"]`)?.focus({preventScroll:true});
   }
   async function loadList(force = false, append = false) {
     const search=document.getElementById('search').value;
@@ -73,7 +87,7 @@
     if ((listLoading && !force && !changed) || document.hidden || (append && (!chatHasMore || changed))) return;
     const generation=++listGeneration;listLoading=true;
     const target=changed ? pageSize : Math.max(pageSize,chatRows.length);
-    if(changed){chatQuery=query;chatRows=[];chatHasMore=false;list.scrollTop=0;}
+    if(changed){workSelection.clear();updateWorkSelection();chatQuery=query;chatRows=[];chatHasMore=false;list.scrollTop=0;}
     const more=list.querySelector('.chat-load-more');if(more){more.disabled=true;text(more,'Loading chats…');}
     try {
       // Refresh the loaded range, rather than collapsing back to the first 50.
@@ -387,7 +401,9 @@
       if (markRead) await api(`/crm/whatsapp/api/conversations/${id}/read`, {method: "POST", signal: controller.signal}); const data = await api(`/crm/whatsapp/api/conversations/${id}`, {signal: controller.signal});
       if (generation !== conversationGeneration || selected !== id) return;
       currentConversationData = data;
+      document.getElementById("send-button").disabled=data.conversation.work?.window_closed===true;
       renderOwner(data.conversation);
+      window.CRMWorkActions?.buttons(document.getElementById('conversation-work-actions'),{id,name:data.conversation.customer_name,work:data.conversation.work,can_manage:data.conversation.can_manage},()=>{});
       root.dispatchEvent(new CustomEvent("inbox-conversation-data", {detail: {id, conversation: data.conversation}}));
       text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));
       const action = document.getElementById("mode-action"); text(action, data.conversation.mode === "AI" ? "Take Over" : "Return to AI"); action.dataset.mode = data.conversation.mode; document.getElementById("payment-banner").hidden = !data.conversation.payment_required;
@@ -480,6 +496,7 @@
     event.preventDefault(); if (textSending) return;
     const input = document.getElementById("message-input"), button = document.getElementById("send-button"), body = input.value.trim(), target = selected;
     if (!target) { showComposerMessage("Select a conversation first.", true); return; }
+    if(currentConversationData?.conversation.work?.window_closed){showComposerMessage("WhatsApp window closed. A new customer reply or approved template is required.",true);return;}
     if (!body) { showComposerMessage("Type a message before sending.", true); input.focus(); return; }
     const quickId = Number(input.dataset.quickMessageId) || null;
     const replyId=quotedReply?.conversation===target ? quotedReply.id : null;
@@ -491,7 +508,7 @@
         ...((quickId || replyId) ? {"X-CSRF-Token": root.dataset.quickMessageCsrf || root.dataset.assignmentCsrf || ""} : {})}, body: JSON.stringify({message: body, ...(quickId ? {quick_message_id: quickId} : {}), ...(replyId ? {reply_to_message_id:replyId} : {})})});
       clearQuotedReply(); input.value = ""; delete input.dataset.quickMessageId; textSendAttempt = null; showComposerMessage("Message sent."); await openConversation(target);
     } catch (error) { showComposerMessage(error.message, true); }
-    finally { textSending = false; input.disabled = false; button.disabled = false; text(button, "Send"); }
+    finally { textSending = false; input.disabled = false; button.disabled = currentConversationData?.conversation.work?.window_closed===true; text(button, "Send"); }
   };
   document.getElementById("quoted-reply-cancel").onclick=()=>{if(!textSending){clearQuotedReply();document.getElementById("message-input").focus();}};
   // Preserve other sending workflows; do not silently drop a selected text quote.
@@ -573,6 +590,15 @@
     const editId = Number(orderDrawer.dataset.editOrder); if (editId) api(`/api/sales-orders/${editId}`).then(data => openOrderDrawer(data.order)).catch(error => showComposerMessage(error.message, true));
   }
   document.addEventListener("visibilitychange", () => { if (!document.hidden) { loadList(); if (selected) openConversation(selected, false); } });
+  document.addEventListener('conversation-work-updated',()=>{loadList(true);if(selected){conversationGeneration++;conversationController?.abort();conversationLoading=false;openConversation(selected);}});
+  if(isAdmin){
+    document.getElementById('work-select-visible').onclick=()=>{const bounds=list.getBoundingClientRect();const visible=new Set([...list.querySelectorAll('.conversation-row')].filter(n=>{const r=n.getBoundingClientRect();return r.bottom>bounds.top && r.top<bounds.bottom;}).map(n=>Number(n.dataset.conversationId)));for(const c of chatRows){if(!visible.has(c.id))continue;if(workSelection.size>=100)break;if(!workSelection.has(c.id))workSelection.set(c.id,{id:c.id,name:c.customer_name,work:{...c.work}});}updateWorkSelection();renderChatList(document.getElementById('search').value);};
+    document.getElementById('work-clear').onclick=()=>{workSelection.clear();updateWorkSelection();renderChatList(document.getElementById('search').value);};
+    document.getElementById('work-bulk-resolve').onclick=()=>window.CRMWorkActions.open([...workSelection.values()],'bulk',data=>{
+      const failed=data.results.filter(r=>!r.ok);for(const r of data.results)if(r.ok)workSelection.delete(r.id);
+      updateWorkSelection();document.getElementById('work-bulk-result').textContent=`${data.results.length-failed.length} resolved; ${failed.length} need review. ${failed.length?'Clear stale selections and select again after reviewing.':''}`;
+    });
+  }
   root.addEventListener("saved-voice-sent", () => { if (selected) openConversation(selected, false); loadList(true); });
 
   if (isAdmin) {

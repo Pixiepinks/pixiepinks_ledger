@@ -206,7 +206,8 @@ class Report:
         lead_query=lead_query.filter(Lead.whatsapp_conversation_id.in_(contacts.with_entities(C.id)))
         if self.user.role=='ADMIN' and self.staff_id is None and not self.country and self.source=='all':
             lead_query=db.query(Lead).filter(Lead.status.notin_(CLOSED),Lead.next_followup.isnot(None),Lead.next_followup<=today)
-        counts['followups']=lead_query.count() if self.leads else None
+        import conversation_followups
+        counts['followups'],followup_rows=conversation_followups.due(db,contacts,lead_query,can_chat,self.leads,offset,limit)
         orders=db.query(SalesOrder).filter(SalesOrder.crm_conversation_id.in_(contacts.with_entities(C.id)))
         can_orders=allowed(self.user,'sales_orders') and settings.SALES_ORDERS_ENABLED
         can_dispatch=allowed(self.user,'fulfillments') and settings.SALES_FULFILLMENT_ENABLED
@@ -220,15 +221,28 @@ class Report:
             rows=query.offset(offset).limit(limit).all();users=conversation_access.owners(db,[r[0] for r in rows])
             for c,since in rows:items.append({'name':c.customer_name or 'WhatsApp customer','reason':'Customer waiting for a reply' if queue=='needs_reply' else 'No assigned owner',
                 'waiting_since':stamp(since),'owner':users[c.assigned_to_user_id].username if c.assigned_to_user_id in users else 'Unassigned','url':f'/crm/whatsapp?conversation={c.id}'})
-        elif queue=='followups' and self.leads:
-            # Today first, then recent overdue work; ancient follow-ups remain in the full list.
-            for lead in lead_query.order_by(case((Lead.next_followup==today,0),else_=1),Lead.next_followup.desc(),Lead.id.desc()).offset(offset).limit(limit):
-                items.append({'name':lead.customer_name,'reason':'Follow-up due '+str(lead.next_followup),'owner':lead.assigned_to or 'Unassigned','waiting_since':None,
-                    'url':f'/crm/whatsapp?conversation={lead.whatsapp_conversation_id}' if lead.whatsapp_conversation_id and can_chat else (f'/crm/leads/{lead.id}' if self.user.role=='ADMIN' else None)})
+        elif queue=='followups':
+            for item in followup_rows:
+                cid=item.get('conversation_id');lid=item.get('lead_id')
+                item['url']=f'/crm/whatsapp?conversation={cid}' if cid and can_chat else f'/crm/leads/{lid}' if lid and self.user.role=='ADMIN' else None
+                items.append(item)
         elif queue in {'payment','dispatch'} and can_orders and (queue!='dispatch' or can_dispatch):
             for order in (payments if queue=='payment' else ready).order_by(SalesOrder.updated_at.desc()).offset(offset).limit(limit):
                 items.append({'name':order.customer_name,'reason':'Payment verification required' if queue=='payment' else 'Ready to dispatch','owner':'Order team','waiting_since':None,
                     'url':f'/crm/sales-orders/{order.id}' if self.user.role=='ADMIN' else f'/crm/whatsapp?conversation={order.crm_conversation_id}' if can_chat else None})
+        if can_chat:
+            import conversation_work_service
+            import re
+            for item in items:
+                match=re.search(r'conversation=(\d+)',item.get('url') or '')
+                if match:item['conversation_id']=int(match.group(1))
+            ids=[i['conversation_id'] for i in items if i.get('conversation_id')]
+            visible={c.id:c for c in contacts.filter(C.id.in_(ids)).all()}
+            snapshots=conversation_work_service.snapshots(db,list(visible.values()))
+            for item in items:
+                c=visible.get(item.get('conversation_id'))
+                if c:
+                    item['work']=snapshots[c.id];item['can_manage']=self.user.role=='ADMIN' or c.assigned_to_user_id==self.user.id
         return {'counts':counts,'items':items,'selected':queue,'current':True}
 
     def pipeline(self,statuses):

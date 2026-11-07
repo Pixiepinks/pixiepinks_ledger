@@ -407,13 +407,15 @@ def _store_conversation_message(
                 db.add(conversation)
             if customer_name:
                 conversation.customer_name = customer_name
-            conversation.last_message_at = when
+            conversation.last_message_at = max(conversation.last_message_at or when,when)
             conversation.updated_at = datetime.utcnow()
             if direction == "inbound":
-                conversation.last_customer_message_at = when
+                conversation.last_customer_message_at = max(conversation.last_customer_message_at or when,when)
                 conversation.unread_count = (conversation.unread_count or 0) + 1
             db.flush()
             if direction == 'inbound':
+                import conversation_work_service
+                conversation_work_service.inbound(db,conversation,message,processed_record is None or processed_record.message_type in {'text','image','audio','video','document','sticker','interactive'})
                 import marketing_consent_service
                 if consent_button_id is not None:
                     import marketing_consent_buttons
@@ -2243,13 +2245,22 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
         query = query.filter(WhatsAppConversation.mode == value.upper())
     elif value == "payment":
         query = query.filter(WhatsAppConversation.phone_number.in_(payment_phones or {"__none__"}))
-    if reply_queue not in {'all','needs_reply','waiting_customer'}:
+    if reply_queue not in {'all','needs_reply','waiting_customer','follow_up_later','followups_due','resolved','window_expired'}:
         raise HTTPException(422,'Choose All replies, Needs our reply or Waiting for customer')
+    from models import ConversationWorkState as Work
+    import conversation_work_service
     pending, outgoing = inbox_reply_queue.summary(db)
-    query = query.outerjoin(pending,pending.c.phone == WhatsAppConversation.phone_number).outerjoin(
+    query = query.outerjoin(Work,Work.conversation_id==WhatsAppConversation.id).outerjoin(pending,pending.c.phone == WhatsAppConversation.phone_number).outerjoin(
         outgoing,outgoing.c.phone == WhatsAppConversation.phone_number)
     if reply_queue == 'needs_reply':query = query.filter(pending.c.waiting_since.isnot(None))
-    elif reply_queue == 'waiting_customer':query = query.filter(pending.c.waiting_since.is_(None),outgoing.c.replies > 0)
+    elif reply_queue == 'waiting_customer':query = query.filter(pending.c.waiting_since.is_(None),outgoing.c.replies > 0,or_(Work.status.is_(None),Work.status=='NEEDS_REPLY'))
+    elif reply_queue == 'follow_up_later':query=query.filter(Work.status=='FOLLOW_UP_LATER')
+    elif reply_queue == 'followups_due':query=query.filter(Work.status=='FOLLOW_UP_LATER',Work.due_at<=datetime.utcnow())
+    elif reply_queue == 'resolved':query=query.filter(Work.status=='RESOLVED')
+    elif reply_queue == 'window_expired':
+        latest_inbound=db.query(func.max(WhatsAppConversationMessage.created_at)).filter(WhatsAppConversationMessage.phone_number==WhatsAppConversation.phone_number,WhatsAppConversationMessage.direction=='inbound').correlate(WhatsAppConversation).scalar_subquery()
+        latest=func.coalesce(WhatsAppConversation.last_customer_message_at,latest_inbound)
+        query=query.filter(or_(latest.is_(None),latest<=datetime.utcnow()-timedelta(hours=24),latest>datetime.utcnow()))
     page_size=min(max(limit,1),100)
     queue_rows = query.add_columns(pending.c.waiting_since,outgoing.c.replies).order_by(
         *([pending.c.waiting_since.desc()] if reply_queue == 'needs_reply' else []),
@@ -2268,9 +2279,10 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
     for message in recent_messages:
         latest_messages.setdefault(message.phone_number, message)
     unread_total = conversation_access.unread(db,user)
+    work_states=conversation_work_service.snapshots(db,rows)
     owner_users=conversation_access.owners(db,rows)
     linked_leads={row.whatsapp_conversation_id:row for row in db.query(Lead.id,Lead.status,Lead.whatsapp_conversation_id).filter(Lead.whatsapp_conversation_id.in_([item.id for item in rows] or [-1])).all()}
-    return {"conversations": [{**_conversation_payload(db, row, payment_phones, latest_messages, linked_leads,owner_users), **queue_payloads[row.id]} for row in rows],
+    return {"conversations": [{**_conversation_payload(db, row, payment_phones, latest_messages, linked_leads,owner_users), **queue_payloads[row.id],"work":work_states[row.id]} for row in rows],
             "unread_total": unread_total,"has_more":has_more,"next_offset":offset+len(rows) if has_more else None}
 
 
@@ -2418,7 +2430,8 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
                      if sales_order.order_status == "DRAFT"
                      and "edit" in staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS) else None),
     }
-    return {"conversation": {**_conversation_payload(db, conversation),
+    import conversation_work_service
+    return {"conversation": {**_conversation_payload(db, conversation),"work":conversation_work_service.snapshots(db,[conversation])[conversation.id],
                              "phone_country": phone_country(conversation.phone_number)}, "messages": message_data,
             "order": order_data, "sales_order": sales_order_data}
 
@@ -4542,3 +4555,6 @@ import crm_analytics_tracking
 
 from crm_dashboard_routes import build_router as build_dashboard_router
 app.include_router(build_dashboard_router(get_db,require_user,templates,LEAD_STATUSES,LEAD_STATUS_LABELS))
+
+from conversation_work_routes import build_router as build_work_router
+app.include_router(build_work_router(get_db,require_user,_require_csrf,_csrf_token))
