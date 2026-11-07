@@ -93,7 +93,7 @@ def send_whatsapp_image(
 
 @global_ai_control.transport_send
 def send_whatsapp_text(
-    recipient: str, body: str, *, return_message_id: bool = False
+    recipient: str, body: str, *, return_message_id: bool = False, reply_to_message_id: str | None = None
 ) -> bool | str | None:
     """Send a text through Meta without allowing failures to escape the worker."""
     access_token = settings.META_WHATSAPP_ACCESS_TOKEN
@@ -113,6 +113,8 @@ def send_whatsapp_text(
         "type": "text",
         "text": {"body": body},
     }
+    if reply_to_message_id:
+        payload["context"] = {"message_id": reply_to_message_id}
     try:
         response = httpx.post(
             url,
