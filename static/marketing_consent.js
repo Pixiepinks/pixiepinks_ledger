@@ -8,6 +8,7 @@
   const node=(tag,text)=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;return el;};
   const readable=value=>(value||'—').replaceAll('_',' ');
   const date=value=>value?new Date(value).toLocaleString('en-GB',{timeZone:'Asia/Colombo'}):'—';
+  const statusLabel=row=>row.status==='PENDING'?`PENDING — ${row.needs_review?'Staff review required':'Awaiting customer'}`:readable(row.status);
   const badge=status=>{const el=node('span',readable(status));el.className='marketing-status';el.dataset.status=status;return el;};
   async function api(path,body,headers={}){
     const response=await fetch(path,{credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...headers},...(body?{method:'POST',body:JSON.stringify(body)}:{})});
@@ -19,7 +20,7 @@
     const wrap=node('label',label),el=node(type==='textarea'?'textarea':'input');if(type!=='textarea')el.type=type;el.value=value;wrap.append(el);form.append(wrap);return el;
   }
   function select(form,label,options,value=null){
-    const wrap=node('label',label),el=node('select');el.replaceChildren(...options.map(o=>new Option(readable(o[1]||o[0]),o[0])));if(value!==null)el.value=value;wrap.append(el);form.append(wrap);return el;
+    const wrap=node('label',label),el=node('select');el.setAttribute('aria-label',label);el.replaceChildren(...options.map(o=>new Option(readable(o[1]||o[0]),o[0])));if(value!==null)el.value=value;wrap.append(el);form.append(wrap);return el;
   }
   const endpoint=id=>`${dashboard?'/crm/marketing-consent/api':'/crm/whatsapp/api/marketing-consent'}/${id}`;
   async function act(row,data){
@@ -29,10 +30,11 @@
     }catch(error){if(token===generation)feedback.textContent=error.message;}
   }
   function render(data){
-    const row=data.contact;content.replaceChildren();content.append(node('h3',row.name),badge(row.status),
+    const row=data.contact;content.replaceChildren();content.append(node('h3',row.name),badge(row.status),node('p',statusLabel(row)),
       node('p',`${row.phone||'No verified WhatsApp identity'} · Source: ${readable(row.source)}`),
       node('p',`Consent date: ${date(row.consent_at)} · Updated: ${date(row.updated_at)}`),
       node('p',`Eligible: ${row.eligible?'Yes':'No'}${row.needs_review?' · Staff review required':''}${row.identity_conflict?' · Identity conflict':''}`));
+    if(data.review)renderReview(data.review,row);
     if(row.latest_request)content.append(node('p',`Consent request submission: ${row.latest_request.status} · Delivery: ${row.latest_request.delivery_status||'Not reported'}`));
     if(row.opted_out_at)content.append(node('p',`Last opt-out: ${date(row.opted_out_at)} · ${readable(row.opt_out_source)}`));
     const interests=node('form');const tags=select(interests,'Product interests (not consent)',data.interests.map(t=>[t,t]));tags.multiple=true;tags.size=4;
@@ -61,7 +63,7 @@
           evidence_type:evidenceType.value,evidence_reference:evidence.value,affirmative:affirmative.checked,reason:note.value});};content.append(form);
     }
     if(row.conversation_id){
-      const form=node('form'),language=select(form,'Consent request language',[['en','English'],['si','Sinhala']]);
+      const form=node('form'),language=select(form,'Consent request language',[['si','Sinhala'],['en','English'],['ta','Tamil']], 'si');
       const preview=node('button','Request consent — preview');preview.className='btn btn-secondary';preview.disabled=!data.can_request;
       form.append(preview,node('p',data.request_explanation||'Requires an open 24-hour service window and explicit staff confirmation.'));
       const previewArea=node('div');form.append(previewArea);
@@ -88,6 +90,34 @@
         finally{if(token===generation)preview.disabled=!data.can_request;}
       };content.append(form);
     }
+  }
+  function renderReview(review,row){
+    const section=node('section');section.className='marketing-review';section.append(node('h4','Review Customer Response'));
+    const grid=node('dl');
+    const details=[['Customer',row.name],['WhatsApp',row.phone],['Consent status',statusLabel(row)],
+      ['Review reason',review.reason],['Customer identity',review.identity_verified?'Verified against current CRM identity':'Requires verification'],
+      ['Original consent request',review.request_text],['Request timestamp',date(review.request_at)],['Request WhatsApp message ID',review.request_message_id],
+      ['Customer response',review.response_text],['Response timestamp',date(review.response_at)],['Response WhatsApp message ID',review.response_message_id],
+      ['Reply-to message ID',review.reply_to_message_id],['Evidence reference',review.evidence_reference]];
+    for(const [label,value] of details){const title=node('dt',label),valueNode=node('dd',value||'Not recorded');if(['Original consent request','Customer response','Review reason'].includes(label)){title.className='review-wide';valueNode.className='review-wide';}grid.append(title,valueNode);}
+    section.append(grid);
+    if(review.unresolved){
+      const form=node('form'),decision=select(form,'Review outcome',[['pending','Keep pending'],['approve','Approve consent'],['decline','Mark declined / opted out']]);
+      const confirmation=field(form,'I verified that this customer explicitly agreed to receive PixiePinks WhatsApp promotional messages.','checkbox');
+      const reason=field(form,'Review decision reason');reason.required=true;reason.maxLength=500;
+      const submit=node('button','Save review decision');submit.className='btn btn-secondary';form.append(submit);
+      const approve=decision.querySelector('option[value="approve"]');approve.disabled=!review.can_approve;
+      if(!review.can_approve)form.append(node('p','Approval unavailable: evidence is incomplete, contradictory, withdrawn or identity verification is required.'));
+      form.onsubmit=async e=>{
+        e.preventDefault();if(decision.value==='approve'&&!confirmation.checked){feedback.textContent='Explicit verification confirmation is required.';return;}
+        submit.disabled=true;const token=generation;
+        const payload={event_id:review.event_id,decision:decision.value,confirmed:confirmation.checked,reason:reason.value,version:row.version,key:crypto.randomUUID()};
+        try{await api(endpoint(row.id)+'/review',payload);if(token!==generation)return;feedback.textContent='Review recorded. No message was sent.';await loadCurrent();if(inbox)loadWidget();else loadTable();}
+        catch(error){if(token===generation)feedback.textContent=error.message+' Refresh before retrying.';}
+        finally{if(token===generation)submit.disabled=false;}
+      };section.append(form);
+    }
+    content.append(section);
   }
   async function loadCurrent(){
     if(!current)return;const token=generation;content.setAttribute('aria-busy','true');
@@ -116,7 +146,7 @@
     if(!inbox || !widgetCid || widgetLoading)return;const cid=widgetCid,token=widgetGeneration;widgetLoading=true;
     try{
       const data=await api(`/crm/whatsapp/api/conversations/${cid}/marketing-consent`);if(token!==widgetGeneration)return;
-      const box=document.getElementById('marketing-consent-summary');box.replaceChildren(badge(data.contact.status),node('p',`Interested in: ${data.contact.interests.join(', ')||'—'}`),node('p',`Source: ${readable(data.contact.source)} · Consent: ${date(data.contact.consent_at)}`),node('p',`Updated: ${date(data.contact.updated_at)}`));
+      const box=document.getElementById('marketing-consent-summary');box.replaceChildren(badge(data.contact.status),node('p',statusLabel(data.contact)),node('p',`Interested in: ${data.contact.interests.join(', ')||'—'}`),node('p',`Source: ${readable(data.contact.source)} · Consent: ${date(data.contact.consent_at)}`),node('p',`Updated: ${date(data.contact.updated_at)}`));
       document.getElementById('marketing-consent-panel').hidden=false;document.getElementById('marketing-consent-manage').onclick=()=>open(data.contact.id);
     }catch(_){if(token===widgetGeneration){document.getElementById('marketing-consent-panel').hidden=false;document.getElementById('marketing-consent-summary').textContent='Consent unavailable. Refresh to retry.';}}
     finally{if(token===widgetGeneration)widgetLoading=false;}
@@ -135,9 +165,9 @@
     try{
       const query=new URLSearchParams(new FormData(document.getElementById('marketing-search')));query.set('offset',offset);
       const data=await api('/crm/marketing-consent/api?'+query);if(token!==tableGeneration)return;
-      const kpi=document.getElementById('marketing-kpis'),kpiNames={total:'Visible CRM contacts',eligible:'Eligible marketing contacts'};kpi.replaceChildren(...Object.entries(data.kpis).map(([key,value])=>node('span',`${kpiNames[key]||readable(key)}: ${value}`)));
+      const kpi=document.getElementById('marketing-kpis'),kpiNames={total:'Visible CRM contacts',eligible:'Eligible marketing contacts',needs_review:'Unresolved staff reviews'};kpi.replaceChildren(...Object.entries(data.kpis).map(([key,value])=>node('span',`${kpiNames[key]||readable(key)}: ${value}`)));
       document.getElementById('marketing-rows').replaceChildren(...data.contacts.map(row=>{
-        const tr=node('tr');[row.name,row.phone||'—',row.status,readable(row.source),date(row.consent_at),row.interests.join(', '),date(row.updated_at)].forEach((value,index)=>{const cell=node('td',index===2?null:value);if(index===2)cell.append(badge(row.status));tr.append(cell);});
+        const tr=node('tr');[row.name,row.phone||'—',row.status,readable(row.source),date(row.consent_at),row.interests.join(', '),date(row.updated_at)].forEach((value,index)=>{const cell=node('td',index===2?null:value);if(index===2){cell.append(badge(row.status));if(row.status==='PENDING')cell.append(node('small',row.needs_review?'Staff review required':'Awaiting customer'));}tr.append(cell);});
         const cell=node('td');cell.append(button('View details',()=>open(row.id)));tr.append(cell);return tr;
       }));status.textContent=data.contacts.length?`${data.total} matching contacts`:'No matching consent contacts.';
       document.getElementById('marketing-prev').disabled=offset===0;document.getElementById('marketing-next').disabled=offset+50>=data.total;

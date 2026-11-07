@@ -65,13 +65,14 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
             'consent_csrf':csrf_token(request),'consent_statuses':STATUSES,'consent_sources':SOURCES,'consent_interests':INTERESTS},headers={'Cache-Control':'private, no-store'})
 
     @router.get('/crm/marketing-consent/api')
-    def listing(response:Response,q:str='',status:str='',source:str='',interest:str='',date_from:str='',date_to:str='',offset:int=0,include_archived:bool=False,db=Depends(get_db),user=Depends(require_user)):
+    def listing(response:Response,q:str='',status:str='',source:str='',interest:str='',date_from:str='',date_to:str='',offset:int=0,include_archived:bool=False,needs_review:bool=False,db=Depends(get_db),user=Depends(require_user)):
         response.headers['Cache-Control']='private, no-store'
         if offset<0 or len(q)>100:raise HTTPException(422,'Invalid search or offset.')
         base=scoped(db.query(Consent),db,user)
         if include_archived and user.role!='ADMIN':raise HTTPException(403,'Archived identities are administrator-only.')
         if not include_archived:base=base.filter(or_(Consent.customer_id.isnot(None),Consent.conversation_id.isnot(None),Consent.lead_id.isnot(None)))
         query=base
+        if needs_review:query=query.filter(Consent.status=='PENDING',Consent.needs_review.is_(True))
         if status:
             if status not in STATUSES:raise HTTPException(422,'Choose an existing consent status.')
             query=query.filter(Consent.status==status)
@@ -92,7 +93,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         counts={state:base.filter(Consent.status==state).count() for state in STATUSES}
         eligible=sum(service.eligibility(db,row)['eligible'] for row in base.filter(Consent.status=='OPTED_IN').yield_per(200))
         return {'contacts':[service.public(db,r) for r in query.order_by(Consent.updated_at.desc(),Consent.id.desc()).offset(offset).limit(50)],
-                'total':query.count(),'offset':offset,'kpis':{'total':sum(counts.values()),**counts,'eligible':eligible}}
+                'total':query.count(),'offset':offset,'kpis':{'total':sum(counts.values()),**counts,'eligible':eligible,'needs_review':base.filter(Consent.status=='PENDING',Consent.needs_review.is_(True)).count()}}
 
     @router.get('/crm/whatsapp/api/conversations/{conversation_id}/marketing-consent')
     def inbox_contact(conversation_id:int,response:Response,db=Depends(get_db),user=Depends(require_user)):
@@ -108,13 +109,13 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         return {'contact':service.public(db,row,user.role=='ADMIN'),'can_verify':user.role=='ADMIN',
                 'can_request':not unresolved and conversation_access.permissions(db,user,conversation)['can_reply'] and window and row.status=='NOT_REQUESTED' and service.valid_identity(db,row),
                 'request_explanation':explanation or ('An earlier request outcome is uncertain; administrator review is required.' if unresolved else None) or ('A pending/granted/withdrawn consent or identity conflict blocks new requests.' if row.status!='NOT_REQUESTED' or not service.valid_identity(db,row) else None),
-                'interests':INTERESTS,'wording':WORDING}
+                'interests':INTERESTS,'wording':WORDING,'review':service.response_review(db,row) if user.role=='ADMIN' else None}
 
     @router.get('/crm/marketing-consent/api/{contact_id}')
     @router.get('/crm/whatsapp/api/marketing-consent/{contact_id}')
     def detail(contact_id:int,response:Response,db=Depends(get_db),user=Depends(require_user)):
         row=authorized_contact(db,user,contact_id);response.headers['Cache-Control']='private, no-store'
-        return {'contact':service.public(db,row,user.role=='ADMIN'),'can_verify':user.role=='ADMIN','interests':INTERESTS,'wording':WORDING}
+        return {'contact':service.public(db,row,user.role=='ADMIN'),'can_verify':user.role=='ADMIN','interests':INTERESTS,'wording':WORDING,'review':service.response_review(db,row) if user.role=='ADMIN' else None}
 
     @router.get('/crm/marketing-consent/api/{contact_id}/history')
     @router.get('/crm/whatsapp/api/marketing-consent/{contact_id}/history')
@@ -129,6 +130,13 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
             events.append(item)
         return {'events':events,'next_before':rows[49].id if len(rows)>50 else None}
 
+    @router.post('/crm/marketing-consent/api/{contact_id}/review')
+    @router.post('/crm/whatsapp/api/marketing-consent/{contact_id}/review')
+    async def review(contact_id:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        csrf(request);authorize(user);row=authorized_contact(db,user,contact_id)
+        service.review_action(db,row,user,await body(request));commit(db)
+        return {'contact':service.public(db,row,user.role=='ADMIN')}
+
     @router.post('/crm/marketing-consent/api/{contact_id}/action')
     @router.post('/crm/whatsapp/api/marketing-consent/{contact_id}/action')
     async def action(contact_id:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
@@ -142,7 +150,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         row=service.contact_for_conversation(db,conversation)
         if not row:raise HTTPException(409,'Consent identity is not initialized.')
         data=await body(request)
-        result=service.prepare_request(db,row,conversation,user,data.get('language'),data.get('key'))
+        result=service.prepare_request(db,row,conversation,user,data.get('language','si'),data.get('key'))
         commit(db)
         return {'request_id':result.id,'text':result.message_text,'key':result.idempotency_key,'status':result.status,'version':result.wording_version}
 

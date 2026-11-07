@@ -10,7 +10,7 @@ from sqlalchemy import or_
 from models import (MarketingConsent as Consent,MarketingConsentEvent as Event,MarketingConsentRequest as ConsentRequest,
                     WhatsAppConversation as Conversation,WhatsAppConversationMessage as Message,Customer,Lead,User)
 from marketing_identity import phone,register
-from marketing_consent_constants import SCOPE,STATUSES,SOURCES,INTERESTS,WORDING
+from marketing_consent_constants import SCOPE,STATUSES,SOURCES,INTERESTS,WORDING,WORDING_VERSION
 import conversation_access
 from quick_message_service import require_reply_window
 
@@ -136,6 +136,9 @@ def apply_action(db,row,user,body):
         tags=body.get('interests')
         if not isinstance(tags,list) or len(tags)>len(INTERESTS) or any(tag not in INTERESTS for tag in tags):raise HTTPException(422,'Choose existing product interest tags.')
         values={'interests':sorted(set(tags))};kind='INTERESTS_UPDATED'
+    elif action=='keep_pending':
+        if row.status!='PENDING' or not row.needs_review or not reason.strip():raise HTTPException(409,'An unresolved pending review and reason are required.')
+        values={'needs_review':True};kind='RESPONSE_REVIEW_DEFERRED'
     elif action=='opt_out':
         if not reason.strip():raise HTTPException(422,'Record the customer withdrawal evidence or reason.')
         values={'status':'OPTED_OUT','opted_out_at':now,'opt_out_source':'STAFF_VERIFIED_EXTERNAL','opt_out_reason':reason,
@@ -193,7 +196,7 @@ def prepare_request(db,row,conversation,user,language,key):
     # Reserve a version to serialize previews from different staff. No state becomes pending yet.
     change(db,row,row.version,{'updated_by':user.id})
     request=ConsentRequest(consent_id=row.id,conversation_id=conversation.id,phone_e164=row.phone_e164,actor_id=user.id,
-        idempotency_key=key,language=language,wording_version='pixiepinks-wa-marketing-v1-'+language,message_text=WORDING[language],
+        idempotency_key=key,language=language,wording_version=WORDING_VERSION+language,message_text=WORDING[language],
         base_version=row.version,expires_at=now+timedelta(minutes=30))
     db.add(request);db.flush();return request
 
@@ -241,7 +244,7 @@ def inbound(db,message):
     declines={canonical(value) for value in ['no','no thanks','නැහැ','இல்லை']}
     request=db.get(ConsentRequest,row.active_request_id) if row.active_request_id else None
     active=bool(request and row.status=='PENDING' and request.status=='SENT' and request.phone_e164==normalized and request.sent_at and request.sent_at<=message.created_at<=request.expires_at and request.delivery_status!='failed')
-    linked=bool(active and message.reply_to_whatsapp_message_id==request.whatsapp_message_id)
+    linked=bool(active and request.whatsapp_message_id and message.reply_to_whatsapp_message_id==request.whatsapp_message_id)
     previous=row.status;now=datetime.utcnow();values={};kind=None
     evidence={'source':'CUSTOMER_REQUEST','evidence_type':'CRM_MESSAGE','evidence_reference':'message:'+str(message.id),'evidence_at':message.created_at,'evidence_text':message.message_text}
     if text in stops or (linked and text in declines):
@@ -257,8 +260,13 @@ def inbound(db,message):
         request.status='ANSWERED'
     elif linked or (active and text in yes|declines):
         kind='RESPONSE_REVIEW_REQUIRED';values={'needs_review':True}
+        code=('MISSING_REQUEST_REFERENCE' if not request.whatsapp_message_id else
+              'MISSING_REPLY_CONTEXT' if not message.reply_to_whatsapp_message_id else
+              'MISMATCHED_REPLY_CONTEXT' if message.reply_to_whatsapp_message_id!=request.whatsapp_message_id else
+              'IDENTITY_CONFLICT' if not valid_identity(db,row) else 'OTHER_VERIFICATION_FAILURE')
+        review_reason=json.dumps({'v':1,'code':code,'request_id':request.id,'message_id':message.id},separators=(',',':'))
     if kind:
-        change(db,row,row.version,values);event(db,row,previous,kind,key,reason='Customer message; no automated reply was sent.',occurred=message.created_at,evidence=evidence)
+        change(db,row,row.version,values);event(db,row,previous,kind,key,reason=review_reason if kind=='RESPONSE_REVIEW_REQUIRED' else 'Customer message; no automated reply was sent.',occurred=message.created_at,evidence=evidence)
 
 
 def delivery(db,whatsapp_id,status):
@@ -276,3 +284,90 @@ def delivery(db,whatsapp_id,status):
     change(db,row,row.version,values)
     event(db,row,previous,'CONSENT_INVALIDATED' if previous=='OPTED_IN' else 'REQUEST_DELIVERY_FAILED',key,
           reason='Meta reported that the consent request failed delivery; administrator review is required.')
+
+
+REVIEW_REASONS={
+    'MISSING_REPLY_CONTEXT':'Customer response has no WhatsApp Reply reference.',
+    'MISMATCHED_REPLY_CONTEXT':'Customer replied to a different message.',
+    'IDENTITY_CONFLICT':'Customer identity requires verification.',
+    'MISSING_REQUEST_REFERENCE':'Request or response evidence is incomplete.',
+    'OTHER_VERIFICATION_FAILURE':'Another verification condition failed.',
+}
+
+
+def response_review(db,row):
+    """Read retained evidence; never infer linkage for historical audit entries."""
+    ev=db.query(Event).filter_by(consent_id=row.id,event_type='RESPONSE_REVIEW_REQUIRED').order_by(Event.id.desc()).first()
+    if not ev:return None
+    metadata={}
+    try:
+        parsed=json.loads(ev.reason or '')
+        if isinstance(parsed,dict) and parsed.get('v')==1:metadata=parsed
+    except (ValueError,TypeError):pass
+    message=None
+    if ev.evidence_reference and re.fullmatch(r'message:\d+',ev.evidence_reference):
+        message=db.get(Message,int(ev.evidence_reference.split(':')[1]))
+    # Legacy events have no durable request association. Do not guess from the current request.
+    request=db.get(ConsentRequest,metadata.get('request_id')) if type(metadata.get('request_id')) is int else None
+    if request and request.consent_id!=row.id:request=None
+    identity_ok=valid_identity(db,row)
+    complete=bool(request and message and request.status=='SENT' and request.whatsapp_message_id
+        and request.sent_at and message.whatsapp_message_id and message.direction=='inbound'
+        and phone(message.phone_number)==row.phone_e164==request.phone_e164
+        and request.sent_at<=message.created_at<=request.expires_at and request.delivery_status!='failed'
+        and metadata.get('message_id')==message.id and message.created_at==ev.evidence_at
+        and message.message_text==ev.evidence_text and request.message_text==ev.wording
+        and request.wording_version==ev.wording_version and row.active_request_id==request.id)
+    text=' '.join(unicodedata.normalize('NFKC',message.message_text if message else '').casefold().split()).rstrip('.!')
+    affirmative=text in {'yes','yes, i agree','yes i agree','i agree to receive pixiepinks promotions','ඔව්','ஆம்'}
+    contradictory=bool(message and request and message.reply_to_whatsapp_message_id and message.reply_to_whatsapp_message_id!=request.whatsapp_message_id)
+    allowed=bool(complete and identity_ok and affirmative and not contradictory and row.status=='PENDING' and row.needs_review
+        and not row.opted_out_at and row.wording==request.message_text and row.wording_version==request.wording_version)
+    code=metadata.get('code')
+    return {'event_id':ev.id,'reason_code':code if code in REVIEW_REASONS else None,
+        'reason':REVIEW_REASONS.get(code,'Review required — exact reason not recorded.'),
+        'identity_verified':identity_ok,'can_approve':allowed,'unresolved':row.status=='PENDING' and row.needs_review,
+        'request_id':request.id if request else None,'request_text':request.message_text if request else ev.wording,
+        'request_at':stamp(request.sent_at) if request else None,'request_message_id':request.whatsapp_message_id if request else None,
+        'response_text':ev.evidence_text,'response_at':stamp(ev.evidence_at),
+        'response_message_id':message.whatsapp_message_id if message else None,
+        'reply_to_message_id':message.reply_to_whatsapp_message_id if message else None,
+        'evidence_reference':ev.evidence_reference}
+
+
+def review_action(db,row,user,body):
+    """Approve only retained evidence, through the original verification policy."""
+    if user.role!='ADMIN':raise HTTPException(403,'Only administrators may verify consent responses.')
+    # Preserve the original service's action fingerprint and replay semantics.
+    key=body.get('key');dedup='staff:'+str(user.id)+':'+str(key)
+    fingerprint=hashlib.sha256(json.dumps(body,sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+    prior=db.query(Event).filter_by(dedup_key=dedup).one_or_none()
+    if prior:
+        if prior.consent_id!=row.id or prior.action_fingerprint!=fingerprint:raise HTTPException(409,'Review key belongs to another decision.')
+        return
+    review=response_review(db,row)
+    if not review or type(body.get('event_id')) is not int or body['event_id']!=review['event_id']:raise HTTPException(409,'Refresh the current response evidence.')
+    if not review['unresolved']:raise HTTPException(409,'This response no longer needs review.')
+    decision=body.get('decision')
+    data={'key':key,'version':body.get('version'),'reason':body.get('reason')}
+    if decision=='approve':
+        if body.get('confirmed') is not True or not review['can_approve']:raise HTTPException(422,'Complete, non-contradictory affirmative evidence and explicit confirmation are required.')
+        request=db.get(ConsentRequest,review['request_id'])
+        data.update(action='verify',source='CUSTOMER_REQUEST',scope=SCOPE,affirmative=True,
+            source_description='Administrator reviewed request:'+str(request.id)+' and '+review['evidence_reference'],
+            wording=request.message_text,wording_version=request.wording_version,evidence_type='CRM_MESSAGE',
+            evidence_reference=review['evidence_reference'],evidence_at=review['response_at'])
+    elif decision=='pending':data['action']='keep_pending'
+    elif decision=='decline':
+        text=' '.join((review['response_text'] or '').casefold().split()).rstrip('.!')
+        if text not in {'no','no thanks','stop','unsubscribe','නැහැ','නවත්වන්න','இல்லை','நிறுத்து'}:raise HTTPException(422,'The retained response does not establish a decline. Record separate withdrawal evidence through the existing workflow.')
+        data['action']='opt_out'
+    else:raise HTTPException(422,'Choose a supported review decision.')
+    apply_action(db,row,user,data)
+    for ev in db.new:
+        if isinstance(ev,Event) and ev.dedup_key==dedup:
+            ev.action_fingerprint=fingerprint
+            ev.source_description='Reviewed consent event:'+str(review['event_id'])+'; request:'+str(review['request_id'])
+            ev.evidence_reference=review['evidence_reference']
+            ev.evidence_type='CRM_MESSAGE'
+            ev.evidence_at=timestamp(review['response_at']) if review['response_at'] else None
