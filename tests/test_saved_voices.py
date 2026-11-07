@@ -259,20 +259,24 @@ def test_postgresql_upgrade_and_concurrent_claim(tmp_path, monkeypatch):
         admin.dispose()
 
 
-def test_chromium_library_preview_selection_and_lost_ack_recovery(voices):
+@pytest.mark.parametrize("outcome",["sent","lost_ack","FAILED","UNKNOWN","delivery_failed"])
+def test_chromium_library_preview_selection_and_lost_ack_recovery(voices,outcome):
     api = pytest.importorskip("playwright.sync_api"); chromium = shutil.which("chromium")
     if not chromium: pytest.skip("Chromium unavailable")
     v = voices; row = v.create(title="Delivery recording", transcript="Api islandwide delivery karanawa.").json()["voice"]
     with api.sync_playwright() as runtime:
         browser = runtime.chromium.launch(executable_path=chromium, headless=True, args=["--no-sandbox"])
         try:
-            page = browser.new_page(); errors = []; requests = []; lost = [True]
+            page = browser.new_page(); errors = []; requests = []; lost = [outcome=="lost_ack"]
             page.on("pageerror", lambda error: errors.append(str(error)))
             def serve(route):
                 req = route.request; url = urlsplit(req.url)
                 if url.hostname != "voices.test": route.fulfill(status=200, body=""); return
                 headers = {key:value for key,value in req.headers.items() if key in {"content-type", "x-csrf-token", "idempotency-key", "range"}}
                 requests.append((req.method, url.path))
+                if req.method == "POST" and url.path.endswith("/send-saved-voice") and outcome in {"FAILED","UNKNOWN","delivery_failed"}:
+                    route.fulfill(status=200,json={"status":"SENT" if outcome=="delivery_failed" else outcome,
+                        "delivery_status":"failed" if outcome=="delivery_failed" else None});return
                 response = v.client.request(req.method, url.path + ("?" + url.query if url.query else ""),
                     content=req.post_data_buffer, headers=headers, follow_redirects=False)
                 if req.method == "POST" and url.path.endswith("/send-saved-voice") and lost[0]:
@@ -288,12 +292,23 @@ def test_chromium_library_preview_selection_and_lost_ack_recovery(voices):
             assert page.locator("#saved-voice-selected-transcript").inner_text() == row["transcript"]
             assert not v.uploads and not v.sends
             page.locator("#saved-voice-send").click()
-            page.locator("#saved-voice-status").filter(has_text="Check send status").wait_for()
-            assert len(v.sends) == 1
-            page.locator("#saved-voice-check").click()
-            page.locator("#saved-voice-status").filter(has_text="Submitted to WhatsApp").wait_for()
-            assert len(v.sends) == 1
-            assert sum(method == "POST" and path.endswith("/send-saved-voice") for method,path in requests) == 1
+            if outcome=="lost_ack":
+                page.locator("#saved-voice-status").filter(has_text="Check send status").wait_for()
+                assert page.locator("#saved-voice-dialog").is_visible() and len(v.sends)==1
+                page.locator("#saved-voice-check").click()
+            if outcome in {"sent","lost_ack"}:
+                page.locator("#saved-voice-dialog").wait_for(state="hidden")
+                assert "Voice submitted to WhatsApp" in page.locator("#send-status").inner_text()
+                assert page.locator("#message-input").evaluate("el=>el===document.activeElement")
+                assert len(v.sends)==1
+                # Reopening starts with no chosen recording, without an accidental resend.
+                page.locator("#saved-voices-open").click()
+                assert page.locator("#saved-voice-send").is_disabled()
+            else:
+                expected={"FAILED":"The voice was not sent", "UNKNOWN":"Delivery is uncertain", "delivery_failed":"WhatsApp reported delivery failed"}[outcome]
+                page.locator("#saved-voice-status").filter(has_text=expected).wait_for()
+                assert page.locator("#saved-voice-dialog").is_visible() and not v.sends
+            assert sum(method == "POST" and path.endswith("/send-saved-voice") for method,path in requests)==1
             page.locator("#saved-voice-close").click()
             page.goto("https://voices.test/crm/saved-voices")
             page.locator("#saved-voice-list h3").filter(has_text="Delivery recording").wait_for()

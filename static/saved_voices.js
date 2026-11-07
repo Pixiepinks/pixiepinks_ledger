@@ -5,7 +5,7 @@
   const root = library || dialog, inbox = document.getElementById("inbox"), list = root.querySelector("#saved-voice-list"),
     status = root.querySelector("#saved-voice-status"), search = root.querySelector("#saved-voice-search"), more = root.querySelector("#saved-voice-more"),
     form = document.getElementById("saved-voice-form"), send = document.getElementById("saved-voice-send"), check = document.getElementById("saved-voice-check");
-  let rows = [], generation = 0, csrf = library?.dataset.csrf || "", staff, chosen, target, busy = false, timer, edit, previewUrl;
+  let rows = [], generation = 0, pickerSession = 0, csrf = library?.dataset.csrf || "", staff, chosen, target, busy = false, timer, edit, previewUrl;
   const text = (tag, value) => { const node = document.createElement(tag); node.textContent = value; return node; };
   const clock = seconds => { const total = Math.round(seconds); return `${Math.floor(total / 60)}:${String(total % 60).padStart(2,"0")}`; };
   async function api(path, options = {}) {
@@ -130,7 +130,7 @@
   function pending() { try { return JSON.parse(sessionStorage.getItem(pendingKey()) || "null"); } catch (_) { return null; } }
   async function transmit(checkOnly = false) {
     if (busy || !chosen || !target) return;
-    const cid = target, recording = {...chosen}, slot = pendingKey();
+    const cid = target, session = pickerSession, recording = {...chosen}, slot = pendingKey();
     let attempt = pending(), outcome;
     busy = true; send.disabled = true; check.disabled = true; render();
     try {
@@ -147,7 +147,7 @@
           body:JSON.stringify({voice_id:recording.id,revision:attempt.revision})});
       }
       if (outcome?.status === "SENT" || outcome?.status === "FAILED") sessionStorage.removeItem(slot);
-      if (target === cid && dialog.open) {
+      if (target === cid && session === pickerSession && dialog.open) {
         status.textContent = !outcome ? "This attempt was not accepted. Click Send Voice to send it." :
           outcome.delivery_status === "failed" ? `WhatsApp reported delivery failed${outcome.delivery_error_code ? ` (code ${outcome.delivery_error_code})` : ""}. Review before sending again.` :
           outcome.status === "SENT" ? "Submitted to WhatsApp. Confirm playback on the recipient phone. The transcript was not sent as text." :
@@ -155,39 +155,52 @@
           outcome.status === "UNKNOWN" ? "Delivery is uncertain. Check the customer's chat before sending this recording again. No automatic retry was made." :
           "Voice send is in progress. Use Check send status; do not send again.";
       }
-      if (outcome?.status === "SENT") inbox.dispatchEvent(new CustomEvent("saved-voice-sent"));
+      if (outcome?.status === "SENT") {
+        if (outcome.delivery_status !== "failed" && target === cid && session === pickerSession && dialog.open) {
+          closePicker();
+          const feedback = document.getElementById("send-status");
+          if (feedback) feedback.textContent = "Voice submitted to WhatsApp.";
+          const error = document.getElementById("send-error");
+          if (error) error.textContent = "";
+          document.getElementById("message-input")?.focus({preventScroll:true});
+        }
+        inbox.dispatchEvent(new CustomEvent("saved-voice-sent"));
+      }
     } catch (error) {
       if (error.status === 422 || (error.status === 409 && (error.message.startsWith("This recording changed") || error.message.startsWith("Recording was normalized")))) {
         sessionStorage.removeItem(slot); chosen = null;
         document.getElementById("saved-voice-selection").hidden = true;
       }
-      if (target === cid && dialog.open) {
+      if (target === cid && session === pickerSession && dialog.open) {
         status.textContent = error.status === 422 ? `Nothing was sent. ${error.message}` : `${error.message} Check send status before trying again.`;
         status.scrollIntoView({block:"nearest"});
       }
     }
     finally { busy = false; if (dialog.open) { send.disabled = !chosen; check.disabled = false; check.hidden = !pending(); render(); } }
   }
+  function closePicker() {
+    pickerSession++; generation++; pause(); dialog.close(); chosen = null; target = null;
+  }
   if (dialog) {
     document.getElementById("saved-voices-open").onclick = async () => {
       if (busy || window.inboxMediaBusy) return;
       target = Number(inbox.dataset.activeConversation); if (!target) return;
+      pickerSession++;
       chosen = null; send.disabled = true; check.hidden = true; check.disabled = false; document.getElementById("saved-voice-selection").hidden = true;
       rows = []; render();
-      const cid = target;
+      const cid = target, session = pickerSession;
       document.getElementById("saved-voice-recipient").textContent = "Loading customer…";
       status.textContent = "Loading recordings. Nothing has been sent."; dialog.showModal();
       try {
         const data = await api(`/crm/whatsapp/api/conversations/${cid}`);
-        if (target !== cid || !dialog.open) return;
+        if (target !== cid || session !== pickerSession || !dialog.open) return;
         document.getElementById("saved-voice-recipient").textContent = `To: ${data.conversation.customer_name || "Customer"} · ${data.conversation.phone_number}`;
         status.textContent = "Choose a recording. Nothing has been sent."; load();
-      } catch (error) { if (target === cid && dialog.open) status.textContent = error.message; }
+      } catch (error) { if (target === cid && session === pickerSession && dialog.open) status.textContent = error.message; }
     };
-    const close = () => { generation++; pause(); dialog.close(); chosen = null; target = null; };
-    document.getElementById("saved-voice-close").onclick = close;
-    dialog.addEventListener("cancel", event => { event.preventDefault(); close(); });
-    inbox.addEventListener("inbox-conversation", close);
+    document.getElementById("saved-voice-close").onclick = closePicker;
+    dialog.addEventListener("cancel", event => { event.preventDefault(); closePicker(); });
+    inbox.addEventListener("inbox-conversation", closePicker);
     send.onclick = () => transmit(false); check.onclick = () => transmit(true);
   } else load();
 })();
