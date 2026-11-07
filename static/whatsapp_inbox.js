@@ -155,7 +155,7 @@
     const size = Number(attachment.size_bytes);
     text(info, [attachment.mime_type, size > 0 ? `${(size / (1024 * 1024)).toFixed(2)} MB` : ""].filter(Boolean).join(" · "));
     card.append(heading, info);
-    if (attachment.caption) { const caption = document.createElement("p"); text(caption, attachment.caption); card.append(caption); }
+    if (attachment.caption) { const caption = document.createElement("p"); appendMessageText(caption, attachment.caption); card.append(caption); }
     // Only application-owned authenticated routes may be used as media sources.
     if (!/^\/crm\/whatsapp\/api\/conversations\/\d+\/messages\/\d+\/attachments\/\d+\/media$/.test(attachment.url || "")) return card;
     const status = document.createElement("span"), retry = document.createElement("button"); status.className = "attachment-status"; status.setAttribute("role", "status"); retry.type = "button"; retry.className = "btn btn-secondary"; text(retry, "Retry"); retry.hidden = true;
@@ -260,15 +260,22 @@
     } catch (_) { if (selected === cid && jump === replyJump) showComposerMessage("Original message unavailable or could not be loaded.",true); }
   }
   function appendMessageText(element, value) {
-    const body = String(value || ""), pattern = /https:\/\/[^\s<>"']+/g; let start = 0;
-    for (const match of body.matchAll(pattern)) {
-      const candidate = match[0].replace(/[.,!?;]+$/, ""); let parsed;
-      try { parsed = new URL(candidate); } catch (_) { continue; }
-      if (parsed.protocol !== "https:" || parsed.username || parsed.password) continue;
-      element.append(document.createTextNode(body.slice(start, match.index)));
-      const link = document.createElement("a"); link.href = candidate; link.textContent = candidate;
-      link.target = "_blank"; link.rel = "noopener noreferrer"; link.referrerPolicy = "no-referrer";
-      element.append(link); start = match.index + candidate.length;
+    const body=String(value || '');
+    // Match whole website tokens, excluding email addresses and unsafe scheme prefixes.
+    const pattern=/(^|[\s([{"“‘])((?:https?:\/\/|www\.)[^\s<>"'“”‘’]+|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,63}(?:[/?#][^\s<>"'“”‘’]*)?)(?![\p{L}\p{N}_@.-])/giu;
+    let start=0;
+    for(const match of body.matchAll(pattern)){
+      const offset=match.index+match[1].length;
+      let candidate=match[2].replace(/[.,!?;:]+$/,'');
+      for(const [open,close] of [['(',')'],['[',']'],['{','}']]){
+        while(candidate.endsWith(close) && candidate.split(close).length>candidate.split(open).length)candidate=candidate.slice(0,-1);
+      }
+      let parsed;try{parsed=new URL(/^https?:\/\//i.test(candidate)?candidate:'https://'+candidate);}catch(_){continue;}
+      if(!['https:','http:'].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password)continue;
+      element.append(document.createTextNode(body.slice(start,offset)));
+      const link=document.createElement('a');link.href=parsed.href;link.textContent=candidate;
+      link.target='_blank';link.rel='noopener noreferrer';link.referrerPolicy='no-referrer';
+      element.append(link);start=offset+candidate.length;
     }
     element.append(document.createTextNode(body.slice(start)));
   }
@@ -330,6 +337,11 @@
     } else if (message.message_type === "audio" && message.media_url) { bubble.classList.add("audio-bubble"); const label = document.createElement("span"), audio = document.createElement("audio"); text(label, `Voice message${message.duration_seconds ? ` · ${clock(message.duration_seconds)}` : ""}`); audio.controls = true; audio.preload = "metadata"; audio.src = message.media_url; bubble.append(label, audio); if (message.source === "staff_saved_voice") { const transcript = document.createElement("p"); transcript.textContent = message.text; bubble.append(transcript); } }
     else if (message.attachments?.length) { bubble.classList.add("attachment-bubble"); bubble.append(...message.attachments.map(renderAttachment)); }
     else appendMessageText(bubble, message.text);
+    if(message.interactive_buttons?.length){
+      const options=document.createElement('div');options.className='message-button-options';options.setAttribute('aria-label','Customer reply buttons');
+      for(const title of message.interactive_buttons){const label=document.createElement('span');label.textContent=title;options.append(label);}
+      const note=document.createElement('small');note.textContent='Reply options sent to customer';options.append(note);bubble.append(options);
+    }
     wrapper.dataset.messageId = String(message.id); wrapper.dataset.contentKey = messageContentKey(message); metadata.className = "message-meta"; wrapper.dataset.status = message.status;
     text(metadata, messageMetadata(message));
     if (message.direction === "inbound" && message.referral) wrapper.append(renderReferral(message.referral));
@@ -342,7 +354,7 @@
     }
     return wrapper;
   }
-  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context, message.can_reply]);
+  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context, message.can_reply, message.interactive_buttons]);
   const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${inboxTime(message.timestamp)} · ${message.status}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
