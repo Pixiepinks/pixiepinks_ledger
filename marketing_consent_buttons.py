@@ -57,6 +57,9 @@ def prepare(db,request,row,user):
         reason=json.dumps({'v':1,'buttons':buttons},separators=(',',':')),occurred_at=datetime.utcnow(),
         wording=request.message_text,wording_version=request.wording_version,evidence_type='CRM_REQUEST',
         evidence_reference='request:'+str(request.id)))
+    # Production sessions use autoflush=False; configuration() reads this evidence
+    # before the route commits. Flush inside the same transaction, never commit here.
+    db.flush()
 
 
 def configuration(db,request):

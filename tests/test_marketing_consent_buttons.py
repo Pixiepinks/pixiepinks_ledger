@@ -18,6 +18,7 @@ from test_whatsapp_quick_messages import inbox
 @pytest.fixture
 def button_consent(consent,monkeypatch):
     v=consent
+    v.sessions.configure(autoflush=False)
     monkeypatch.setattr(main.settings,'META_APP_SECRET','fixture-meta-secret')
     v.button_sends=[]
     monkeypatch.setattr(main,'send_whatsapp_consent_buttons',lambda phone,body,items:v.button_sends.append((phone,body,items)) or 'wamid.button.'+str(len(v.button_sends)))
@@ -215,3 +216,36 @@ def test_second_precision_and_callback_before_acceptance_commit(button_consent):
         row=db.get(Consent,v.contact);row.status='PENDING';row.active_request_id=req.id;db.commit()
     assert reply(v,preview,provider,mid=mid,timestamp=timestamp).status_code==200
     with v.sessions() as db:assert db.get(Consent,v.contact).status=='OPTED_IN'
+
+
+def test_preview_with_production_autoflush_disabled_is_committed_and_reusable(button_consent):
+    v=button_consent
+    # database.SessionLocal disables autoflush; test fixtures previously enabled it.
+    v.sessions.configure(autoflush=False)
+    response=prepare(v)
+    assert response.status_code==200,response.text
+    preview=response.json()
+    with v.sessions() as db:
+        request=db.get(Request,preview['request_id'])
+        assert request is not None and request.status=='PREPARED'
+        assert buttons.configuration(db,request)==preview['buttons']
+        assert db.query(Event).filter_by(dedup_key='request-buttons:'+str(request.id)).count()==1
+        assert db.get(Consent,v.contact).status=='NOT_REQUESTED'
+    retry=prepare(v,key=preview['key'])
+    assert retry.status_code==200 and retry.json()['buttons']==preview['buttons']
+    assert not v.button_sends and not v.sends
+
+
+def test_evidence_flush_does_not_commit_independently(button_consent):
+    from models import User
+    v=button_consent
+    with v.sessions() as db:
+        row=db.get(Consent,v.contact)
+        request=service.prepare_request(db,row,db.get(WhatsAppConversation,v.ids[0]),
+            db.query(User).filter_by(username='quick-admin').one(),'si',str(uuid4()),'buttons')
+        assert buttons.configuration(db,request)
+        db.rollback()
+    with v.sessions() as db:
+        assert db.query(Request).count()==0 and db.query(Event).count()==0
+        assert db.get(Consent,v.contact).status=='NOT_REQUESTED'
+    assert not v.button_sends and not v.sends
