@@ -76,7 +76,7 @@ def test_signed_agreement_is_atomic_eligible_and_idempotent(button_consent):
         assert event.evidence_text=='Yes, I agree' and json.loads(event.reason)['button_id']==preview['buttons'][0]['id']
         assert event.wording==preview['text'] and event.wording_version==preview['version']
         assert db.query(ProcessedWhatsAppMessage).filter_by(message_id=mid).count()==1
-        assert db.query(Message).filter_by(whatsapp_message_id=mid).one().response_kind=='customer_consent_button'
+        assert db.query(Message).filter_by(whatsapp_message_id=mid).one().response_kind=='consent_button'
         assert db.get(GlobalAIReplyControl,1).enabled is False
     assert len(v.button_sends)==1 and not v.sends
 
@@ -249,3 +249,65 @@ def test_evidence_flush_does_not_commit_independently(button_consent):
         assert db.query(Request).count()==0 and db.query(Event).count()==0
         assert db.get(Consent,v.contact).status=='NOT_REQUESTED'
     assert not v.button_sends and not v.sends
+
+
+def test_postgresql_button_reply_persists_and_grants_atomically(button_consent,caplog):
+    """SQLite does not enforce VARCHAR lengths; reproduce the real storage boundary."""
+    import os
+    from sqlalchemy import create_engine,text
+    from models import Base,User
+    url=os.getenv('TEST_POSTGRESQL_URL')
+    if not url:pytest.skip('Temporary local PostgreSQL not configured')
+    admin=create_engine(url)
+    assert admin.url.host in {'127.0.0.1','localhost'} and admin.url.database=='pixiepinks_test'
+    schema='button_reply_'+uuid4().hex
+    with admin.begin() as connection:connection.execute(text('CREATE SCHEMA '+schema))
+    engine=create_engine(url,connect_args={'options':'-csearch_path='+schema})
+    v=button_consent;original=v.sessions.kw['bind']
+    try:
+        Base.metadata.create_all(engine)
+        from sqlalchemy.exc import DataError
+        # Assert the production boundary SQLite silently ignores.
+        with pytest.raises(DataError) as too_long:
+            with engine.begin() as connection:
+                connection.execute(Message.__table__.insert().values(phone_number='fixture',direction='inbound',
+                    message_text='fixture',response_kind='customer_consent_button',created_at=datetime.utcnow()))
+        assert too_long.value.orig.pgcode=='22001'
+        tables=[User.__table__,WhatsAppConversation.__table__,Consent.__table__,GlobalAIReplyControl.__table__]
+        with original.connect() as source,engine.begin() as target:
+            for table in tables:
+                rows=[dict(row) for row in source.execute(table.select()).mappings()]
+                if rows:
+                    if table is GlobalAIReplyControl.__table__:
+                        from sqlalchemy.dialects.postgresql import insert
+                        target.execute(insert(table).values(rows).on_conflict_do_update(index_elements=['id'],set_={key:value for key,value in rows[0].items() if key!='id'}))
+                    else:target.execute(table.insert(),rows)
+        v.sessions.configure(bind=engine,autoflush=False)
+        preview,provider=sent(v);mid='wamid.pg-consent-reply'
+        with caplog.at_level('ERROR'):
+            with v.sessions() as db:sender=db.get(WhatsAppConversation,v.ids[0]).phone_number
+            receipt=ProcessedWhatsAppMessage(message_id=mid,sender_phone=sender,message_type='interactive',received_at=datetime.utcnow())
+            assert main._store_conversation_message(sender,'inbound','private-fixture-evidence',whatsapp_message_id=mid,
+                response_kind='customer_consent_button',processed_record=receipt)=='failed'
+        assert 'sqlstate=22001' in caplog.text and 'error_type=DataError' in caplog.text
+        assert sender not in caplog.text and 'private-fixture-evidence' not in caplog.text
+        with v.sessions() as db:
+            assert db.query(ProcessedWhatsAppMessage).filter_by(message_id=mid).count()==0
+            assert db.query(Message).filter_by(whatsapp_message_id=mid).count()==0
+            assert db.get(Consent,v.contact).status=='PENDING'
+        # Meta's retry can reuse the failed delivery ID after the storage fix.
+        response=reply(v,preview,provider,mid=mid)
+        assert response.status_code==200,response.text
+        assert reply(v,preview,provider,mid=mid).status_code==200
+        with v.sessions() as db:
+            row=db.get(Consent,v.contact)
+            assert row.status=='OPTED_IN' and service.eligibility(db,row)['eligible']
+            assert db.query(Message).filter_by(whatsapp_message_id=mid).count()==1
+            assert db.query(Event).filter_by(event_type='CONSENT_GRANTED').count()==1
+            assert db.query(ProcessedWhatsAppMessage).filter_by(message_id=mid).count()==1
+            assert db.get(GlobalAIReplyControl,1).enabled is False
+    finally:
+        v.sessions.configure(bind=original)
+        engine.dispose()
+        with admin.begin() as connection:connection.execute(text('DROP SCHEMA '+schema+' CASCADE'))
+        admin.dispose()

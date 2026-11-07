@@ -348,6 +348,12 @@ def requests_human_handover(message: str) -> bool:
     )
 
 
+def _message_storage_sqlstate(error):
+    original=getattr(error,'orig',None)
+    code=getattr(original,'sqlstate',None) or getattr(original,'pgcode',None)
+    return code if isinstance(code,str) and re.fullmatch(r'[0-9A-Z]{5}',code) else None
+
+
 def _store_conversation_message(
     phone_number: str,
     direction: str,
@@ -415,7 +421,7 @@ def _store_conversation_message(
                 else:marketing_consent_service.inbound(db,message)
             db.commit()
             return "stored"
-    except IntegrityError:
+    except IntegrityError as error:
         if processed_message_id is not None:
             try:
                 with SessionLocal() as db:
@@ -424,10 +430,10 @@ def _store_conversation_message(
             except SQLAlchemyError:
                 pass
         # SQL exception text can contain private referral/attribution parameters.
-        logger.error("Could not store WhatsApp conversation message direction=%s", direction)
+        logger.error("Could not store WhatsApp conversation message direction=%s error_type=%s sqlstate=%s", direction,type(error).__name__,_message_storage_sqlstate(error))
         return "failed"
-    except SQLAlchemyError:
-        logger.error("Could not store WhatsApp conversation message direction=%s", direction)
+    except SQLAlchemyError as error:
+        logger.error("Could not store WhatsApp conversation message direction=%s error_type=%s sqlstate=%s", direction,type(error).__name__,_message_storage_sqlstate(error))
         return "failed"
 
 
@@ -1606,7 +1612,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         continue
                     result=_store_conversation_message(sender,'inbound',title,customer_name=profile_name,
                         whatsapp_message_id=message_id,reply_to_whatsapp_message_id=reply_id,
-                        response_kind='customer_consent_button',created_at=received_at,processed_record=record,consent_button_id=button['id'])
+                        response_kind='consent_button',created_at=received_at,processed_record=record,consent_button_id=button['id'])
                     if result=='failed':raise HTTPException(503,'Consent response registration unavailable')
                     continue
                 if message_type in INCOMING_MEDIA_TYPES:
