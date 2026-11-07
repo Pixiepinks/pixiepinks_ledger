@@ -71,6 +71,7 @@ def test_mobile_inbox_request_is_previewed_then_sent_through_existing_route(cons
             page.locator('#marketing-consent-from-details').click()
             api.expect(page.locator('#marketing-consent-dialog')).to_be_visible()
             api.expect(page.locator('#marketing-consent-content .marketing-status')).to_have_text('NOT REQUESTED')
+            page.get_by_label('Consent request type',exact=True).select_option('text')
             page.get_by_role('button',name='Request consent — preview',exact=True).click()
             api.expect(page.locator('#marketing-consent-content')).to_contain_text('WhatsApp හි Reply')
             assert not v.sends
@@ -116,4 +117,42 @@ def test_response_review_mobile_desktop_and_audited_approval(consent):
             api.expect(page.locator('#marketing-consent-content .marketing-status')).to_have_text('OPTED IN')
             with v.sessions() as db:assert db.query(Event).filter_by(event_type='CONSENT_VERIFIED').count()==1
             assert len(v.sends)==1 and not errors
+        finally:browser.close()
+
+
+def test_default_consent_buttons_preview_and_explicit_send_mobile_desktop(consent,monkeypatch):
+    import main
+    from models import MarketingConsentRequest
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    v=consent;calls=[]
+    monkeypatch.setattr(main.settings,'META_APP_SECRET','fixture-secret')
+    monkeypatch.setattr(main,'send_whatsapp_consent_buttons',lambda *args:calls.append(args) or 'wamid.preview-buttons')
+    with api.sync_playwright() as runtime:
+        browser=runtime.chromium.launch(executable_path=chromium,headless=True,args=['--no-sandbox'])
+        try:
+            page=browser.new_page(viewport={'width':390,'height':812});errors=[];page.on('pageerror',lambda error:errors.append(str(error)));serve(page,v)
+            page.goto(f'https://consent.test/crm/whatsapp?conversation={v.ids[0]}')
+            # Open the existing mobile Details entry, then verify the modal at both sizes.
+            page.locator('#mobile-chat-menu').click();page.locator('#details-action').click()
+            page.locator('#marketing-consent-from-details').click()
+            api.expect(page.get_by_label('Consent request type',exact=True)).to_have_value('buttons')
+            api.expect(page.get_by_label('Consent request language',exact=True)).to_have_value('si')
+            page.get_by_role('button',name='Request consent — preview',exact=True).click()
+            api.expect(page.locator('.marketing-button-preview')).to_contain_text('Yes, I agree')
+            api.expect(page.locator('.marketing-button-preview')).to_contain_text('No, thanks')
+            assert not calls and not v.sends
+            page.set_viewport_size({'width':1366,'height':900});page.locator('.marketing-button-preview').scroll_into_view_if_needed();page.screenshot(path='/tmp/phase1c-desktop.png')
+            for width in [320,360,390,430]:
+                page.set_viewport_size({'width':width,'height':812})
+                assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+                assert page.locator('.marketing-button-preview').evaluate('(el)=>el.scrollWidth<=el.clientWidth')
+            page.locator('.marketing-button-preview').scroll_into_view_if_needed()
+            page.screenshot(path='/tmp/phase1c-mobile.png')
+            page.get_by_role('button',name='Send reviewed consent request',exact=True).click();assert not calls
+            page.get_by_label('I reviewed this exact request for this customer.',exact=True).check()
+            page.get_by_role('button',name='Send reviewed consent request',exact=True).click()
+            api.expect(page.locator('#marketing-consent-content .marketing-status')).to_have_text('PENDING')
+            assert len(calls)==1 and not v.sends and not errors
+            with v.sessions() as db:assert db.query(MarketingConsentRequest).one().wording_version.startswith('pixiepinks-wa-marketing-v3-buttons-si')
         finally:browser.close()

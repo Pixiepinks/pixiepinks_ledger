@@ -1,9 +1,9 @@
 {% extends 'base.html' %}{% block content %}
-<link rel="stylesheet" href="/static/marketing_consent.css?v=2">
+<link rel="stylesheet" href="/static/marketing_consent.css?v=3">
 <section id="marketing-dashboard" data-csrf="{{ consent_csrf }}" data-admin="{{ 'true' if user.role=='ADMIN' else 'false' }}">
 <p>Phase 1 · Consent records only. No campaigns or bulk sending. Existing inquiries and purchases do not establish marketing consent.</p>
 <div id="marketing-kpis" class="marketing-kpis" aria-live="polite"></div>
 <form id="marketing-search" class="marketing-search"><input name="q" maxlength="100" aria-label="Search customer name or WhatsApp number" placeholder="Name or WhatsApp number"><select name="status" aria-label="Consent status"><option value="">All consent statuses</option>{% for value in consent_statuses %}<option>{{ value }}</option>{% endfor %}</select><select name="source" aria-label="Consent source"><option value="">All sources</option>{% for value in consent_sources %}<option>{{ value }}</option>{% endfor %}</select><select name="interest" aria-label="Product interest"><option value="">All interests</option>{% for value in consent_interests %}<option>{{ value }}</option>{% endfor %}</select><label>Updated from <input name="date_from" type="date"></label><label>Through <input name="date_to" type="date"></label>{% if user.role=='ADMIN' %}<label><input name="include_archived" type="checkbox">Include archived phone identities</label>{% endif %}<label><input name="needs_review" type="checkbox" value="true">Needs Staff Review</label><button class="btn btn-secondary">Filter</button></form>
 <p id="marketing-dashboard-status" role="status"></p><div class="marketing-table-wrap"><table><thead><tr><th>Customer</th><th>WhatsApp</th><th>Consent status</th><th>Source</th><th>Consent date</th><th>Product interests</th><th>Updated</th><th></th></tr></thead><tbody id="marketing-rows"></tbody></table></div><div class="marketing-pages"><button type="button" id="marketing-prev" class="btn btn-secondary">Previous</button><button type="button" id="marketing-next" class="btn btn-secondary">Next</button></div>
-</section>{% include '_marketing_consent_dialog.html' %}<script src="/static/marketing_consent.js?v=2"></script>
+</section>{% include '_marketing_consent_dialog.html' %}<script src="/static/marketing_consent.js?v=3"></script>
 {% endblock %}

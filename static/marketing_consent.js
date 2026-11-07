@@ -64,16 +64,18 @@
     }
     if(row.conversation_id){
       const form=node('form'),language=select(form,'Consent request language',[['si','Sinhala'],['en','English'],['ta','Tamil']], 'si');
+      const format=select(form,'Consent request type',[['buttons','Buttons — tap to agree or decline'],['text','Text — use WhatsApp Reply']], 'buttons');
       const preview=node('button','Request consent — preview');preview.className='btn btn-secondary';preview.disabled=!data.can_request;
       form.append(preview,node('p',data.request_explanation||'Requires an open 24-hour service window and explicit staff confirmation.'));
       const previewArea=node('div');form.append(previewArea);
       form.onsubmit=async e=>{
         e.preventDefault();const token=generation;preview.disabled=true;
-        const slot=`marketing-preview:${row.id}:${language.value}`;let key;
+        const slot=`marketing-preview:${row.id}:${language.value}:${format.value}`;let key;
         try{key=sessionStorage.getItem(slot)||crypto.randomUUID();sessionStorage.setItem(slot,key);}catch(_){key=crypto.randomUUID();}
         try{
-          const result=await api(`/crm/whatsapp/api/conversations/${row.conversation_id}/marketing-consent/request`,{language:language.value,key});
+          const result=await api(`/crm/whatsapp/api/conversations/${row.conversation_id}/marketing-consent/request`,{language:language.value,format:format.value,key});
           if(token!==generation)return;previewArea.replaceChildren(node('pre',result.text));
+          if(result.buttons){const labels=node('div');labels.className='marketing-button-preview';labels.setAttribute('aria-label','Customer consent buttons');for(const b of result.buttons){const label=node('span',b.title);labels.append(label);}previewArea.append(labels,node('p','The customer taps one of these buttons. Preview only — nothing has been sent.'));}
           if(result.status!=='PREPARED'){if(['CANCELLED','INVALIDATED','EXPIRED'].includes(result.status)){try{sessionStorage.removeItem(slot);}catch(_){}}previewArea.append(node('p',`Existing request: ${result.status}. Check the conversation; no automatic resend.`));return;}
           const confirmWrap=node('label','I reviewed this exact request for this customer.'),confirm=node('input');confirm.type='checkbox';confirmWrap.append(confirm);previewArea.append(confirmWrap);
           const send=button('Send reviewed consent request',async()=>{

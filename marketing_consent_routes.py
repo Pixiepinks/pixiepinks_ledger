@@ -150,8 +150,14 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         row=service.contact_for_conversation(db,conversation)
         if not row:raise HTTPException(409,'Consent identity is not initialized.')
         data=await body(request)
-        result=service.prepare_request(db,row,conversation,user,data.get('language','si'),data.get('key'))
+        request_format=data.get('format','text')
+        if request_format=='buttons':
+            from settings import settings
+            if not settings.META_APP_SECRET:raise HTTPException(409,'Secure consent buttons require configured Meta webhook signature verification. Ask an administrator; text requests remain available.')
+        result=service.prepare_request(db,row,conversation,user,data.get('language','si'),data.get('key'),request_format)
+        import marketing_consent_buttons as buttons
+        prepared_buttons=buttons.configuration(db,result)
         commit(db)
-        return {'request_id':result.id,'text':result.message_text,'key':result.idempotency_key,'status':result.status,'version':result.wording_version}
+        return {'request_id':result.id,'text':result.message_text,'key':result.idempotency_key,'status':result.status,'version':result.wording_version,'buttons':prepared_buttons}
 
     return router
