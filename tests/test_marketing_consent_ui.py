@@ -125,7 +125,7 @@ def test_default_consent_buttons_preview_and_explicit_send_mobile_desktop(consen
     from models import MarketingConsentRequest
     api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
     if not chromium:pytest.skip('Chromium unavailable')
-    v=consent;calls=[]
+    v=consent;v.sessions.configure(autoflush=False);calls=[]
     monkeypatch.setattr(main.settings,'META_APP_SECRET','fixture-secret')
     monkeypatch.setattr(main,'send_whatsapp_consent_buttons',lambda *args:calls.append(args) or 'wamid.preview-buttons')
     with api.sync_playwright() as runtime:
