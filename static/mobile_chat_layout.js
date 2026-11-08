@@ -19,7 +19,7 @@
     dialog.addEventListener('click',event=>{
       const control=event.target.closest('button');
       if(!control || control.hasAttribute('data-mobile-close'))return;
-      if(dialog===actions || ['mode-action','team-notes-open','details-action','customer-question-button'].includes(control.id))close(dialog);
+      if(dialog===actions || ['mode-action','team-notes-open','details-action'].includes(control.id))close(dialog);
     },true);
   }
   function autosize(){
@@ -45,7 +45,7 @@
       const text=byId('text-composer');move(byId('attachment-button'),text,input);
       move(byId('record-button'),text,byId('send-button'));
       move(byId('attachment-menu'),byId('composer'),byId('recording-controls'));
-      for(const id of ['saved-voices-open','quick-messages-button','catalog-button','create-order-button'])move(byId(id),byId('mobile-actions-content'));
+      for(const id of ['saved-voices-open','customer-question-button','quick-messages-button','catalog-button','create-order-button'])move(byId(id),byId('mobile-actions-content'));
       input.rows=1;
     }else{
       for(const [node,marker] of homes)marker.after(node);

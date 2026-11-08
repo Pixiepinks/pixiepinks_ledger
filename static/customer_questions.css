@@ -7,3 +7,5 @@
 .question-routes{padding:8px 12px;background:#f8f8fb;border-radius:8px;margin:12px 0}#question-flow-preview>div{border-left:3px solid #ba1d61;padding:8px 12px;margin:10px 0;overflow-wrap:anywhere}#question-flow-preview p{margin:6px 0}
 
 .question-library{border:1px solid #ddd;padding:12px;border-radius:8px;margin:16px 0}.question-controls{display:flex;gap:8px;flex-wrap:wrap}#customer-question-dialog select{width:100%;padding:8px;box-sizing:border-box}#customer-question-dialog .flow-preview{max-height:240px;overflow:auto;border:1px solid #ddd;padding:12px;border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere}
+
+#customer-question-button{display:inline-flex;align-items:center;justify-content:center;min-width:36px;min-height:36px;padding:7px;color:#ba1d61}#customer-question-button[hidden]{display:none!important}#mobile-actions-content #customer-question-button{min-width:44px;min-height:44px}#customer-question-button:focus-visible{outline:2px solid #ba1d61;outline-offset:2px}
