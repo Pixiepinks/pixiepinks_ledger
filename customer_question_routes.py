@@ -45,11 +45,25 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         return templates.TemplateResponse('customer_questions.html',{'request':request,'user':user,
             'page_title':'Customer Question Automation','csrf_token':csrf_token(request)})
 
+    @router.get('/crm/quick-messages/customer-questions/collections')
+    def collections(q:str=Query('',max_length=100),user=Depends(require_user)):
+        admin(user)
+        from shopify_catalog_service import discover_collections,ShopifyCatalogError
+        from shopify_collection_service import SLOTS
+        if not SLOTS.acquire(blocking=False):raise HTTPException(429,'Catalogue is busy. Please try again shortly.')
+        try:return {'collections':discover_collections(q,100)}
+        except ShopifyCatalogError:raise HTTPException(503,'Shopify collections are temporarily unavailable') from None
+        finally:SLOTS.release()
+
     @router.get('/crm/quick-messages/customer-questions/products')
-    def products(q:str=Query('',max_length=100),cursor:str|None=Query(None,max_length=500,pattern=r'^[A-Za-z0-9_+=/.-]+$'),user=Depends(require_user)):
+    def products(q:str=Query('',max_length=100),collection_id:str|None=Query(None,max_length=100,pattern=r'^gid://shopify/Collection/[0-9]{1,30}$'),cursor:str|None=Query(None,max_length=500,pattern=r'^[A-Za-z0-9_+=/.-]+$'),user=Depends(require_user)):
         admin(user)
         from shopify_catalog_service import search_products_for_inbox,ShopifyCatalogError
-        try:return search_products_for_inbox(q,20,cursor)
+        try:
+            if collection_id:
+                from question_product_catalogue import collection_products
+                return collection_products(collection_id,q)
+            return search_products_for_inbox(q,20,cursor)
         except ShopifyCatalogError:raise HTTPException(503,'Product catalogue is temporarily unavailable') from None
 
     @router.get('/crm/quick-messages/customer-questions/api')

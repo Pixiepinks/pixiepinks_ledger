@@ -45,3 +45,9 @@ The worker sends one card per cycle with a durable unique `(run, step, position)
 Migration `20261108_31` follows `20261108_30` and only adds durable product-send evidence. It does not update existing flow definitions, customers, active runs, Global AI or audio configuration. Evidence survives downgrade/re-upgrade. No migration is executed in production as part of implementing/reviewing this change.
 
 Application rollback note: pause automation before rolling back to a version that predates product steps. Older builders/workers cannot interpret product-step definitions; retaining the evidence table preserves delivery history but does not make an older application understand the new flow format.
+
+### Browse selected products by Shopify collection
+
+In a product step, type a collection name such as “Size 12” into **Search Shopify collections**, click **Find collections**, then choose it in **Shopify collection**. Its currently available products/variants load for ticking. Search within the chosen collection using the product search box. Changing collections clears browse filters but keeps all checked selections and their order. Choose **All products — no collection filter** to return to general search. Saving still stores only your explicitly selected product/variant IDs; it never automatically selects a whole collection or future collection additions.
+
+Collection reads reuse the existing verified discovery limits (up to 200 products, 50 variants per product, a 30-second collection-read budget and shared concurrency slots). Larger or unverifiable collections show a specific error without returning a silently incomplete selection. Unavailable, unpublished, out-of-stock or unsafe-image products remain excluded; select the exact displayed variant/size. No database migration or sending-worker changes are required for collection browsing.
