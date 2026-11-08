@@ -3115,6 +3115,7 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
     payment_audit = db.query(SalesPaymentAuditEvent).filter_by(sales_order_id=order.id).order_by(
         SalesPaymentAuditEvent.created_at.desc(), SalesPaymentAuditEvent.id.desc()).limit(50).all()
     payment_permissions = staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS)
+    from sales_order_delivery_location import can_edit as can_edit_location
     payment_enabled = settings.SALES_PAYMENT_TRACKING_ENABLED
     payment_sync_operations = db.query(ShopifyPaymentSyncOperation).filter_by(
         sales_order_id=order.id).order_by(ShopifyPaymentSyncOperation.created_at.desc()).limit(10).all()
@@ -3130,7 +3131,7 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
         ShopifyFulfillmentOperation.created_at).all()}
     return templates.TemplateResponse("sales_order_detail.html", {"request": request,
         "page_title": order.internal_order_number, "order": order, "history": history,
-        "can_edit": can_edit, "can_sync": can_sync, "can_create_sync": can_create_sync,
+        "can_edit": can_edit, "can_edit_delivery_location": can_edit_location(db,user,order,payment_permissions), "can_sync": can_sync, "can_create_sync": can_create_sync,
         "can_reconcile_sync": can_reconcile_sync,
         "sync_label": SHOPIFY_SYNC_LABELS.get(
             order.shopify_sync_status, order.shopify_sync_status.replace("_", " ").title()),
@@ -4619,3 +4620,8 @@ app.include_router(build_customer_question_router(get_db,require_user,_require_c
 
 from prompt_xpress_delivery import build_router as prompt_xpress_router
 app.include_router(prompt_xpress_router(get_db,require_user,_require_csrf))
+
+
+from sales_order_delivery_location import build_router as delivery_location_router
+from customer_question_routes import QuestionRoute
+app.include_router(delivery_location_router(get_db,require_user,_require_csrf,QuestionRoute))
