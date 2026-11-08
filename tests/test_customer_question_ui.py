@@ -317,7 +317,7 @@ def test_service_voice_picker_charge_and_wording_persist(voices):
         assert step.get_by_label('Service charge (LKR)',exact=True).input_value()=='1000.00'
         assert step.get_by_label('Service explanation recording',exact=True).locator('option:checked').inner_text()==recording['title']
         assert step.get_by_label('Greasing service question',exact=True).input_value().startswith('ඔබගේ')
-        assert step.locator('.greasing-picker audio').get_attribute('src').endswith(f"/{recording['id']}/audio")
+        assert step.get_by_label('Preview service recording',exact=True).get_attribute('src').endswith(f"/{recording['id']}/audio")
         step.locator('.greasing-picker').screenshot(path='/tmp/greasing-service-picker.png')
         assert not errors
         browser.close()

@@ -109,6 +109,8 @@ def snapshot(run,db=None):
                 'issues':[{'position':item.position+1,'status':item.status,'reason':item.reason} for item in items if item.status not in {'SENT','SENDING'}]}
             if run.definition['steps'][index].get('service'):
                 stages=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.step==index,ProductSend.position.in_([-2,-3])).all()
+                payment_stages=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.step==index,ProductSend.position.in_([-200,-201])).order_by(ProductSend.position.desc()).all()
+                if payment_stages:result['payment_progress']=[{'stage':'Voice' if row.position==-200 else 'Bank image','status':row.status,'reason':row.reason} for row in payment_stages]
                 result['service']={'voice_status':next((row.status for row in stages if row.position==-2),'NOT_SENT'),
                     'question_status':next((row.status for row in stages if row.position==-3),'NOT_SENT'),
                     'charge':run.definition['steps'][index]['service']['charge'],'issues':[row.reason for row in stages if row.reason]}
@@ -171,6 +173,8 @@ def inbound(db,c,message,button_id):
     question=run.definition['steps'][step]
     earliest=run.updated_at
     if question.get('type')=='products':
+        from question_payment_followup import pending as payment_pending
+        if payment_pending(run):return
         from question_delivery_details import pending as delivery_pending,receive_button
         if delivery_pending(run):
             receive_button(db,run,message,choice);return

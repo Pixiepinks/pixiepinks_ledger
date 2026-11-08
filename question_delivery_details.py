@@ -150,12 +150,16 @@ def advance(db, run, incoming, value=None, choice=None):
         if choice == 0:
             details.update(status='CONFIRMED', confirmed_at=datetime.utcnow().isoformat() + 'Z', confirmation_message_id=incoming.id)
             save(run, details)
-            run.step = len(run.definition['steps'])
-            run.status = 'COMPLETE'
+            if run.definition['steps'][run.step]['service'].get('payment'):
+                from question_payment_followup import begin as begin_payment
+                begin_payment(run)
+            else:
+                run.step = len(run.definition['steps'])
+                run.status = 'COMPLETE'
             run.version += 1
             run.updated_at = datetime.utcnow()
             audit(db, run, 'DELIVERY_CONFIRMED', 'Customer', inbound_id=incoming.id)
-            audit(db, run, 'COMPLETE', 'System', note='Customer confirmed delivery details and quote. Staff can prepare the invoice; payment is not verified.')
+            if run.status == 'COMPLETE':audit(db, run, 'COMPLETE', 'System', note='Customer confirmed delivery details and quote. Staff can prepare the invoice; payment is not verified.')
             return
         # Re-enter all fields without altering the product or service decision.
         details = {'stage': 'name', 'status': 'COLLECTING', 'sequence': details['sequence']}

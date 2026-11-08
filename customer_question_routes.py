@@ -54,6 +54,39 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         if q:rows=rows.filter(SavedVoice.title.ilike('%'+q.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%',escape='\\'))
         return {'voices':[{'id':v.id,'revision':v.revision,'title':v.title,'duration':v.duration_seconds} for v in rows.order_by(SavedVoice.title).limit(100)]}
 
+    @router.post('/crm/quick-messages/customer-questions/payment-images')
+    async def payment_image_upload(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        admin(user);csrf(request)
+        import asyncio
+        from starlette.concurrency import run_in_threadpool
+        import question_payment_followup as payment
+        import outbound_media_service as media
+        mime=request.headers.get('content-type','').split(';')[0].strip().lower()
+        if mime not in {'image/png','image/jpeg'}:raise HTTPException(415,'Upload a PNG or JPEG bank-details image')
+        if not payment.image_slots.acquire(blocking=False):raise HTTPException(429,'Image uploads are busy. Try again shortly.')
+        try:
+            raw=bytearray()
+            async with asyncio.timeout(30):
+                async for chunk in request.stream():
+                    if len(raw)+len(chunk)>media.size_limit('image'):raise HTTPException(413,'Bank image exceeds the configured image size limit')
+                    raw.extend(chunk)
+            reference=await run_in_threadpool(payment.store_image,bytes(raw),mime)
+            questions.audit(db,None,'BANK_IMAGE_UPLOADED',user.username,image_ref=reference)
+            db.commit()
+            return {'image_ref':reference,'preview_url':'/crm/quick-messages/customer-questions/payment-images/'+reference}
+        except TimeoutError:raise HTTPException(408,'Bank image upload timed out') from None
+        except media.ValidationUnavailable:raise HTTPException(503,'Image validation is temporarily unavailable. No image was saved.') from None
+        finally:payment.image_slots.release()
+
+    @router.get('/crm/quick-messages/customer-questions/payment-images/{reference}')
+    def payment_image_preview(reference:str,user=Depends(require_user)):
+        admin(user)
+        from fastapi.responses import Response
+        from question_payment_followup import read_image
+        raw,mime=read_image(reference)
+        return Response(raw,media_type=mime,headers={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff',
+            'Content-Security-Policy':"sandbox; default-src 'none'",'Referrer-Policy':'no-referrer'})
+
     @router.get('/crm/quick-messages/customer-questions/collections')
     def collections(q:str=Query('',max_length=100),user=Depends(require_user)):
         admin(user)
