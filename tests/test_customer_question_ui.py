@@ -309,8 +309,11 @@ def test_service_voice_picker_charge_and_wording_persist(voices):
         step.locator('.greasing-picker select option').nth(1).wait_for(state='attached')
         step.get_by_label('Service explanation recording',exact=True).select_option(f"{recording['id']}:{recording['revision']}")
         step.get_by_label('Service charge (LKR)',exact=True).fill('1000.00')
+        step.get_by_label('Collect delivery details after service answer',exact=True).check()
         page.get_by_role('button',name='Save settings',exact=True).click();page.get_by_role('status').filter(has_text='Saved.').wait_for()
         page.reload();step=page.locator('#question-steps > fieldset').first;step.wait_for()
+        assert step.get_by_label('Collect delivery details after service answer',exact=True).is_checked()
+        assert 'Delivery details → Confirm / Edit' in page.locator('#question-flow-preview').inner_text()
         assert step.get_by_label('Service charge (LKR)',exact=True).input_value()=='1000.00'
         assert step.get_by_label('Service explanation recording',exact=True).locator('option:checked').inner_text()==recording['title']
         assert step.get_by_label('Greasing service question',exact=True).input_value().startswith('ඔබගේ')
@@ -344,4 +347,41 @@ def test_greasing_decision_and_quoted_total_visible_in_inbox(greasing):
         page.locator('.question-content').get_by_text('Quoted total LKR 46000.00',exact=False).wait_for()
         assert 'Greasing: Yes' in page.locator('.question-content').inner_text() and not errors
         page.screenshot(path='/tmp/greasing-service-decision.png',full_page=True)
+        browser.close()
+
+
+from test_question_delivery_details import collecting
+
+def test_confirmed_delivery_details_visible_to_staff_desktop_and_mobile(collecting):
+    from test_question_delivery_details import begin,complete_fields
+    from test_customer_questions import reply
+    c=begin(collecting);v=c[0][0];complete_fields(c,phone2='skip')
+    assert reply(c[0][3],index=0).status_code==200
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    def serve(route):
+        request=route.request;url=urlsplit(request.url)
+        if url.hostname!='question.test':route.fulfill(status=200,body='');return
+        response=v.client.request(request.method,url.path+('?' +url.query if url.query else ''),content=request.post_data_buffer,
+            headers={k:val for k,val in request.headers.items() if k in {'content-type','x-csrf-token','range'}},follow_redirects=False)
+        route.fulfill(status=response.status_code,body=response.content,headers={k:val for k,val in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+    with api.sync_playwright() as p:
+        browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1366,'height':1000});errors=[]
+        page.on('pageerror',lambda e:errors.append(str(e)));page.route('**/*',serve)
+        page.goto(f'https://question.test/crm/whatsapp?conversation={v.ids[0]}')
+        page.get_by_role('button',name='Customer questions',exact=True).click()
+        page.locator('.question-content').get_by_text('Delivery: CONFIRMED',exact=False).wait_for()
+        content=page.locator('.question-content').inner_text()
+        assert 'Phone 1: +94771234567' in content and 'Phone 2: Not provided' in content
+        assert '123, Temple Road, Colombo 05' in content and 'Quoted total LKR 46800.00' in content
+        assert 'Ready for staff to prepare the invoice' in content
+        page.screenshot(path='/tmp/delivery-confirmed-desktop.png',full_page=True)
+        page.get_by_role('button',name='Close',exact=True).click()
+        page.set_viewport_size({'width':390,'height':844})
+        page.get_by_role('button',name='More message actions',exact=True).click()
+        page.get_by_role('button',name='Customer questions',exact=True).click()
+        page.locator('.question-content').get_by_text('Delivery: CONFIRMED',exact=False).wait_for()
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        page.screenshot(path='/tmp/delivery-confirmed-mobile.png',full_page=True)
+        assert not errors
         browser.close()

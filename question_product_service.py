@@ -21,6 +21,8 @@ def validate_selection(items):
 
 
 def claim(db,run):
+    from question_delivery_details import pending as delivery_pending,claim as claim_delivery
+    if delivery_pending(run):return claim_delivery(db,run)
     from question_greasing_service import pending as service_pending,claim as claim_service
     if service_pending(run):return claim_service(db,run)
     items=db.query(Item).filter(Item.run_id==run.id,Item.step==run.step,Item.position>=0).order_by(Item.position).all()
@@ -47,6 +49,9 @@ def send_claimed(db,run,conversation):
     from quick_message_service import require_reply_window
     item=db.query(Item).filter_by(run_id=run.id,step=run.step,status='SENDING').one()
     step=run.definition['steps'][run.step]
+    if item.position<=-4:
+        from question_delivery_details import send_claimed as send_delivery
+        send_delivery(db,run,conversation,item);return
     if item.position in {-2,-3}:
         from question_greasing_service import send_claimed as send_service
         send_service(db,run,conversation,item);return

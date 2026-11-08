@@ -380,7 +380,10 @@ def _store_conversation_message(
             question_stop=(direction=='inbound' and response_kind not in {'question_reply','question_list','consent_button'} and
                 (processed_record is None or processed_record.message_type=='text') and
                 (message_text or '').strip().casefold() in customer_questions.STOP_WORDS)
-            if question_button_id is not None or question_stop:
+            question_text=(direction=='inbound' and response_kind is None and
+                (processed_record is None or processed_record.message_type=='text'))
+            delivery_owned=False
+            if question_button_id is not None or question_stop or question_text:
                 customer_questions.write_transaction(db)
                 if question_button_id is not None:customer_questions.config(db,True)
                 elif customer_questions.config(db,True,optional=True) is None:question_stop=False
@@ -429,13 +432,18 @@ def _store_conversation_message(
                 if consent_button_id is not None:
                     import marketing_consent_buttons
                     marketing_consent_buttons.inbound(db,message,consent_button_id)
-                elif question_button_id is None:marketing_consent_service.inbound(db,message)
+                elif question_button_id is None:
+                    if question_text and not question_stop:
+                        import question_delivery_details
+                        delivery_owned=question_delivery_details.receive_text(db,conversation,message,verified=bool(settings.META_APP_SECRET))
+                        if delivery_owned and processed_record is not None:processed_record.ai_reply_generation=None
+                    if not delivery_owned:marketing_consent_service.inbound(db,message)
                 if question_button_id is not None:
                     import customer_questions
                     customer_questions.inbound(db,conversation,message,question_button_id)
                 if question_stop:customer_questions.stop_for_customer(db,conversation)
             db.commit()
-            return "stored"
+            return "stored_delivery" if delivery_owned else "stored"
     except IntegrityError as error:
         if processed_message_id is not None:
             try:
@@ -1686,7 +1694,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                             created_at=received_at, referral_metadata=referral_metadata,
                             reply_to_whatsapp_message_id=reply_id, processed_record=record,
                         )
-                    if result == "duplicate":
+                    if result in {"duplicate", "stored_delivery"}:
                         continue
                     if result == "failed":
                         raise HTTPException(status_code=503, detail="Message registration unavailable")
