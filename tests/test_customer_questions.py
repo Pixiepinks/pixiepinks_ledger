@@ -235,3 +235,56 @@ def test_list_transport_cloud_api_payload(monkeypatch):
     assert q.send_buttons('94770012301','Choose age',rows,list_button='Age options')=='wamid.list.mock'
     assert sent[0]['interactive']=={'type':'list','body':{'text':'Choose age'},'action':{
         'button':'Age options','sections':[{'rows':rows}]}}
+
+
+def branching_flow():
+    return {'title':'Product questions','steps':[
+        {'key':'product','body':'What are you looking for?','type':'list','options':['Bicycle','Scooter','Tricycle','Jeeps','Gift Packs'],
+         'next':['bike_age','scooter_type','bike_age','budget','gift_age']},
+        {'key':'bike_age','body':'Child age?','options':['Under 3','3–6','7+'],'next':[None,None,None]},
+        {'key':'scooter_type','body':'Scooter type?','options':['Two wheels','Three wheels'],'next':[None,None]},
+        {'key':'budget','body':'Budget?','options':['Under 50,000','50,000+'],'next':[None,None]},
+        {'key':'gift_age','body':'Gift age group?','options':['Baby','Child'],'next':[None,None]}]}
+
+
+@pytest.mark.parametrize('choice,target',[(0,'bike_age'),(1,'scooter_type'),(2,'bike_age'),(3,'budget'),(4,'gift_age')])
+def test_product_choice_branches_to_retained_question(questions,monkeypatch,choice,target):
+    v=questions;flow=branching_flow();sent=[]
+    monkeypatch.setattr(q,'send_buttons',lambda phone,body,options,**kw:sent.append(body) or 'wamid.branch.'+str(len(sent)))
+    assert settings(v[0],v[5],definition=flow,enabled=True).status_code==200
+    assert act(v[0],v[2][0],v[5]).status_code==200 and q.dispatch_one(v[1])
+    # Editing the published flow cannot change an active run's branch destinations.
+    changed=branching_flow();changed['steps'][1]['body']='Changed for future runs'
+    assert settings(v[0],v[5],definition=changed).status_code==200
+    assert reply(v,index=choice,reply_type='list_reply',mid='wamid.branch.answer').status_code==200
+    assert reply(v,index=choice,reply_type='list_reply',mid='wamid.branch.answer').status_code==200
+    with v[1]() as db:
+        run=q.latest(db,v[2][0]);assert run.definition['steps'][run.step]['key']==target
+        assert run.answers=={'product':flow['steps'][0]['options'][choice]}
+        assert db.query(Event).filter_by(action='ROUTE').count()==1
+    assert q.dispatch_one(v[1]);expected=next(s['body'] for s in flow['steps'] if s['key']==target)
+    assert sent==[flow['steps'][0]['body'],expected]
+    assert reply(v,index=0).status_code==200 and not q.dispatch_one(v[1])
+    with v[1]() as db:
+        run=q.latest(db,v[2][0]);assert run.status=='COMPLETE' and len(run.answers)==2
+        assert db.get(GlobalAIReplyControl,1).enabled is False
+
+
+@pytest.mark.parametrize('bad', ['missing','loop','self','unreachable','count','not_list','invalid_target'])
+def test_reject_broken_or_cyclic_flows(questions,bad):
+    flow=branching_flow()
+    if bad=='missing':flow['steps'][0]['next'][0]='deleted_question'
+    elif bad=='loop':flow['steps'][1]['next'][0]='product'
+    elif bad=='self':flow['steps'][1]['next'][0]='bike_age'
+    elif bad=='unreachable':flow['steps'][0]['next'][1]='bike_age'
+    elif bad=='count':flow['steps'][0]['next']=[]
+    elif bad=='not_list':flow['steps'][0]['next']='budget'
+    else:flow['steps'][0]['next'][0]={}
+    response=settings(questions[0],questions[5],definition=flow)
+    assert response.status_code==422
+
+
+def test_branch_can_finish_immediately_or_merge_paths():
+    flow=branching_flow();flow['steps'][0]['next'][2]=None
+    flow['steps'][1]['next']=['budget']*3
+    assert q.validate(flow)==flow

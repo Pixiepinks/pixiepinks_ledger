@@ -8,11 +8,11 @@
 <label>Sequence title<input id="questions-title" maxlength="100" required></label>
 <div id="question-steps"></div>
 <button type="button" id="question-add" class="btn btn-secondary">Add question</button>
-<p>Questions run in this order. The last answer completes the sequence for staff to review. Existing sequences keep the wording they started with.</p>
+<p>The first question starts the flow. For each answer, choose the next question or Finish. Every question must be reachable, with no loops. Existing customer sequences keep their original flow.</p><h3>Flow preview</h3><div id="question-flow-preview" aria-live="polite"></div>
 <button class="btn btn-primary" type="submit">Save settings</button>
 <a class="btn btn-secondary" href="/crm/quick-messages">Back to Quick Messages</a>
 </form><p id="question-feedback" role="status" aria-live="polite"></p>
 </section>
-<link rel="stylesheet" href="/static/customer_questions.css?v=lists-2">
-<script src="/static/customer_question_builder.js?v=lists-2"></script>
+<link rel="stylesheet" href="/static/customer_questions.css?v=branches-3">
+<script src="/static/customer_question_builder.js?v=branches-3"></script>
 {% endblock %}

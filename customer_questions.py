@@ -25,7 +25,7 @@ def validate(value):
     if not isinstance(steps,list) or not 1<=len(steps)<=10:raise HTTPException(422,'Use 1–10 questions')
     keys=set()
     for step in steps:
-        if not isinstance(step,dict) or not {'key','body','options'}<=set(step) or set(step)-{'key','body','options','type','list_button'}:raise HTTPException(422,'Each question needs a key, body and reply options')
+        if not isinstance(step,dict) or not {'key','body','options'}<=set(step) or set(step)-{'key','body','options','type','list_button','next'}:raise HTTPException(422,'Each question needs a key, body and reply options')
         kind=step.get('type','buttons')
         if not isinstance(kind,str) or kind not in {'buttons','list'}:raise HTTPException(422,'Choose Buttons or List')
         if 'list_button' in step and kind!='list':raise HTTPException(422,'List button text is only available for List questions')
@@ -38,6 +38,21 @@ def validate(value):
         count,limit=(10,24) if kind=='list' else (3,20)
         if not isinstance(options,list) or not 1<=len(options)<=count or any(not isinstance(o,str) or not 1<=len(o)<=limit or o!=o.strip() or any(ord(c)<32 for c in o) for o in options):raise HTTPException(422,f'Use 1–{count} options with 1–{limit} characters each')
         if len(set(options))!=len(options):raise HTTPException(422,'Button labels must be different')
+    graph={}
+    for index,step in enumerate(steps):
+        targets=step.get('next',[steps[index+1]['key'] if index+1<len(steps) else None]*len(step['options']))
+        if not isinstance(targets,list) or len(targets)!=len(step['options']):raise HTTPException(422,'Choose one next step for every answer')
+        if any(target is not None and (not isinstance(target,str) or target not in keys) for target in targets):raise HTTPException(422,'A next step refers to a missing question. Review the answer routes.')
+        graph[step['key']]=[target for target in targets if target is not None]
+    visiting=set();visited=set()
+    def visit(key):
+        if key in visiting:raise HTTPException(422,'Question flows cannot contain loops. Choose another next step or Finish.')
+        if key in visited:return
+        visiting.add(key)
+        for target in graph[key]:visit(target)
+        visiting.remove(key);visited.add(key)
+    visit(steps[0]['key'])
+    if visited!=keys:raise HTTPException(422,'Some questions cannot be reached from the first question. Connect or remove them.')
     return json.loads(json.dumps(value))
 
 
@@ -116,7 +131,13 @@ def inbound(db,c,message,button_id):
     # Labels and answers come from the retained configuration, never reply text.
     run.answers={**run.answers,question['key']:question['options'][choice]}
     audit(db,run,'ANSWER','Customer',key=question['key'],answer=question['options'][choice],message_id=message.id)
-    run.step+=1;run.provider_id=None;run.token=secrets.token_urlsafe(24)
+    if 'next' in question:
+        target=question['next'][choice]
+        run.step=(next(i for i,item in enumerate(run.definition['steps']) if item['key']==target)
+                  if target is not None else len(run.definition['steps']))
+    else:run.step+=1  # Retained legacy sequences remain sequential.
+    if 'next' in question:audit(db,run,'ROUTE','System',from_key=question['key'],next_key=(run.definition['steps'][run.step]['key'] if run.step<len(run.definition['steps']) else None))
+    run.provider_id=None;run.token=secrets.token_urlsafe(24)
     run.status='COMPLETE' if run.step==len(run.definition['steps']) else 'QUEUED'
     run.updated_at=datetime.utcnow();run.version+=1
     if run.status=='COMPLETE':audit(db,run,'COMPLETE','System',note='Preferences ready for staff. This is not marketing consent.')
