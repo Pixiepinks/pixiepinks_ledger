@@ -31,8 +31,16 @@ def validate(value):
         keys.add(key)
         if step.get('type')=='products':
             from question_product_service import validate_selection
-            if set(step)!={'key','type','products'}:raise HTTPException(422,'Product steps need a key and selected products only; they finish for staff')
-            validate_selection(step['products']);continue
+            if not {'key','type','products'}<=set(step) or set(step)-{'key','type','products','choose','choice_body','choice_button'}:raise HTTPException(422,'Product steps need a key and selected products only; they finish for staff')
+            validate_selection(step['products'])
+            if type(step.get('choose',False)) is not bool:raise HTTPException(422,'Choose whether to ask for a product selection')
+            if step.get('choose'):
+                if len(step['products'])>10:raise HTTPException(422,'A product selection list supports at most 10 selected products')
+                body=step.get('choice_body','Which product do you like?');button=step.get('choice_button','Choose a product')
+                if not isinstance(body,str) or not 1<=len(body.strip())<=1024:raise HTTPException(422,'Product-choice message must be 1–1024 characters')
+                if not isinstance(button,str) or not 1<=len(button)<=20 or button!=button.strip() or any(ord(c)<32 for c in button):raise HTTPException(422,'Product-choice button must be 1–20 characters')
+            elif 'choice_body' in step or 'choice_button' in step:raise HTTPException(422,'Enable the product selection list before setting its wording')
+            continue
         if not {'key','body','options'}<=set(step) or set(step)-{'key','body','options','type','list_button','next'}:raise HTTPException(422,'Each question needs a key, body and reply options')
         kind=step.get('type','buttons')
         if not isinstance(kind,str) or kind not in {'buttons','list'}:raise HTTPException(422,'Choose Buttons or List')
@@ -89,7 +97,7 @@ def snapshot(run,db=None):
             'answers':run.answers,'version':run.version,'updated_at':run.updated_at.isoformat()+'Z',
             'questions':len(run.definition['steps'])}
     if db is not None:
-        items=db.query(ProductSend).filter_by(run_id=run.id).order_by(ProductSend.position).all()
+        items=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.position>=0).order_by(ProductSend.position).all()
         index=items[0].step if items else run.step
         if index<len(run.definition['steps']) and run.definition['steps'][index].get('type')=='products':
             result['products']={'total':len(run.definition['steps'][index]['products']),
@@ -143,9 +151,15 @@ def inbound(db,c,message,button_id):
     except ValueError:return
     if not control.enabled or run.status!='WAITING' or step!=run.step:return
     if message.reply_to_whatsapp_message_id!=run.provider_id:return
-    if message.created_at < run.updated_at.replace(microsecond=0) or message.created_at>datetime.utcnow()+timedelta(minutes=5):return
     question=run.definition['steps'][step]
-    if question.get('type')=='products':return
+    earliest=run.updated_at
+    if question.get('type')=='products':
+        invitation=db.query(ProductSend).filter_by(run_id=run.id,step=step,position=-1,status='SENT').one_or_none()
+        if invitation is not None:earliest=invitation.created_at
+    if message.created_at < earliest.replace(microsecond=0) or message.created_at>datetime.utcnow()+timedelta(minutes=5):return
+    if question.get('type')=='products':
+        from question_product_service import receive_choice
+        receive_choice(db,run,message,choice,c.phone_number);return
     expected='question_list' if question.get('type','buttons')=='list' else 'question_reply'
     if message.response_kind!=expected or not 0<=choice<len(question['options']):return
     # Labels and answers come from the retained configuration, never reply text.

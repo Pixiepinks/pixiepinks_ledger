@@ -242,7 +242,7 @@ def test_postgres_migration_and_cross_session_single_claim(tmp_path,monkeypatch)
         monkeypatch.setattr(database,'engine',engine)
         config=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
         command.stamp(config,'20261030_20');command.upgrade(config,'head');command.upgrade(config,'head')
-        with engine.connect() as conn:assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar()=='20261108_31'
+        with engine.connect() as conn:assert conn.execute(text('SELECT version_num FROM alembic_version')).scalar()=='20261108_32'
         monkeypatch.setenv('VOICE_PLAYBACK_TEST_ENABLED','true');monkeypatch.setenv('VOICE_PLAYBACK_TEST_OWNER_NUMBER','94770012301')
         monkeypatch.setattr(whatsapp_service.settings,'META_WHATSAPP_PHONE_NUMBER_ID','business.test')
         monkeypatch.setattr(whatsapp_service.settings,'META_WHATSAPP_ACCESS_TOKEN','test')

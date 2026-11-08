@@ -23,7 +23,7 @@ function refreshRoutes(){
 }
 function definition(){return {title:root.querySelector('#questions-title').value,steps:boxes().map((box,index,all)=>{
   const value=key=>box.querySelector(`[data-field=${key}]`).value,options=value('options').split('\n');
-  if(value('type')==='products')return {key:value('key'),type:'products',products:box.selectedProducts};
+  if(value('type')==='products')return {key:value('key'),type:'products',products:box.selectedProducts,...(box.productChoose?{choose:true,choice_body:box.choiceBody,choice_button:box.choiceButton}:{})};
   return {key:value('key'),body:value('body'),type:value('type'),options,
     next:options.map(label=>{const target=box.routes.get(label)||'__next';return target==='__finish'?null:target==='__next'?(all[index+1]?.querySelector('[data-field=key]').value??null):target;}),
     ...(value('type')==='list'?{list_button:value('list_button')}:{})};})};}
@@ -32,7 +32,7 @@ function previewFlow(){
   if(!data.length){area.textContent='Add a first question to start the flow.';return;}
   const entry=document.createElement('strong');entry.textContent=`Start → ${data[0].key||'(first question)'}`;area.append(entry);
   for(const step of data){const group=document.createElement('div');const title=document.createElement('b');title.textContent=step.key||'(Question needs a key)';group.append(title);
-    if(step.type==='products'){const row=document.createElement('p');row.textContent=`Send ${step.products.length} selected products → Finish — staff continues`;group.append(row);area.append(group);continue;}
+    if(step.type==='products'){const row=document.createElement('p');row.textContent=`Send ${step.products.length} selected products → ${step.choose?'Numbered list → Customer chooses → Staff continues':'Finish — staff continues'}`;group.append(row);area.append(group);continue;}
     step.options.forEach((label,i)=>{const row=document.createElement('p');row.textContent=`${label} → ${step.next[i]===null?'Finish — staff continues':step.next[i]}`;group.append(row);});area.append(group);}
 }
 function add(step){
@@ -45,7 +45,7 @@ function add(step){
   const options=field(box,'Option labels (one per line)','options',(step.options||[]).join('\n'),null,'textarea');
   box.previousLabels=[...(step.options||[])];
   box.routes=new Map((step.options||[]).map((label,index)=>[label,step.next?(step.next[index]===null?'__finish':step.next[index]):'__next']));
-  const productPicker=window.QuestionProducts.attach(box,step.products,()=>previewFlow());box.append(productPicker);
+  const productPicker=window.QuestionProducts.attach(box,step.products,()=>previewFlow(),step);box.append(productPicker);
   const routes=document.createElement('div');routes.className='question-routes';box.append(routes);
   const help=document.createElement('small');box.append(help);
   const preview=document.createElement('div');preview.className='question-preview';box.append(preview);

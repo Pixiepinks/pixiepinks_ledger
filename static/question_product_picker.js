@@ -1,6 +1,8 @@
 (()=>{'use strict';
-window.QuestionProducts={attach(box,items,changed){
+window.QuestionProducts={attach(box,items,changed,settings={}){
   box.selectedProducts=(items||[]).map(item=>({...item}));
+  box.productChoose=Boolean(settings.choose);
+  box.choiceBody=settings.choice_body||'Which product do you like?';box.choiceButton=settings.choice_button||'Choose a product';
   const root=document.createElement('section');root.className='question-product-picker';root.setAttribute('aria-label','Selected products');
   const count=document.createElement('strong'),note=document.createElement('p'),selected=document.createElement('div'),query=document.createElement('input'),search=document.createElement('button'),results=document.createElement('div'),more=document.createElement('button'),status=document.createElement('p');
   query.placeholder='Search any product range, name, size or SKU';query.maxLength=100;query.setAttribute('aria-label','Search product catalogue');
@@ -12,7 +14,14 @@ window.QuestionProducts={attach(box,items,changed){
   collectionQuery.placeholder='Find a Shopify collection, e.g. Size 12';collectionQuery.maxLength=100;collectionQuery.setAttribute('aria-label','Search Shopify collections');
   findCollections.type='button';findCollections.className='btn btn-secondary';findCollections.textContent='Find collections';collection.setAttribute('aria-label','Shopify collection');
   const allProducts=document.createElement('option');allProducts.value='';allProducts.textContent='All products — no collection filter';collection.append(allProducts);collectionStatus.setAttribute('role','status');
-  root.append(count,note,selected,collectionQuery,findCollections,collection,collectionStatus,query,search,type,min,max,status,results,more);let products=[],cursor=null,generation=0,collectionGeneration=0;
+  const choiceLabel=document.createElement('label'),choice=document.createElement('input');choice.type='checkbox';choice.checked=box.productChoose;choiceLabel.append(choice,document.createTextNode(' Ask customer to choose after the cards (up to 10 products)'));
+  const wording=document.createElement('div'),bodyLabel=document.createElement('label'),body=document.createElement('textarea'),buttonLabel=document.createElement('label'),opener=document.createElement('input');
+  bodyLabel.textContent='Product-choice message';body.maxLength=1024;body.value=box.choiceBody;bodyLabel.append(body);
+  buttonLabel.textContent='Product-choice button';opener.maxLength=20;opener.value=box.choiceButton;buttonLabel.append(opener);wording.append(bodyLabel,buttonLabel);
+  const limit=()=>box.productChoose?10:20;
+  choice.onchange=()=>{box.productChoose=choice.checked;update();changed();};
+  body.oninput=()=>{box.choiceBody=body.value;changed();};opener.oninput=()=>{box.choiceButton=opener.value;changed();};
+  root.append(choiceLabel,wording,count,note,selected,collectionQuery,findCollections,collection,collectionStatus,query,search,type,min,max,status,results,more);let products=[],cursor=null,generation=0,collectionGeneration=0;
   async function find(){
     const current=++collectionGeneration;collectionStatus.textContent='Loading Shopify collections…';
     try{const response=await fetch('/crm/quick-messages/customer-questions/collections?q='+encodeURIComponent(collectionQuery.value));const data=await response.json();if(current!==collectionGeneration||!box.isConnected)return;if(!response.ok)throw Error(data.detail||'Collections unavailable');
@@ -27,7 +36,10 @@ window.QuestionProducts={attach(box,items,changed){
   const pair=item=>item.product_id+'|'+item.variant_id;
   const button=(text,fn)=>{const el=document.createElement('button');el.type='button';el.className='btn btn-secondary';el.textContent=text;el.onclick=fn;return el;};
   function update(){
-    count.textContent=`Selected: ${box.selectedProducts.length}/20`;selected.replaceChildren();
+    count.textContent=`Selected: ${box.selectedProducts.length}/${limit()}`;selected.replaceChildren();
+    wording.hidden=!box.productChoose;for(const field of [body,opener]){field.disabled=!box.productChoose;field.required=box.productChoose;}
+    choice.setCustomValidity(box.productChoose&&box.selectedProducts.length>10?'Choose 10 or fewer products for a selection list.':'');
+    note.textContent=box.productChoose?'Cards are numbered in this order. A matching list follows confirmed sends; the customer’s choice is saved for staff. Live prices and stock are checked before sending.':'Select 1–20 product variants. Live prices and stock are checked when sending. Each selected item sends one card; this step then finishes for staff.';
     box.selectedProducts.forEach((item,index)=>{const row=document.createElement('div');row.className='selected-product';const label=document.createElement('span');label.textContent=`${index+1}. ${item.label}`;row.append(label);
       const swap=delta=>{const next=index+delta;[box.selectedProducts[index],box.selectedProducts[next]]=[box.selectedProducts[next],box.selectedProducts[index]];update();changed();};
       const up=button('↑',()=>swap(-1)),down=button('↓',()=>swap(1));up.setAttribute('aria-label','Move product up');down.setAttribute('aria-label','Move product down');up.disabled=index===0;down.disabled=index===box.selectedProducts.length-1;
@@ -47,7 +59,7 @@ window.QuestionProducts={attach(box,items,changed){
       const selection=()=>({product_id:product.id,variant_id:variant.value,label:(product.title+' · '+variants.find(v=>v.id===variant.value).title).slice(0,200)});
       const sync=()=>{const item=selection();check.checked=box.selectedProducts.some(value=>pair(value)===pair(item));check.disabled=product.status!=='ACTIVE'||!product.published||!variants.find(v=>v.id===variant.value)?.available;};
       variant.onchange=sync;sync();check.onchange=()=>{const item=selection(),index=box.selectedProducts.findIndex(value=>pair(value)===pair(item));
-        if(check.checked&&index<0){if(box.selectedProducts.length>=20){check.checked=false;status.textContent='Select at most 20 products.';return;}box.selectedProducts.push(item);}else if(!check.checked&&index>=0)box.selectedProducts.splice(index,1);
+        if(check.checked&&index<0){if(box.selectedProducts.length>=limit()){check.checked=false;status.textContent=`Select at most ${limit()} products.`;return;}box.selectedProducts.push(item);}else if(!check.checked&&index>=0)box.selectedProducts.splice(index,1);
         update();changed();};try{const url=new URL(product.image);if(url.protocol==='https:'&&url.hostname==='cdn.shopify.com'){const image=document.createElement('img');image.src=url.href;image.alt=product.title;image.loading='lazy';row.append(image);}}catch{}row.append(label,variant);results.append(row);
     }
   }

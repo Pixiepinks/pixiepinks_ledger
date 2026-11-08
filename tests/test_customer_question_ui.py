@@ -235,3 +235,51 @@ def test_select_products_from_collections_preserves_previous_selections(question
         page.reload();step=page.locator('#question-steps > fieldset').first;step.wait_for()
         assert 'Selected: 3/20' in step.inner_text() and not errors
         browser.close()
+
+
+def test_product_choice_wording_numbered_cards_and_recorded_choice(questions,monkeypatch):
+    import re
+    import customer_questions as q
+    import question_product_service as products
+    from test_product_choice_list import choosing
+    from test_customer_questions import settings,act,reply
+    from test_shopify_collection_sends import product
+    client,sessions,ids,_,_,csrf,_=questions
+    monkeypatch.setattr(products,'resolve_inbox_product',lambda pid,vid:product(int(pid.rsplit('/',1)[-1])))
+    sent=[]
+    monkeypatch.setattr(products,'send_whatsapp_image',lambda *a,**kw:sent.append(a) or ('SENT',f'wamid.ui.card.{len(sent)}'))
+    monkeypatch.setattr(q,'send_buttons',lambda *a,**kw:'wamid.ui.choice')
+    assert settings(client,csrf,definition=choosing(2),enabled=True).status_code==200
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    def serve(route):
+        request=route.request;url=urlsplit(request.url)
+        if url.hostname!='question.test':route.fulfill(status=200,body='');return
+        response=client.request(request.method,url.path+('?' +url.query if url.query else ''),content=request.post_data_buffer,
+            headers={k:v for k,v in request.headers.items() if k in {'content-type','x-csrf-token'}},follow_redirects=False)
+        route.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+    with api.sync_playwright() as p:
+        browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1366,'height':1000});errors=[]
+        page.on('pageerror',lambda e:errors.append(str(e)));page.route('**/*',serve)
+        page.goto('https://question.test/crm/quick-messages/customer-questions')
+        step=page.locator('#question-steps > fieldset').first;step.wait_for()
+        choice=step.get_by_role('checkbox',name=re.compile('Ask customer to choose'))
+        assert choice.is_checked() and 'Selected: 2/10' in step.inner_text()
+        step.get_by_label('Product-choice message',exact=True).fill('ඔබ කැමති කුමන එකටද?')
+        step.get_by_label('Product-choice button',exact=True).fill('තෝරන්න')
+        page.get_by_role('button',name='Save settings',exact=True).click();page.get_by_role('status').filter(has_text='Saved.').wait_for()
+        page.reload();step=page.locator('#question-steps > fieldset').first;step.wait_for()
+        assert step.get_by_label('Product-choice button',exact=True).input_value()=='තෝරන්න'
+        step.get_by_role('checkbox',name=re.compile('Ask customer to choose')).uncheck()
+        assert 'Selected: 2/20' in step.inner_text()
+        assert act(client,ids[0],csrf).status_code==200
+        for _ in range(3):assert q.dispatch_one(sessions)
+        page.goto(f'https://question.test/crm/whatsapp?conversation={ids[0]}')
+        page.locator('#messages .product-copy strong').nth(1).wait_for()
+        assert page.locator('#messages .product-copy strong').all_text_contents()==['1. Bicycle 1','2. Bicycle 2']
+        assert reply(questions,index=1,reply_type='list_reply').status_code==200
+        page.get_by_role('button',name='Customer questions',exact=True).click()
+        page.locator('.question-content').get_by_text('recommendations: 2. Bicycle 2 · Red',exact=True).wait_for()
+        assert '[object Object]' not in page.locator('.question-content').inner_text() and not errors
+        page.screenshot(path='/tmp/product-choice-recorded.png',full_page=True)
+        browser.close()
