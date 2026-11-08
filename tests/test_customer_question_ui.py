@@ -57,3 +57,45 @@ def test_builder_preview_and_mobile_inbox_controls(questions):
             page.get_by_role('button',name='Close',exact=True).click()
         assert not errors and not calls and not sends
         browser.close()
+
+
+def test_answer_route_editor_preview_persistence_and_loop_error(questions):
+    from test_customer_questions import settings,branching_flow
+    client,_,_,_,_,csrf,_=questions
+    assert settings(client,csrf,definition=branching_flow()).status_code==200
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    def serve(route):
+        request=route.request;url=urlsplit(request.url)
+        if url.hostname!='question.test':route.fulfill(status=200,body='');return
+        response=client.request(request.method,url.path,content=request.post_data_buffer,
+            headers={k:v for k,v in request.headers.items() if k in {'content-type','x-csrf-token'}},follow_redirects=False)
+        route.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+    with api.sync_playwright() as p:
+        browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1366,'height':1000});errors=[]
+        page.on('pageerror',lambda e:errors.append(str(e)));page.route('**/*',serve)
+        page.goto('https://question.test/crm/quick-messages/customer-questions')
+        page.locator('fieldset').nth(4).wait_for()
+        root=page.locator('fieldset').first
+        assert root.locator('[data-field=route]').count()==5
+        assert 'Scooter → scooter_type' in page.locator('#question-flow-preview').inner_text()
+        root.locator('[data-field=route]').first.select_option('__finish')
+        assert 'Bicycle → Finish' in page.locator('#question-flow-preview').inner_text()
+        page.get_by_role('button',name='Save settings').click()
+        page.get_by_role('status').filter(has_text='Saved.').wait_for()
+        page.reload();page.locator('fieldset').nth(4).wait_for()
+        assert page.locator('fieldset').first.locator('[data-field=route]').first.input_value()=='__finish'
+        page.locator('fieldset').first.locator('[data-field=options]').fill('Cycles\nScooter\nTricycle\nJeeps\nGift Packs')
+        assert page.locator('fieldset').first.locator('[data-field=route]').first.input_value()=='__finish'
+        page.screenshot(path='/tmp/customer-question-branches.png',full_page=True)
+        # Bicycle age is still reachable through Tricycle; routing back to product is a real cycle.
+        page.locator('fieldset').nth(1).locator('[data-field=route]').first.select_option('product')
+        page.get_by_role('button',name='Save settings').click()
+        page.get_by_role('status').filter(has_text='cannot contain loops').wait_for()
+        page.locator('fieldset').nth(1).locator('[data-field=route]').first.select_option('__finish')
+        page.locator('fieldset').nth(4).get_by_role('button',name='Remove question').click()
+        assert page.locator('fieldset').first.locator('[data-field=route]').nth(4).input_value()=='gift_age'
+        page.get_by_role('button',name='Save settings').click()
+        page.get_by_role('status').filter(has_text='missing question').wait_for()
+        assert not errors
+        browser.close()

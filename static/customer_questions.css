@@ -3,3 +3,5 @@
 .question-preview small{display:block;margin:8px 0}
 
 #question-builder [hidden]{display:none!important}
+
+.question-routes{padding:8px 12px;background:#f8f8fb;border-radius:8px;margin:12px 0}#question-flow-preview>div{border-left:3px solid #ba1d61;padding:8px 12px;margin:10px 0;overflow-wrap:anywhere}#question-flow-preview p{margin:6px 0}
