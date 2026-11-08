@@ -176,11 +176,13 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.get('/crm/whatsapp/api/conversations/{cid}/customer-questions')
     def current(cid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
         c=conversation_access.require_visible(db,user,cid);cfg=questions.config(db);run=questions.latest(db,cid)
+        from question_payment_review import eligible
+        from settings import settings
         events=[]
         if run:
             events=[{'action':e.action,'actor':e.actor,'at':e.created_at.isoformat()+'Z'} for e in db.query(Event).filter_by(run_id=run.id).order_by(Event.id.desc()).limit(30)]
         return {'enabled':cfg.enabled,'title':cfg.definition['title'],'flows':questions.library(db),'run':questions.snapshot(run,db),'history':events,
-            'can_manage':conversation_access.permissions(db,user,c)['can_manage'],'csrf_token':csrf_token(request)}
+            'can_manage':conversation_access.permissions(db,user,c)['can_manage'],'can_review_payments':eligible(user) and settings.SALES_ORDERS_ENABLED and settings.SALES_PAYMENT_TRACKING_ENABLED,'csrf_token':csrf_token(request)}
 
     @router.post('/crm/whatsapp/api/conversations/{cid}/customer-questions')
     async def act(cid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
@@ -194,4 +196,6 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         if 'flow_id' in p and (type(p.get('flow_version')) is not int):raise HTTPException(422,'Preview the selected flow before starting')
         run=questions.start(db,c,user,p.get('flow_id',1),p.get('flow_version')) if p.get('action')=='start' else questions.change(db,c,user,p.get('action'),p.get('version'))
         db.commit();return {'run':questions.snapshot(run,db)}
+    from question_payment_review import build_router as review_router
+    router.include_router(review_router(get_db,require_user,csrf,body,QuestionRoute))
     return router

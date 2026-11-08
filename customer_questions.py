@@ -109,8 +109,8 @@ def snapshot(run,db=None):
                 'issues':[{'position':item.position+1,'status':item.status,'reason':item.reason} for item in items if item.status not in {'SENT','SENDING'}]}
             if run.definition['steps'][index].get('service'):
                 stages=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.step==index,ProductSend.position.in_([-2,-3])).all()
-                payment_stages=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.step==index,ProductSend.position.in_([-200,-201])).order_by(ProductSend.position.desc()).all()
-                if payment_stages:result['payment_progress']=[{'stage':'Voice' if row.position==-200 else 'Bank image','status':row.status,'reason':row.reason} for row in payment_stages]
+                payment_stages=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.step==index,ProductSend.position.in_([-200,-201,-202])).order_by(ProductSend.position.desc()).all()
+                if payment_stages:result['payment_progress']=[{'stage':{-200:'Voice',-201:'Bank image',-202:'Confirmation'}[row.position],'status':row.status,'reason':row.reason} for row in payment_stages]
                 result['service']={'voice_status':next((row.status for row in stages if row.position==-2),'NOT_SENT'),
                     'question_status':next((row.status for row in stages if row.position==-3),'NOT_SENT'),
                     'charge':run.definition['steps'][index]['service']['charge'],'issues':[row.reason for row in stages if row.reason]}
@@ -259,6 +259,8 @@ def dispatch_one(sessions):
             audit(db,run,'PAUSE','System',reason='Automation is OFF');db.commit();return True
         try:require_reply_window(db,c)
         except HTTPException:
+            from question_payment_review import window_closed
+            window_closed(db,run)
             run.status='WINDOW_CLOSED';run.version+=1;audit(db,run,'WINDOW_CLOSED','System');db.commit();return True
         step=run.definition['steps'][run.step]
         if step.get('type')=='products':

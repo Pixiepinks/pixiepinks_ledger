@@ -195,3 +195,14 @@ def test_draft_update_recalculates_and_status_transition_is_audited(monkeypatch)
         history = db.query(SalesOrderStatusHistory).one()
         assert (history.previous_status, history.new_status, history.changed_by) == (
             "DRAFT", "AWAITING_CUSTOMER_CONFIRMATION", "sales-admin")
+
+
+def test_service_charge_has_its_own_total_and_rejects_invalid_values():
+    lines=[{'quantity':'1','unit_price':'45000.00'}]
+    result=calculate_order(lines,service='1800.00')
+    assert result.subtotal==Decimal('45000.00') and result.service_total==Decimal('1800.00')
+    assert result.grand_total==Decimal('46800.00') and result.shipping_total==result.tax_total==0
+    for invalid in ['-1','NaN','1000001']:
+        try:calculate_order(lines,service=invalid)
+        except SalesOrderValidationError:pass
+        else:raise AssertionError('Invalid service charge accepted')

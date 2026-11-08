@@ -227,11 +227,12 @@ def _validate_local_order(order: SalesOrder) -> None:
     discount_total = _money(order.discount_total)
     shipping_total = _money(order.shipping_total)
     tax_total = _money(order.tax_total)
+    service_total = _money(order.service_total or 0)
     if discount_total < line_discounts or discount_total > subtotal:
         raise ShopifyDraftSyncError("Ledger discount totals are inconsistent")
-    if shipping_total < 0 or tax_total < 0:
+    if shipping_total < 0 or tax_total < 0 or service_total < 0:
         raise ShopifyDraftSyncError("Ledger shipping and tax totals cannot be negative")
-    expected_total = (subtotal - discount_total + shipping_total + tax_total).quantize(Decimal("0.01"))
+    expected_total = (subtotal - discount_total + shipping_total + tax_total + service_total).quantize(Decimal("0.01"))
     if _money(order.subtotal) != subtotal or _money(order.grand_total) != expected_total:
         raise ShopifyDraftSyncError("Ledger order totals are inconsistent; edit and save the draft first")
 
@@ -278,6 +279,8 @@ def _shopify_input(order: SalesOrder) -> dict:
                 discount, "Ledger line discount", order.internal_order_number)
         line_discount_total += discount
         line_items.append(item)
+    if _money(order.service_total or 0):
+        line_items.append({"title":"Initial greasing / service charge","originalUnitPrice":str(_money(order.service_total)),"quantity":1,"requiresShipping":False,"taxable":False})
     order_discount = _money(order.discount_total) - line_discount_total
     if order_discount < 0:
         raise ShopifyDraftSyncError("Ledger discount totals are inconsistent")

@@ -3184,7 +3184,7 @@ def _sales_order_payload(order: SalesOrder) -> dict:
                                     if order.shopify_sync_updated_at else None),
         "shopify_sync_error": order.shopify_sync_error,
         "subtotal": str(order.subtotal), "discount_total": str(order.discount_total),
-        "shipping_total": str(order.shipping_total), "tax_total": str(order.tax_total),
+        "shipping_total": str(order.shipping_total), "service_total": str(order.service_total), "tax_total": str(order.tax_total),
         "grand_total": str(order.grand_total), "amount_paid": str(order.amount_paid),
         "currency": order.currency,
         "created_by": order.created_by, "created_at": order.created_at.isoformat(),

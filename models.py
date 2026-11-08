@@ -146,6 +146,7 @@ class SalesOrder(Base):
     subtotal = Column(Numeric(14, 2), nullable=False, default=0)
     discount_total = Column(Numeric(14, 2), nullable=False, default=0)
     shipping_total = Column(Numeric(14, 2), nullable=False, default=0)
+    service_total = Column(Numeric(14, 2), nullable=False, default=0, server_default="0")
     tax_total = Column(Numeric(14, 2), nullable=False, default=0)
     grand_total = Column(Numeric(14, 2), nullable=False, default=0)
     amount_paid = Column(Numeric(14, 2), nullable=False, default=0)
