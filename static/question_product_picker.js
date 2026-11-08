@@ -8,7 +8,22 @@ window.QuestionProducts={attach(box,items,changed){
   note.textContent='Select 1–20 product variants. Live prices and stock are checked when sending. Each selected item sends one card; this step then finishes for staff.';
   const type=document.createElement('select');type.setAttribute('aria-label','Filter loaded product range');const initial=document.createElement('option');initial.value='';initial.textContent='All loaded product ranges';type.append(initial);status.textContent='Search the catalogue to select products.';
   const min=document.createElement('input'),max=document.createElement('input');for(const [el,label] of [[min,'Minimum price'],[max,'Maximum price']]){el.type='number';el.min='0';el.placeholder=label;el.setAttribute('aria-label',label);}
-  root.append(count,note,selected,query,search,type,min,max,status,results,more);let products=[],cursor=null,generation=0;
+  const collectionQuery=document.createElement('input'),findCollections=document.createElement('button'),collection=document.createElement('select'),collectionStatus=document.createElement('p');
+  collectionQuery.placeholder='Find a Shopify collection, e.g. Size 12';collectionQuery.maxLength=100;collectionQuery.setAttribute('aria-label','Search Shopify collections');
+  findCollections.type='button';findCollections.className='btn btn-secondary';findCollections.textContent='Find collections';collection.setAttribute('aria-label','Shopify collection');
+  const allProducts=document.createElement('option');allProducts.value='';allProducts.textContent='All products — no collection filter';collection.append(allProducts);collectionStatus.setAttribute('role','status');
+  root.append(count,note,selected,collectionQuery,findCollections,collection,collectionStatus,query,search,type,min,max,status,results,more);let products=[],cursor=null,generation=0,collectionGeneration=0;
+  async function find(){
+    const current=++collectionGeneration;collectionStatus.textContent='Loading Shopify collections…';
+    try{const response=await fetch('/crm/quick-messages/customer-questions/collections?q='+encodeURIComponent(collectionQuery.value));const data=await response.json();if(current!==collectionGeneration||!box.isConnected)return;if(!response.ok)throw Error(data.detail||'Collections unavailable');
+      const selectedOption=[...collection.options].find(option=>option.value===collection.value),value=collection.value;collection.replaceChildren(allProducts);
+      for(const row of data.collections){const option=document.createElement('option');option.value=row.id;option.textContent=row.title;collection.append(option);}
+      if(value&&![...collection.options].some(option=>option.value===value))collection.append(selectedOption);collection.value=value;
+      collectionStatus.textContent=data.collections.length?'Choose a collection to browse its available products.':'No matching collections. Try another name.';
+    }catch(e){if(current===collectionGeneration)collectionStatus.textContent=e.message;}
+  }
+  findCollections.onclick=find;collectionQuery.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();find();}};
+  collection.onchange=()=>{type.value='';query.value='';min.value='';max.value='';load();};
   const pair=item=>item.product_id+'|'+item.variant_id;
   const button=(text,fn)=>{const el=document.createElement('button');el.type='button';el.className='btn btn-secondary';el.textContent=text;el.onclick=fn;return el;};
   function update(){
@@ -37,14 +52,15 @@ window.QuestionProducts={attach(box,items,changed){
     }
   }
   async function load(append=false){
-    const current=++generation;status.textContent='Loading catalogue…';
-    try{const response=await fetch('/crm/quick-messages/customer-questions/products?q='+encodeURIComponent(query.value)+(append&&cursor?'&cursor='+encodeURIComponent(cursor):''));const data=await response.json();if(current!==generation||!box.isConnected)return;if(!response.ok)throw Error(data.detail||'Catalogue unavailable');
+    const current=++generation;type.hidden=Boolean(collection.value);status.textContent='Loading catalogue…';if(!append){products=[];cursor=null;results.replaceChildren();more.hidden=true;}
+    try{const response=await fetch('/crm/quick-messages/customer-questions/products?q='+encodeURIComponent(query.value)+(collection.value?'&collection_id='+encodeURIComponent(collection.value):'')+(append&&cursor?'&cursor='+encodeURIComponent(cursor):''));const data=await response.json();if(current!==generation||!box.isConnected)return;if(!response.ok)throw Error(data.detail||'Catalogue unavailable');
       products=append?[...products,...data.products]:data.products;cursor=data.next_cursor;more.hidden=!data.has_next_page;
       const old=type.value;type.replaceChildren();const all=document.createElement('option');all.value='';all.textContent='All loaded product ranges';type.append(all);
       for(const value of new Set(products.map(p=>p.product_type).filter(Boolean))){const option=document.createElement('option');option.value=value;option.textContent=value;type.append(option);}type.value=[...type.options].some(o=>o.value===old)?old:'';
-      draw();status.textContent='Tick products to select. Range and price filters apply to loaded results.';
+      draw();status.textContent=data.collection?`${data.collection.title}: ${data.products.length} matching available products. ${data.excluded_products||0} unavailable/unpublished products excluded. Tick only the products you want.`:'Tick products to select. Range and price filters apply to loaded results.';
     }catch(e){if(current===generation)status.textContent=e.message;}
   }
+  query.oninput=()=>{generation++;cursor=null;more.hidden=true;};
   search.onclick=()=>load();more.onclick=()=>load(true);query.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();load();}};
   for(const el of [type,min,max])el.oninput=draw;
   update();return root;

@@ -192,3 +192,46 @@ def test_tick_any_range_products_reorder_save_and_reload(questions,monkeypatch):
         step.screenshot(path='/tmp/question-product-step.png')
         assert not errors
         browser.close()
+
+
+def test_select_products_from_collections_preserves_previous_selections(questions,monkeypatch):
+    import shopify_catalog_service as catalogue
+    import shopify_collection_service as collections
+    from test_shopify_collection_sends import product,listing
+    from test_customer_questions import settings
+    from test_question_products import flow
+    client,_,_,_,_,csrf,_=questions
+    assert settings(client,csrf,definition=flow(1)).status_code==200
+    choices=[{'id':'gid://shopify/Collection/20','title':'Size 12 bicycles'}, {'id':'gid://shopify/Collection/21','title':'Gift packs'}]
+    monkeypatch.setattr(catalogue,'discover_collections',lambda *a:choices)
+    def load(cid):
+        number=2 if cid.endswith('/20') else 3
+        result=listing([product(number)]);result['collection']=next(c for c in choices if c['id']==cid);return result
+    monkeypatch.setattr(collections,'load_collection',load)
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    def serve(route):
+        request=route.request;url=urlsplit(request.url)
+        if url.hostname!='question.test':route.fulfill(status=200,body='');return
+        response=client.request(request.method,url.path+('?' +url.query if url.query else ''),content=request.post_data_buffer,
+            headers={k:v for k,v in request.headers.items() if k in {'content-type','x-csrf-token'}},follow_redirects=False)
+        route.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+    with api.sync_playwright() as p:
+        browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1366,'height':1000});errors=[]
+        page.on('pageerror',lambda e:errors.append(str(e)));page.route('**/*',serve)
+        page.goto('https://question.test/crm/quick-messages/customer-questions');step=page.locator('#question-steps > fieldset').first;step.wait_for()
+        step.get_by_label('Search Shopify collections',exact=True).fill('Size')
+        step.get_by_role('button',name='Find collections',exact=True).click()
+        page.locator('select[aria-label="Shopify collection"] option').nth(2).wait_for(state="attached")
+        step.get_by_label('Shopify collection',exact=True).select_option(choices[0]['id'])
+        step.get_by_role('checkbox',name='Bicycle 2',exact=True).check()
+        step.get_by_label('Shopify collection',exact=True).select_option(choices[1]['id'])
+        step.get_by_role('checkbox',name='Bicycle 3',exact=True).check()
+        assert 'Selected: 3/20' in step.inner_text()
+        step.get_by_label('Shopify collection',exact=True).select_option(choices[0]['id'])
+        page.wait_for_function('document.querySelector(".picker-product input[type=checkbox]")?.checked===true')
+        assert step.locator('.picker-product').count()==1
+        page.get_by_role('button',name='Save settings',exact=True).click();page.get_by_role('status').filter(has_text='Saved.').wait_for()
+        page.reload();step=page.locator('#question-steps > fieldset').first;step.wait_for()
+        assert 'Selected: 3/20' in step.inner_text() and not errors
+        browser.close()
