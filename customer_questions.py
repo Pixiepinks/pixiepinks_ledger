@@ -25,12 +25,18 @@ def validate(value):
     if not isinstance(steps,list) or not 1<=len(steps)<=10:raise HTTPException(422,'Use 1–10 questions')
     keys=set()
     for step in steps:
-        if not isinstance(step,dict) or set(step)!={'key','body','options'}:raise HTTPException(422,'Each question needs a key, body and reply options')
+        if not isinstance(step,dict) or not {'key','body','options'}<=set(step) or set(step)-{'key','body','options','type','list_button'}:raise HTTPException(422,'Each question needs a key, body and reply options')
+        kind=step.get('type','buttons')
+        if not isinstance(kind,str) or kind not in {'buttons','list'}:raise HTTPException(422,'Choose Buttons or List')
+        if 'list_button' in step and kind!='list':raise HTTPException(422,'List button text is only available for List questions')
+        label=step.get('list_button','Choose option')
+        if not isinstance(label,str) or not 1<=len(label)<=20 or label!=label.strip() or any(ord(c)<32 for c in label):raise HTTPException(422,'List button text must be 1–20 characters')
         key=step['key'];body=step['body'];options=step['options']
         if not isinstance(key,str) or not re.fullmatch('[a-z][a-z0-9_]{0,29}',key) or key in keys:raise HTTPException(422,'Question keys must be unique lowercase names')
         keys.add(key)
         if not isinstance(body,str) or not 1<=len(body.strip())<=1024:raise HTTPException(422,'Question text must be 1–1024 characters')
-        if not isinstance(options,list) or not 1<=len(options)<=3 or any(not isinstance(o,str) or not 1<=len(o.strip())<=20 or o!=o.strip() or any(ord(c)<32 for c in o) for o in options):raise HTTPException(422,'Use 1–3 buttons with 1–20 characters each')
+        count,limit=(10,24) if kind=='list' else (3,20)
+        if not isinstance(options,list) or not 1<=len(options)<=count or any(not isinstance(o,str) or not 1<=len(o)<=limit or o!=o.strip() or any(ord(c)<32 for c in o) for o in options):raise HTTPException(422,f'Use 1–{count} options with 1–{limit} characters each')
         if len(set(options))!=len(options):raise HTTPException(422,'Button labels must be different')
     return json.loads(json.dumps(value))
 
@@ -105,7 +111,8 @@ def inbound(db,c,message,button_id):
     if message.reply_to_whatsapp_message_id!=run.provider_id:return
     if message.created_at < run.updated_at.replace(microsecond=0) or message.created_at>datetime.utcnow()+timedelta(minutes=5):return
     question=run.definition['steps'][step]
-    if not 0<=choice<len(question['options']):return
+    expected='question_list' if question.get('type','buttons')=='list' else 'question_reply'
+    if message.response_kind!=expected or not 0<=choice<len(question['options']):return
     # Labels and answers come from the retained configuration, never reply text.
     run.answers={**run.answers,question['key']:question['options'][choice]}
     audit(db,run,'ANSWER','Customer',key=question['key'],answer=question['options'][choice],message_id=message.id)
@@ -123,7 +130,7 @@ def stop_for_customer(db,c):
         audit(db,run,'STOP','Customer')
 
 
-def send_buttons(phone,body,buttons):
+def send_buttons(phone,body,buttons,*,list_button=None):
     """Separate deterministic transport; never enters the AI reply pipeline."""
     import httpx
     from settings import settings
@@ -131,6 +138,9 @@ def send_buttons(phone,body,buttons):
         return None
     payload={'messaging_product':'whatsapp','to':phone,'type':'interactive','interactive':{'type':'button',
         'body':{'text':body},'action':{'buttons':[{'type':'reply','reply':b} for b in buttons]}}}
+    if list_button is not None:
+        payload['interactive']={'type':'list','body':{'text':body},'action':{
+            'button':list_button,'sections':[{'rows':buttons}]}}
     try:
         response=httpx.post(f'https://graph.facebook.com/{settings.META_GRAPH_API_VERSION.strip().strip("/") or "v26.0"}/{settings.META_WHATSAPP_PHONE_NUMBER_ID}/messages',
             headers={'Authorization':f'Bearer {settings.META_WHATSAPP_ACCESS_TOKEN}'},json=payload,timeout=10)
@@ -166,7 +176,8 @@ def dispatch_one(sessions):
             run.status='WINDOW_CLOSED';run.version+=1;audit(db,run,'WINDOW_CLOSED','System');db.commit();return True
         step=run.definition['steps'][run.step]
         buttons=[{'id':f'ppq:{run.token}:{run.step}:{i}','title':label} for i,label in enumerate(step['options'])]
-        provider=send_buttons(c.phone_number,step['body'],buttons)
+        provider=(send_buttons(c.phone_number,step['body'],buttons,list_button=step.get('list_button','Choose option'))
+            if step.get('type','buttons')=='list' else send_buttons(c.phone_number,step['body'],buttons))
         when=datetime.utcnow()
         run.status='WAITING' if provider else 'UNCERTAIN';run.provider_id=provider;run.updated_at=when;run.version+=1
         if provider:
@@ -175,7 +186,7 @@ def dispatch_one(sessions):
                 analytics_actor_kind='automatic',created_at=when))
             c.last_message_at=max(c.last_message_at or when,when)
         audit(db,run,'SENT' if provider else 'UNCERTAIN','System',step=run.step,
-              options=step['options'],provider_id=provider)
+              options=step['options'],provider_id=provider,format=step.get('type','buttons'))
         db.commit()
     return True
 
