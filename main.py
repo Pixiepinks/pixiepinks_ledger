@@ -3153,6 +3153,7 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
         "fulfillments": fulfillments, "fulfillment_details": fulfillment_details,
         "fulfillment_events": fulfillment_events, "fulfillment_operations": fulfillment_operations,
         "can_operate_fulfillment": (settings.SALES_FULFILLMENT_ENABLED and "fulfill_operate" in payment_permissions),
+        "can_prompt_delivery": (settings.SALES_FULFILLMENT_ENABLED and settings.SALES_DELIVERY_TRACKING_ENABLED and {"fulfill_operate","dispatch"}<=payment_permissions and bool(order.crm_conversation_id)),
         "can_admin_fulfillment": (settings.SALES_FULFILLMENT_ENABLED and "fulfill_admin" in payment_permissions),
         "can_sync_fulfillment": (settings.SHOPIFY_FULFILLMENT_SYNC_ENABLED and "fulfill_admin" in payment_permissions),
         "sync_events": sync_events, "user": user})
@@ -4614,3 +4615,7 @@ def _stop_customer_question_worker():
 
 from customer_question_routes import build_router as build_customer_question_router
 app.include_router(build_customer_question_router(get_db,require_user,_require_csrf,_csrf_token,templates))
+
+
+from prompt_xpress_delivery import build_router as prompt_xpress_router
+app.include_router(prompt_xpress_router(get_db,require_user,_require_csrf))

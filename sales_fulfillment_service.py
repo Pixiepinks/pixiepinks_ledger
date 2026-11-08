@@ -6,6 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from urllib.parse import urlparse
 
+from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from models import (SalesOrder, SalesOrderLine, SalesFulfillment, SalesFulfillmentItem,
                     SalesDeliveryDetail, SalesFulfillmentEvent)
@@ -48,13 +49,16 @@ def _event(db, fulfillment, previous, target, actor, key, reason=None, metadata=
 
 
 def create_full_fulfillment(db: Session, order_id: int, actor: str, idempotency_key: str,
-                            assigned_staff=None) -> SalesFulfillment:
+                            assigned_staff=None, *, commit=True) -> SalesFulfillment:
     if not idempotency_key or len(idempotency_key)>100: raise FulfillmentError("A valid idempotency key is required",422)
     prior = db.query(SalesFulfillmentEvent).filter_by(idempotency_key=idempotency_key).one_or_none()
-    if prior: return db.get(SalesFulfillment, prior.fulfillment_id)
+    if prior:
+        retained=db.get(SalesFulfillment,prior.fulfillment_id)
+        if not retained or retained.sales_order_id!=order_id:raise FulfillmentError("Action key belongs to another order")
+        return retained
     order = db.query(SalesOrder).filter_by(id=order_id).with_for_update().one_or_none()
     if not order: raise FulfillmentError("Sales order not found",404)
-    if order.order_status not in {"CONFIRMED", "AWAITING_PAYMENT"}: raise FulfillmentError("Order is not eligible for fulfillment")
+    if order.order_status not in {"CONFIRMED", "AWAITING_PAYMENT", "PROCESSING"}: raise FulfillmentError("Order is not eligible for fulfillment")
     existing = db.query(SalesFulfillment).filter_by(sales_order_id=order_id).all()
     allocated = {line.id: Decimal("0") for line in order.lines}
     for fulfillment in existing:
@@ -71,14 +75,16 @@ def create_full_fulfillment(db: Session, order_id: int, actor: str, idempotency_
     db.add(SalesDeliveryDetail(fulfillment_id=fulfillment.id, delivery_method="COURIER",
         contact_snapshot=order.delivery_contact_person or order.customer_name,
         address_snapshot=", ".join(filter(None,[order.delivery_address,order.city,order.district,order.postal_code]))))
-    _event(db,fulfillment,None,"UNFULFILLED",actor,idempotency_key); db.commit(); db.refresh(fulfillment); return fulfillment
+    _event(db,fulfillment,None,"UNFULFILLED",actor,idempotency_key); (db.commit() if commit else db.flush()); db.refresh(fulfillment); return fulfillment
 
 
 def transition(db: Session, fulfillment_id: int, target: str, actor: str, idempotency_key: str,
-               reason=None, expected_version=None, admin=False) -> SalesFulfillment:
+               reason=None, expected_version=None, admin=False, commit=True) -> SalesFulfillment:
     if target not in STATUSES: raise FulfillmentError("Invalid fulfillment status",422)
     prior=db.query(SalesFulfillmentEvent).filter_by(idempotency_key=idempotency_key).one_or_none()
-    if prior: return db.get(SalesFulfillment,prior.fulfillment_id)
+    if prior:
+        if prior.fulfillment_id!=fulfillment_id or prior.new_status!=target:raise FulfillmentError("Action key belongs to another fulfillment action")
+        return db.get(SalesFulfillment,prior.fulfillment_id)
     fulfillment=db.query(SalesFulfillment).filter_by(id=fulfillment_id).with_for_update().one_or_none()
     if not fulfillment: raise FulfillmentError("Fulfillment not found",404)
     if expected_version is not None and int(expected_version)!=fulfillment.version: raise FulfillmentError("Fulfillment changed; refresh and retry")
@@ -91,12 +97,14 @@ def transition(db: Session, fulfillment_id: int, target: str, actor: str, idempo
     elif target=="READY_TO_DISPATCH": fulfillment.ready_at=now
     elif target=="DISPATCHED": fulfillment.dispatched_at=now
     elif target=="DELIVERED": fulfillment.delivered_at=now
-    _event(db,fulfillment,previous,target,actor,idempotency_key,_safe_text(reason,500)); db.commit(); db.refresh(fulfillment); return fulfillment
+    _event(db,fulfillment,previous,target,actor,idempotency_key,_safe_text(reason,500)); (db.commit() if commit else db.flush()); db.refresh(fulfillment); return fulfillment
 
 
-def update_delivery(db: Session, fulfillment_id: int, payload: dict, actor: str, idempotency_key: str) -> SalesDeliveryDetail:
+def update_delivery(db: Session, fulfillment_id: int, payload: dict, actor: str, idempotency_key: str, *, commit=True) -> SalesDeliveryDetail:
     prior=db.query(SalesFulfillmentEvent).filter_by(idempotency_key=idempotency_key).one_or_none()
-    if prior: return db.query(SalesDeliveryDetail).filter_by(fulfillment_id=prior.fulfillment_id).one()
+    if prior:
+        if prior.fulfillment_id!=fulfillment_id or 'DELIVERY_UPDATED' not in (prior.metadata_json or ''):raise FulfillmentError("Action key belongs to another delivery action")
+        return db.query(SalesDeliveryDetail).filter_by(fulfillment_id=prior.fulfillment_id).one()
     fulfillment=db.query(SalesFulfillment).filter_by(id=fulfillment_id).with_for_update().one_or_none()
     if not fulfillment: raise FulfillmentError("Fulfillment not found",404)
     detail=db.query(SalesDeliveryDetail).filter_by(fulfillment_id=fulfillment_id).one()
@@ -104,6 +112,11 @@ def update_delivery(db: Session, fulfillment_id: int, payload: dict, actor: str,
     if method not in DELIVERY_METHODS: raise FulfillmentError("Unsupported delivery method",422)
     detail.delivery_method=method; detail.courier_name=_safe_text(payload.get("courier_name"),120)
     detail.courier_reference=_safe_text(payload.get("courier_reference"),255); detail.tracking_number=_safe_text(payload.get("tracking_number"),255)
+    if re.sub(r'[^a-z]','',(detail.courier_name or '').lower()) in {'promptxpress','promptexpress'}:
+        from prompt_xpress_delivery import tracking,TRACKING_URL,COURIER
+        try:detail.tracking_number=tracking(detail.tracking_number)
+        except HTTPException as error:raise FulfillmentError(error.detail,error.status_code) from None
+        detail.courier_name=COURIER;payload={**payload,'tracking_url':TRACKING_URL}
     detail.tracking_url=_safe_url(payload.get("tracking_url")); detail.delivery_remarks=_safe_text(payload.get("delivery_remarks"),1000)
     detail.proof_of_delivery_reference=_safe_text(payload.get("proof_of_delivery_reference"),500)
     for field in ("expected_delivery_date","dispatch_date","delivery_date"):
@@ -112,4 +125,4 @@ def update_delivery(db: Session, fulfillment_id: int, payload: dict, actor: str,
             try: setattr(detail,field,date.fromisoformat(str(value)))
             except ValueError: raise FulfillmentError(f"{field} must be an ISO date",422) from None
     fulfillment.version += 1; _event(db,fulfillment,fulfillment.status,fulfillment.status,actor,idempotency_key,
-        metadata={"action":"DELIVERY_UPDATED"}); db.commit(); db.refresh(detail); return detail
+        metadata={"action":"DELIVERY_UPDATED"}); (db.commit() if commit else db.flush()); db.refresh(detail); return detail
