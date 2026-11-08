@@ -7,7 +7,7 @@ from test_whatsapp_quick_messages import inbox
 from test_conversation_work import seed,current
 
 
-def test_desktop_mobile_status_actions_bulk_and_dashboard(inbox):
+def test_desktop_mobile_individual_status_actions_and_dashboard(inbox):
     api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
     if not chromium:pytest.skip('Chromium unavailable')
     client,sessions,ids,sends,*_=inbox
@@ -37,15 +37,36 @@ def test_desktop_mobile_status_actions_bulk_and_dashboard(inbox):
         page.locator('#dash-attention').get_by_role('button',name='Resolve',exact=True).click();page.locator('#work-confirm').click()
         page.wait_for_function('document.querySelector("#dash-attention").textContent.includes("No matching")')
         page.goto('https://work.test/crm/whatsapp')
-        page.locator('#work-select-visible').click();assert page.locator('#work-selected-count').inner_text()=='2 selected'
-        page.locator('#work-bulk-resolve').click();assert '2 explicitly selected' in page.locator('#work-customer').inner_text()
-        page.locator('#work-close').click();assert current(client,ids[0])['work']['status']=='FOLLOW_UP_LATER'
+        def clean_list():
+            assert page.locator('#work-bulk,#work-select-visible,#work-clear,#work-selected-count,#work-bulk-resolve,.work-select-row,#conversation-list input[type=checkbox]').count()==0
+            assert page.locator('.inbox-search').evaluate('el=>el.nextElementSibling.id')=='conversation-list'
+            assert page.locator('#conversation-list > .conversation-row').count()==2
+            assert page.locator('.conversation-row').first.locator('.conversation-line strong,time').count()==2
+            assert page.locator('.conversation-row').first.locator('p,.conversation-meta').count()==2
+            gap=page.locator('.conversation-panel').evaluate('el=>el.querySelector("#conversation-list").getBoundingClientRect().top-el.querySelector(".inbox-search").getBoundingClientRect().bottom')
+            assert 0<=gap<=2
+        clean_list()
+        page.screenshot(path='/tmp/individual-inbox-desktop.png',full_page=True)
+        assert current(client,ids[0])['work']['status']=='FOLLOW_UP_LATER'
         for width in [320,360,390,430]:
             page.set_viewport_size({'width':width,'height':844})
+            clean_list()
             page.locator(f'.conversation-row[data-conversation-id="{ids[0]}"]').click()
             assert page.locator('#conversation-work-actions').is_visible()
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
-            if width==390:page.screenshot(path='/tmp/conversation-work-mobile.png',full_page=True)
+            if width==390:page.screenshot(path='/tmp/individual-inbox-mobile.png',full_page=True)
             page.locator('#back-list').click()
+        # Individual history and reopening remain available after the UI cleanup.
+        page.locator(f'.conversation-row[data-conversation-id="{ids[1]}"]').click()
+        page.locator('#chat-name').filter(has_text='Quick customer 2').wait_for()
+        actions.get_by_role('button',name='Reopen',exact=True).wait_for()
+        actions.get_by_role('button',name='Reopen',exact=True).click()
+        assert page.locator('#work-dialog').is_visible()
+        page.locator('#work-confirm').click()
+        actions.get_by_role('button',name='Resolve',exact=True).wait_for()
+        actions.get_by_role('button',name='History',exact=True).click()
+        page.get_by_role('heading',name='Conversation status history').wait_for()
+        page.locator('.work-history').get_by_role('button',name='Close',exact=True).click()
+        page.locator('.work-history').wait_for(state='detached')
         assert not errors and not sends
         browser.close()
