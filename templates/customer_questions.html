@@ -1,7 +1,7 @@
 {% extends 'base.html' %}{% block content %}
 <section class="card" id="question-builder" data-csrf="{{ csrf_token }}">
 <h2>Customer Question Automation</h2>
-<p>Ask predefined questions, one at a time. Customers tap a button to continue. Global AI remains separate. Answers are preferences, not marketing consent.</p>
+<p>Ask predefined questions, one at a time. Choose Buttons (up to 3 options) or List (up to 10 options) for each question. Global AI remains separate. Answers are preferences, not marketing consent.</p>
 <p>Staff start a sequence from an open customer chat. Questions run on the server while your browser is closed. WhatsApp’s 24-hour reply window applies.</p>
 <form id="question-settings">
 <label><input id="questions-enabled" type="checkbox"> Enable Customer Question Automation</label>
@@ -13,6 +13,6 @@
 <a class="btn btn-secondary" href="/crm/quick-messages">Back to Quick Messages</a>
 </form><p id="question-feedback" role="status" aria-live="polite"></p>
 </section>
-<link rel="stylesheet" href="/static/customer_questions.css?v=1">
-<script src="/static/customer_question_builder.js?v=1"></script>
+<link rel="stylesheet" href="/static/customer_questions.css?v=lists-2">
+<script src="/static/customer_question_builder.js?v=lists-2"></script>
 {% endblock %}

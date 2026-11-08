@@ -20,9 +20,26 @@ def test_builder_preview_and_mobile_inbox_controls(questions):
         page.goto('https://question.test/crm/quick-messages/customer-questions')
         page.locator('fieldset').first.wait_for();assert page.locator('fieldset').count()==2
         assert 'Girl' in page.locator('.question-preview').first.inner_text()
+        assert not page.locator('fieldset').first.locator('[data-field=list_button]').is_visible()
+        age=page.locator('fieldset').nth(1)
+        age.locator('[data-field=type]').select_option('list')
+        age.locator('[data-field=list_button]').fill('Choose age')
+        age.locator('[data-field=options]').fill('\n'.join(f'{i} years' for i in range(1,11)))
+        assert 'Choose age' in age.locator('.question-preview').inner_text()
+        assert age.locator('.question-preview span').count()==10
         page.locator('#questions-enabled').check();page.get_by_role('button',name='Save settings').click()
         page.get_by_role('status').filter(has_text='Saved.').wait_for()
-        page.screenshot(path='/tmp/customer-question-builder.png',full_page=True)
+        page.reload();age=page.locator('fieldset').nth(1);age.wait_for()
+        assert age.locator('[data-field=type]').input_value()=='list'
+        assert age.locator('[data-field=list_button]').input_value()=='Choose age'
+        assert age.locator('.question-preview span').count()==10
+        age.locator('[data-field=type]').select_option('buttons')
+        assert not age.locator('[data-field=options]').evaluate('el=>el.checkValidity()')
+        age.locator('[data-field=type]').select_option('list')
+        page.set_viewport_size({'width':390,'height':844})
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        page.screenshot(path='/tmp/customer-question-list-builder.png',full_page=True)
+        page.set_viewport_size({'width':1366,'height':1000})
         page.goto(f'https://question.test/crm/whatsapp?conversation={ids[0]}')
         page.get_by_role('button',name='Customer questions',exact=True).click()
         page.get_by_role('button',name='Start questions',exact=True).click()

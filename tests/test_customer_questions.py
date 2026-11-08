@@ -27,14 +27,14 @@ def questions(inbox,monkeypatch):
     monkeypatch.setattr(main.settings,'META_APP_SECRET','question-fixture')
     return (*inbox,calls)
 
-def reply(v,*,index=0,mid=None,sender=None,token=None,context=True):
+def reply(v,*,index=0,mid=None,sender=None,token=None,context=True,reply_type="button_reply"):
     client,sessions,ids,_,_,_,calls=v
     with sessions() as db:
         r=q.latest(db,ids[0]);phone=db.get(C,ids[0]).phone_number
         button=token or f'ppq:{r.token}:{r.step}:{index}';provider=r.provider_id
     message={'id':mid or 'wamid.reply.'+secrets.token_hex(8),'from':sender or phone,'type':'interactive',
         'timestamp':str(int(datetime.utcnow().timestamp())),
-        'interactive':{'type':'button_reply','button_reply':{'id':button,'title':'Untrusted title'}}}
+        'interactive':{'type':reply_type,reply_type:{'id':button,'title':'Untrusted title'}}}
     if context:message['context']={'id':provider}
     raw=json.dumps({'entry':[{'changes':[{'field':'messages','value':{'messages':[message]}}]}]}).encode()
     return client.post('/webhook',content=raw,headers={'Content-Type':'application/json',
@@ -179,3 +179,59 @@ def test_server_worker_advances_without_browser_and_stops_cleanly(questions,monk
     finally:stop.set();thread.join(timeout=5)
     assert not thread.is_alive()
     with v[1]() as db:assert q.latest(db,v[2][0]).status=='WAITING'
+
+
+def test_list_selection_continues_sequence_and_rejects_wrong_format(questions,monkeypatch):
+    v=questions;client,sessions,ids,_,_,csrf,calls=v
+    steps=[{'key':'age','type':'list','list_button':'Choose age','body':'Child age?',
+        'options':[f'{i} years' for i in range(1,11)]},q.DEFAULT['steps'][0]]
+    assert settings(client,csrf,definition={'title':'Age first','steps':steps},enabled=True).status_code==200
+    captured=[]
+    def transport(phone,body,buttons,**kw):captured.append((buttons,kw));return 'wamid.list.'+str(len(captured))
+    monkeypatch.setattr(q,'send_buttons',transport)
+    assert act(client,ids[0],csrf).status_code==200 and q.dispatch_one(sessions)
+    assert len(captured[0][0])==10 and captured[0][1]=={'list_button':'Choose age'}
+    assert reply(v,index=9).status_code==200  # Button payload cannot answer a list question.
+    with sessions() as db:assert q.latest(db,ids[0]).step==0
+    assert reply(v,index=9,reply_type='list_reply',mid='wamid.list.answer').status_code==200
+    assert reply(v,index=9,reply_type='list_reply',mid='wamid.list.answer').status_code==200
+    with sessions() as db:
+        run=q.latest(db,ids[0]);assert run.answers=={'age':'10 years'} and run.step==1
+        assert db.query(Event).filter_by(action='ANSWER').count()==1
+    assert q.dispatch_one(sessions)
+    assert captured[1][1]=={}  # Next step retains legacy reply buttons.
+    assert reply(v,reply_type='list_reply').status_code==200
+    with sessions() as db:assert q.latest(db,ids[0]).step==1
+    assert reply(v,index=1).status_code==200
+    with sessions() as db:
+        assert q.latest(db,ids[0]).answers=={'age':'10 years','gender':'Boy'}
+        assert q.latest(db,ids[0]).status=='COMPLETE'
+        assert db.get(GlobalAIReplyControl,1).enabled is False
+    payload=client.get(f'/crm/whatsapp/api/conversations/{ids[0]}').json()
+    assert any(len(m.get('interactive_buttons',[]))==10 for m in payload['messages'])
+    assert 'ppq:' not in json.dumps(payload)
+
+
+@pytest.mark.parametrize('step',[
+    {'type':'list','options':['x']*11}, {'type':'list','options':['a'*25]},
+    {'type':'list','list_button':'x'*21}, {'type':'list','list_button':''},
+    {'type':'other'}, {'type':[]}, {'type':'buttons','options':['1','2','3','4']},
+    {'type':'buttons','list_button':'Choose'}])
+def test_list_validation_limits(questions,step):
+    v=questions
+    definition={'title':'Validation','steps':[{**q.DEFAULT['steps'][0],**step}]}
+    assert settings(v[0],v[5],definition=definition).status_code==422
+
+
+def test_list_transport_cloud_api_payload(monkeypatch):
+    import httpx
+    from settings import settings as env
+    monkeypatch.setattr(env,'META_WHATSAPP_ACCESS_TOKEN','fixture-token')
+    monkeypatch.setattr(env,'META_WHATSAPP_PHONE_NUMBER_ID','fixture-phone')
+    sent=[]
+    def post(url,**kwargs):sent.append(kwargs['json']);return httpx.Response(200,json={'messages':[{'id':'wamid.list.mock'}]},request=httpx.Request('POST',url))
+    monkeypatch.setattr(httpx,'post',post)
+    rows=[{'id':f'ppq:token:0:{i}','title':f'Age {i}'} for i in range(10)]
+    assert q.send_buttons('94770012301','Choose age',rows,list_button='Age options')=='wamid.list.mock'
+    assert sent[0]['interactive']=={'type':'list','body':{'text':'Choose age'},'action':{
+        'button':'Age options','sections':[{'rows':rows}]}}

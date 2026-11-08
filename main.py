@@ -377,7 +377,7 @@ def _store_conversation_message(
     try:
         with SessionLocal() as db:
             import customer_questions
-            question_stop=(direction=='inbound' and response_kind not in {'question_reply','consent_button'} and
+            question_stop=(direction=='inbound' and response_kind not in {'question_reply','question_list','consent_button'} and
                 (processed_record is None or processed_record.message_type=='text') and
                 (message_text or '').strip().casefold() in customer_questions.STOP_WORDS)
             if question_button_id is not None or question_stop:
@@ -1623,14 +1623,16 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                 profile_name = profile_name[:255] if isinstance(profile_name, str) else None
                 interactive=message.get('interactive')
                 button=interactive.get('button_reply') if isinstance(interactive,dict) and interactive.get('type')=='button_reply' else None
-                if message_type=='interactive' and isinstance(button,dict) and isinstance(button.get('id'),str) and button['id'].startswith('ppq:'):
+                reply_type=interactive.get('type') if isinstance(interactive,dict) else None
+                question_reply=interactive.get(reply_type) if isinstance(reply_type,str) and reply_type in {'button_reply','list_reply'} else None
+                if message_type=='interactive' and isinstance(question_reply,dict) and isinstance(question_reply.get('id'),str) and question_reply['id'].startswith('ppq:'):
                     if not settings.META_APP_SECRET:
                         raise HTTPException(503,'Secure question replies require webhook signature verification')
-                    title=button.get('title')
-                    if not isinstance(title,str) or not 1<=len(title)<=100 or len(button['id'])>200:continue
+                    title=question_reply.get('title')
+                    if not isinstance(title,str) or not 1<=len(title)<=100 or len(question_reply['id'])>200:continue
                     result=_store_conversation_message(sender,'inbound',title,customer_name=profile_name,
                         whatsapp_message_id=message_id,reply_to_whatsapp_message_id=reply_id,
-                        response_kind='question_reply',created_at=received_at,processed_record=record,question_button_id=button['id'])
+                        response_kind='question_list' if reply_type=='list_reply' else 'question_reply',created_at=received_at,processed_record=record,question_button_id=question_reply['id'])
                     if result=='failed':raise HTTPException(503,'Customer question response registration unavailable')
                     continue
                 if message_type=='interactive' and isinstance(button,dict) and isinstance(button.get('id'),str) and button['id'].startswith('ppmc:'):
