@@ -371,10 +371,19 @@ def _store_conversation_message(
     reply_to_whatsapp_message_id: str | None = None,
     processed_record: ProcessedWhatsAppMessage | None = None,
     consent_button_id: str | None = None,
+    question_button_id: str | None = None,
 ) -> str:
     processed_message_id = processed_record.message_id if processed_record is not None else None
     try:
         with SessionLocal() as db:
+            import customer_questions
+            question_stop=(direction=='inbound' and response_kind not in {'question_reply','consent_button'} and
+                (processed_record is None or processed_record.message_type=='text') and
+                (message_text or '').strip().casefold() in customer_questions.STOP_WORDS)
+            if question_button_id is not None or question_stop:
+                customer_questions.write_transaction(db)
+                if question_button_id is not None:customer_questions.config(db,True)
+                elif customer_questions.config(db,True,optional=True) is None:question_stop=False
             if processed_record is not None:
                 db.add(processed_record)
                 # Claim the unique Meta delivery ID in this same transaction.
@@ -420,7 +429,11 @@ def _store_conversation_message(
                 if consent_button_id is not None:
                     import marketing_consent_buttons
                     marketing_consent_buttons.inbound(db,message,consent_button_id)
-                else:marketing_consent_service.inbound(db,message)
+                elif question_button_id is None:marketing_consent_service.inbound(db,message)
+                if question_button_id is not None:
+                    import customer_questions
+                    customer_questions.inbound(db,conversation,message,question_button_id)
+                if question_stop:customer_questions.stop_for_customer(db,conversation)
             db.commit()
             return "stored"
     except IntegrityError as error:
@@ -1610,6 +1623,16 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                 profile_name = profile_name[:255] if isinstance(profile_name, str) else None
                 interactive=message.get('interactive')
                 button=interactive.get('button_reply') if isinstance(interactive,dict) and interactive.get('type')=='button_reply' else None
+                if message_type=='interactive' and isinstance(button,dict) and isinstance(button.get('id'),str) and button['id'].startswith('ppq:'):
+                    if not settings.META_APP_SECRET:
+                        raise HTTPException(503,'Secure question replies require webhook signature verification')
+                    title=button.get('title')
+                    if not isinstance(title,str) or not 1<=len(title)<=100 or len(button['id'])>200:continue
+                    result=_store_conversation_message(sender,'inbound',title,customer_name=profile_name,
+                        whatsapp_message_id=message_id,reply_to_whatsapp_message_id=reply_id,
+                        response_kind='question_reply',created_at=received_at,processed_record=record,question_button_id=button['id'])
+                    if result=='failed':raise HTTPException(503,'Customer question response registration unavailable')
+                    continue
                 if message_type=='interactive' and isinstance(button,dict) and isinstance(button.get('id'),str) and button['id'].startswith('ppmc:'):
                     if not settings.META_APP_SECRET:
                         raise HTTPException(503,'Secure consent button processing requires webhook signature verification')
@@ -1875,6 +1898,8 @@ def startup():
         if not admin:
             db.add(User(username="admin", password_hash=hash_password("change-me"), role="ADMIN"))
             db.commit()
+
+    _start_customer_question_worker()
 
 
 def ensure_item_sku_column():
@@ -4558,3 +4583,27 @@ app.include_router(build_dashboard_router(get_db,require_user,templates,LEAD_STA
 
 from conversation_work_routes import build_router as build_work_router
 app.include_router(build_work_router(get_db,require_user,_require_csrf,_csrf_token))
+
+
+_question_worker_stop = None
+_question_worker_thread = None
+
+
+def _start_customer_question_worker():
+    global _question_worker_stop, _question_worker_thread
+    import threading
+    import customer_questions
+    if _question_worker_thread is not None and _question_worker_thread.is_alive():return
+    _question_worker_stop=threading.Event()
+    _question_worker_thread=threading.Thread(target=customer_questions.worker,args=(SessionLocal,_question_worker_stop),daemon=True,name='customer-questions')
+    _question_worker_thread.start()
+
+
+@app.on_event('shutdown')
+def _stop_customer_question_worker():
+    if _question_worker_stop is not None:_question_worker_stop.set()
+    if _question_worker_thread is not None:_question_worker_thread.join(timeout=12)
+
+
+from customer_question_routes import build_router as build_customer_question_router
+app.include_router(build_customer_question_router(get_db,require_user,_require_csrf,_csrf_token,templates))

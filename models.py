@@ -1104,3 +1104,43 @@ class ConversationWorkEvent(Base):
 @event.listens_for(ConversationWorkEvent,'before_delete')
 def _conversation_work_event_immutable(*args):
     raise ValueError('Conversation status history is append-only')
+
+
+class CustomerQuestionConfig(Base):
+    __tablename__='customer_question_config'
+    id=Column(Integer,primary_key=True)
+    enabled=Column(Boolean,nullable=False,default=False,server_default=false())
+    version=Column(Integer,nullable=False,default=0,server_default='0')
+    definition=Column(JSON,nullable=False)
+
+
+class CustomerQuestionRun(Base):
+    __tablename__='customer_question_runs'
+    id=Column(Integer,primary_key=True)
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id',ondelete='RESTRICT'),nullable=False,index=True)
+    definition=Column(JSON,nullable=False)  # Immutable snapshot for this run.
+    status=Column(String(20),nullable=False)
+    step=Column(Integer,nullable=False,default=0)
+    answers=Column(JSON,nullable=False,default=dict)
+    token=Column(String(64),nullable=False,unique=True)
+    provider_id=Column(String(255))
+    updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    created_by=Column(String(100),nullable=False)
+    version=Column(Integer,nullable=False,default=0)
+    __table_args__=(CheckConstraint("status IN ('QUEUED','SENDING','WAITING','PAUSED','STOPPED','COMPLETE','UNCERTAIN','WINDOW_CLOSED')",name='ck_customer_question_status'),)
+
+
+class CustomerQuestionEvent(Base):
+    __tablename__='customer_question_events'
+    id=Column(Integer,primary_key=True)
+    run_id=Column(Integer,ForeignKey('customer_question_runs.id',ondelete='RESTRICT'),index=True)
+    action=Column(String(40),nullable=False)
+    actor=Column(String(100),nullable=False)
+    detail=Column(JSON,nullable=False,default=dict)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+@event.listens_for(CustomerQuestionEvent,'before_update')
+@event.listens_for(CustomerQuestionEvent,'before_delete')
+def _customer_question_event_immutable(*args):
+    raise ValueError('Customer question history is append-only')
