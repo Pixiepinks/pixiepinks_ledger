@@ -41,6 +41,10 @@ def test_builder_preview_and_mobile_inbox_controls(questions):
         page.screenshot(path='/tmp/customer-question-list-builder.png',full_page=True)
         page.set_viewport_size({'width':1366,'height':1000})
         page.goto(f'https://question.test/crm/whatsapp?conversation={ids[0]}')
+        icon=page.locator('#customer-question-button');assert icon.locator('svg').count()==1
+        assert icon.get_attribute('title')=='Customer questions'
+        assert page.locator('#voice-composer #customer-question-button').count()==1
+        assert page.locator('.conversation-owner-line #customer-question-button').count()==0
         page.get_by_role('button',name='Customer questions',exact=True).click()
         page.get_by_label('Choose flow',exact=True).select_option('1')
         page.get_by_role('button',name='Start questions',exact=True).click()
@@ -51,8 +55,10 @@ def test_builder_preview_and_mobile_inbox_controls(questions):
         for width in [320,390,430]:
             page.set_viewport_size({'width':width,'height':844})
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
-            page.get_by_role('button',name='Chat options',exact=True).click()
+            page.get_by_role('button',name='More message actions',exact=True).click()
+            assert page.locator('#mobile-actions-content #customer-question-button').count()==1
             page.get_by_role('button',name='Customer questions',exact=True).click()
+            assert not page.locator('#mobile-chat-actions').is_visible()
             page.get_by_role('button',name='Resume',exact=True).wait_for()
             if width==390:page.screenshot(path='/tmp/customer-question-mobile.png',full_page=True)
             page.get_by_role('button',name='Close',exact=True).click()
