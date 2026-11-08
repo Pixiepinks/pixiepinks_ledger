@@ -1114,8 +1114,19 @@ class CustomerQuestionConfig(Base):
     definition=Column(JSON,nullable=False)
 
 
+class CustomerQuestionFlow(Base):
+    __tablename__='customer_question_flows'
+    id=Column(Integer,primary_key=True)
+    definition=Column(JSON,nullable=False)
+    archived=Column(Boolean,nullable=False,default=False,server_default=false())
+    version=Column(Integer,nullable=False,default=0,server_default='0')
+    created_by=Column(String(100),nullable=False)
+    updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
 class CustomerQuestionRun(Base):
     __tablename__='customer_question_runs'
+    flow_id=Column(Integer,nullable=True)  # Retained library identity; snapshot remains authoritative.
     id=Column(Integer,primary_key=True)
     conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id',ondelete='RESTRICT'),nullable=False,index=True)
     definition=Column(JSON,nullable=False)  # Immutable snapshot for this run.

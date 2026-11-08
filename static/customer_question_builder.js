@@ -1,5 +1,5 @@
 (()=>{'use strict';const root=document.querySelector('#question-builder');if(!root)return;
-const form=root.querySelector('form'),steps=root.querySelector('#question-steps'),feedback=root.querySelector('#question-feedback');let version=0,csrf=root.dataset.csrf,busy=false;
+const form=root.querySelector('form'),steps=root.querySelector('#question-steps'),feedback=root.querySelector('#question-feedback');let version=0,csrf=root.dataset.csrf,busy=false,flowId=1,loaded=null;
 function field(box,label,key,value,max,tag='input'){
   const wrap=document.createElement('label');wrap.append(document.createTextNode(label));
   const el=document.createElement(tag);el.value=value;el.required=true;if(max)el.maxLength=max;el.dataset.field=key;wrap.append(el);box.append(wrap);return el;
@@ -71,13 +71,42 @@ function add(step){
   const remove=document.createElement('button');remove.type='button';remove.className='btn btn-secondary';remove.textContent='Remove question';remove.onclick=()=>{box.remove();refreshRoutes();};box.append(remove);steps.append(box);render();refreshRoutes();
 }
 async function request(data){const response=await fetch(location.pathname+'/api',{method:data?'POST':'GET',headers:data?{'Content-Type':'application/json','X-CSRF-Token':csrf}:{},body:data?JSON.stringify(data):undefined});const result=await response.json();if(!response.ok)throw Error(typeof result.detail==='string'?result.detail:'Unable to save questions');return result;}
-request().then(data=>{version=data.version;csrf=data.csrf_token;root.querySelector('#questions-enabled').checked=data.enabled;root.querySelector('#questions-title').value=data.definition.title;data.definition.steps.forEach(add);}).catch(e=>feedback.textContent=e.message);
+const picker=root.querySelector('#question-flow-select');
+function dirty(){return loaded&&(JSON.stringify(definition())!==loaded.flow||root.querySelector('#questions-enabled').checked!==loaded.enabled);}
+async function load(id=flowId){
+  const response=await fetch(location.pathname+'/api?flow_id='+id),data=await response.json();if(!response.ok)throw Error(data.detail||'Unable to load flow');
+  flowId=data.flow.id;version=data.version;csrf=data.csrf_token;root.querySelector('#questions-enabled').checked=data.enabled;root.querySelector('#questions-title').value=data.definition.title;
+  steps.replaceChildren();data.definition.steps.forEach(add);picker.replaceChildren();
+  for(const flow of data.flows){const option=document.createElement('option');option.value=flow.id;option.textContent=flow.title+(flow.archived?' (Archived)':'');picker.append(option);}picker.value=flowId;
+  root.querySelector('#question-edit-fields').disabled=data.flow.archived;
+  root.querySelector('#question-archive').textContent=data.flow.archived?'Restore flow':'Archive flow';
+  root.querySelector('#question-archive').dataset.action=data.flow.archived?'restore':'archive';
+  root.querySelector('#question-library-note').textContent=data.flow.archived?'Archived: unavailable for new customer runs. Existing runs continue.':'Edit this flow or select another. New customers start only when staff explicitly choose Start in the Inbox.';
+  loaded={flow:JSON.stringify(definition()),enabled:data.enabled};
+}
+load().catch(e=>feedback.textContent=e.message);
+picker.onchange=async()=>{if(busy){picker.value=flowId;return;}if(dirty()&&!confirm('Discard unsaved flow edits?')){picker.value=flowId;return;}try{await load(Number(picker.value));feedback.textContent='';}catch(e){feedback.textContent=e.message;}};
+async function libraryAction(action){
+  if(busy)return;
+  if(action!=='toggle'&&dirty()&&!confirm('Discard unsaved flow edits?'))return;
+  busy=true;feedback.textContent='Saving…';
+  try{
+    const payload={action,version,flow_id:flowId,title:root.querySelector('#question-new-title').value,enabled:root.querySelector('#questions-enabled').checked};
+    const response=await fetch(location.pathname+'/flows',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(payload)});
+    const result=await response.json();if(!response.ok)throw Error(result.detail||'Unable to update flow library');
+    if(action==='toggle'){version=result.version;loaded.enabled=root.querySelector('#questions-enabled').checked;}else await load(result.flow_id||flowId);feedback.textContent='Flow library updated.';
+  }catch(e){feedback.textContent=e.message;}finally{busy=false;}
+}
+root.querySelector('#question-create').onclick=()=>libraryAction('create');
+root.querySelector('#question-duplicate').onclick=()=>libraryAction('duplicate');
+root.querySelector('#question-archive').onclick=event=>libraryAction(event.target.dataset.action);
+root.querySelector('#question-toggle').onclick=()=>libraryAction('toggle');
 root.querySelector('#question-add').onclick=()=>{if(steps.children.length<10)add({key:'question_'+(steps.children.length+1),body:'',options:['Yes','No']});};
 form.onsubmit=async event=>{
   event.preventDefault();if(busy)return;busy=true;const submit=form.querySelector('[type=submit]');submit.disabled=true;feedback.textContent='Saving…';
   try{
     const flow=definition();
-    const data=await request({version,enabled:root.querySelector('#questions-enabled').checked,definition:flow});version=data.version;feedback.textContent='Saved. Existing sequences keep their original questions.';
+    const data=await request({version,enabled:root.querySelector('#questions-enabled').checked,definition:flow,flow_id:flowId});version=data.version;loaded={flow:JSON.stringify(flow),enabled:root.querySelector('#questions-enabled').checked};feedback.textContent='Saved. Existing sequences keep their original questions.';
   }catch(e){feedback.textContent=e.message;}finally{busy=false;submit.disabled=false;}
 };
 })();

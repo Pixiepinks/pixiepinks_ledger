@@ -23,7 +23,7 @@ def exercise(engine,monkeypatch):
     monkeypatch.setattr(database,'engine',engine);cfg=AlembicConfig(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
     command.stamp(cfg,'20261107_28');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
     with sessions() as db:
-        assert db.execute(text('select version_num from alembic_version')).scalar()=='20261108_29'
+        assert db.execute(text('select version_num from alembic_version')).scalar()=='20261108_30'
         control=q.config(db);assert control.enabled is False and control.definition==q.DEFAULT
         assert db.query(Run).count()==0 and db.query(Event).count()==0
         assert db.get(C,cid).unread_count==2 and db.get(C,cid).mode=='HUMAN'
@@ -63,6 +63,53 @@ def test_question_migration_postgresql(monkeypatch):
     with admin.begin() as conn:conn.execute(text('CREATE SCHEMA '+schema))
     engine=create_engine(url,connect_args={'options':'-csearch_path='+schema})
     try:exercise(engine,monkeypatch)
+    finally:
+        engine.dispose()
+        with admin.begin() as conn:conn.execute(text('DROP SCHEMA '+schema+' CASCADE'))
+        admin.dispose()
+
+
+def exercise_library(engine,monkeypatch):
+    from models import CustomerQuestionFlow as Flow
+    Base.metadata.create_all(engine,tables=[t for t in Base.metadata.sorted_tables if t is not Flow.__table__])
+    sessions=sessionmaker(bind=engine,autoflush=False,expire_on_commit=False)
+    definition={'title':'අපේ existing flow','steps':[{'key':'product','body':'Choose product','type':'list','options':['Bicycle','Gift packs'],'next':[None,None]}]}
+    with sessions() as db:
+        db.get(GlobalAIReplyControl,1).enabled=False
+        db.add(Config(id=1,enabled=True,version=9,definition=definition))
+        c=C(phone_number='94770012301',mode='HUMAN',unread_count=4);db.add(c);db.flush()
+        run=Run(conversation_id=c.id,definition=q.DEFAULT,status='WAITING',step=1,answers={'gender':'Girl'},token='retained-fixture-token',provider_id='wamid.retained',created_by='staff',version=7)
+        db.add(run);db.commit();rid=run.id
+    with engine.begin() as connection:connection.execute(text('ALTER TABLE customer_question_runs DROP COLUMN flow_id'))
+    monkeypatch.setattr(database,'engine',engine);cfg=AlembicConfig(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
+    command.stamp(cfg,'20261108_29');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
+    with sessions() as db:
+        assert db.get(Flow,1).definition==definition and not db.get(Flow,1).archived
+        assert db.get(Config,1).enabled is True and db.get(Config,1).version==9
+        run=db.get(Run,rid);assert run.flow_id==1 and run.definition==q.DEFAULT and run.answers=={'gender':'Girl'}
+        assert run.version==7 and run.status=='WAITING' and run.token=='retained-fixture-token'
+        assert db.get(GlobalAIReplyControl,1).enabled is False and db.query(Event).count()==0
+        db.add(Flow(definition=q.DEFAULT,archived=False,created_by='admin'));db.flush()
+        assert db.query(Flow).count()==2 and db.query(Flow).order_by(Flow.id.desc()).first().id>1
+        db.get(Flow,1).archived=True;db.commit()
+    command.downgrade(cfg,'20261108_29');command.upgrade(cfg,'head')
+    with sessions() as db:assert db.query(Flow).count()==2 and db.get(Flow,1).archived is True and db.get(Run,rid).flow_id==1
+
+
+def test_library_migration_sqlite(tmp_path,monkeypatch):
+    engine=create_engine('sqlite:///'+str(tmp_path/'library.db'))
+    try:exercise_library(engine,monkeypatch)
+    finally:engine.dispose()
+
+
+def test_library_migration_postgresql(monkeypatch):
+    url=os.getenv('TEST_POSTGRESQL_URL')
+    if not url:pytest.skip('Isolated PostgreSQL fixture not configured')
+    admin=create_engine(url);assert admin.url.host in {'127.0.0.1','localhost'} and admin.url.database=='pixiepinks_test'
+    schema='library_'+uuid4().hex
+    with admin.begin() as conn:conn.execute(text('CREATE SCHEMA '+schema))
+    engine=create_engine(url,connect_args={'options':'-csearch_path='+schema})
+    try:exercise_library(engine,monkeypatch)
     finally:
         engine.dispose()
         with admin.begin() as conn:conn.execute(text('DROP SCHEMA '+schema+' CASCADE'))

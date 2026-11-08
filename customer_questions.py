@@ -5,7 +5,7 @@ import logging
 from datetime import datetime,timedelta
 from fastapi import HTTPException
 from sqlalchemy import select,update
-from models import CustomerQuestionConfig as Config,CustomerQuestionRun as Run,CustomerQuestionEvent as Event
+from models import CustomerQuestionFlow as Flow,CustomerQuestionConfig as Config,CustomerQuestionRun as Run,CustomerQuestionEvent as Event
 from models import WhatsAppConversation as Conversation,WhatsAppConversationMessage as Message
 from quick_message_service import require_reply_window
 
@@ -78,22 +78,26 @@ def latest(db,cid,lock=False):
 
 def snapshot(run):
     if run is None:return None
-    return {'id':run.id,'status':run.status,'step':run.step,'title':run.definition['title'],
+    return {'id':run.id,'flow_id':run.flow_id,'status':run.status,'step':run.step,'title':run.definition['title'],
             'answers':run.answers,'version':run.version,'updated_at':run.updated_at.isoformat()+'Z',
             'questions':len(run.definition['steps'])}
 
 
-def start(db,c,user):
+def start(db,c,user,flow_id=1,flow_version=None):
     control=config(db,True)
     if not control.enabled:raise HTTPException(409,'Customer Question Automation is OFF')
     # Serialize starts per conversation, including when no run exists yet.
     db.execute(select(Conversation.id).where(Conversation.id==c.id).with_for_update()).one()
     old=latest(db,c.id,True)
     if old and old.status not in TERMINAL:raise HTTPException(409,'This customer already has a question sequence. Review it before starting another.')
+    if type(flow_id) is not int or not 1<=flow_id<=2147483647:raise HTTPException(422,'Choose a saved flow')
+    flow=db.execute(select(Flow).where(Flow.id==flow_id).with_for_update()).scalar_one_or_none()
+    if flow is None or flow.archived:raise HTTPException(409,'This flow is unavailable or archived. Choose another flow.')
+    if flow_version is not None and (type(flow_version) is not int or flow_version!=flow.version):raise HTTPException(409,'The flow changed since preview. Refresh and review before starting.')
     require_reply_window(db,c)
-    run=Run(conversation_id=c.id,definition=control.definition,status='QUEUED',step=0,answers={},
+    run=Run(conversation_id=c.id,flow_id=flow.id,definition=flow.definition,status='QUEUED',step=0,answers={},
             token=secrets.token_urlsafe(24),created_by=user.username,version=0)
-    db.add(run);db.flush();audit(db,run,'START',user.username)
+    db.add(run);db.flush();audit(db,run,'START',user.username,flow_id=flow.id,flow_version=flow.version)
     return run
 
 
@@ -220,3 +224,14 @@ def worker(sessions,stop):
             # Fixed diagnostic only; no customer payloads or tokens.
             logger.error('Customer question worker failed; claimed sends will not be retried')
         stop.wait(2)
+
+
+def flow_snapshot(flow):
+    return {'id':flow.id,'title':flow.definition['title'],'definition':flow.definition,
+            'version':flow.version,'archived':flow.archived}
+
+
+def library(db,include_archived=False):
+    query=db.query(Flow)
+    if not include_archived:query=query.filter_by(archived=False)
+    return [flow_snapshot(flow) for flow in query.order_by(Flow.id).all()]
