@@ -31,7 +31,7 @@ def validate(value):
         keys.add(key)
         if step.get('type')=='products':
             from question_product_service import validate_selection
-            if not {'key','type','products'}<=set(step) or set(step)-{'key','type','products','choose','choice_body','choice_button'}:raise HTTPException(422,'Product steps need a key and selected products only; they finish for staff')
+            if not {'key','type','products'}<=set(step) or set(step)-{'key','type','products','choose','choice_body','choice_button','service'}:raise HTTPException(422,'Product steps need a key and selected products only; they finish for staff')
             validate_selection(step['products'])
             if type(step.get('choose',False)) is not bool:raise HTTPException(422,'Choose whether to ask for a product selection')
             if step.get('choose'):
@@ -40,6 +40,10 @@ def validate(value):
                 if not isinstance(body,str) or not 1<=len(body.strip())<=1024:raise HTTPException(422,'Product-choice message must be 1–1024 characters')
                 if not isinstance(button,str) or not 1<=len(button)<=20 or button!=button.strip() or any(ord(c)<32 for c in button):raise HTTPException(422,'Product-choice button must be 1–20 characters')
             elif 'choice_body' in step or 'choice_button' in step:raise HTTPException(422,'Enable the product selection list before setting its wording')
+            if 'service' in step:
+                if not step.get('choose'):raise HTTPException(422,'Enable customer product choice before adding the greasing follow-up')
+                from question_greasing_service import validate as validate_service
+                validate_service(step['service'])
             continue
         if not {'key','body','options'}<=set(step) or set(step)-{'key','body','options','type','list_button','next'}:raise HTTPException(422,'Each question needs a key, body and reply options')
         kind=step.get('type','buttons')
@@ -103,6 +107,12 @@ def snapshot(run,db=None):
             result['products']={'total':len(run.definition['steps'][index]['products']),
                 'sent':sum(item.status=='SENT' for item in items),'skipped':sum(item.status=='SKIPPED' for item in items),
                 'issues':[{'position':item.position+1,'status':item.status,'reason':item.reason} for item in items if item.status not in {'SENT','SENDING'}]}
+            if run.definition['steps'][index].get('service'):
+                stages=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.step==index,ProductSend.position.in_([-2,-3])).all()
+                result['service']={'voice_status':next((row.status for row in stages if row.position==-2),'NOT_SENT'),
+                    'question_status':next((row.status for row in stages if row.position==-3),'NOT_SENT'),
+                    'charge':run.definition['steps'][index]['service']['charge'],'issues':[row.reason for row in stages if row.reason]}
+
     return result
 
 
@@ -117,6 +127,13 @@ def start(db,c,user,flow_id=1,flow_version=None):
     flow=db.execute(select(Flow).where(Flow.id==flow_id).with_for_update()).scalar_one_or_none()
     if flow is None or flow.archived:raise HTTPException(409,'This flow is unavailable or archived. Choose another flow.')
     if flow_version is not None and (type(flow_version) is not int or flow_version!=flow.version):raise HTTPException(409,'The flow changed since preview. Refresh and review before starting.')
+    from question_greasing_service import verify_recordings
+    if any(step.get('service') for step in flow.definition['steps']):
+        from staff_access import allowed
+        from quick_message_service import authorize
+        authorize(user)
+        if not allowed(user,'saved_voices'):raise HTTPException(403,'Saved Voices access is required to start this flow')
+    verify_recordings(db,flow.definition)
     require_reply_window(db,c)
     run=Run(conversation_id=c.id,flow_id=flow.id,definition=flow.definition,status='QUEUED',step=0,answers={},
             token=secrets.token_urlsafe(24),created_by=user.username,version=0)
@@ -154,10 +171,13 @@ def inbound(db,c,message,button_id):
     question=run.definition['steps'][step]
     earliest=run.updated_at
     if question.get('type')=='products':
-        invitation=db.query(ProductSend).filter_by(run_id=run.id,step=step,position=-1,status='SENT').one_or_none()
+        from question_greasing_service import pending as service_pending
+        invitation=db.query(ProductSend).filter_by(run_id=run.id,step=step,position=-3 if service_pending(run) else -1,status='SENT').one_or_none()
         if invitation is not None:earliest=invitation.created_at
     if message.created_at < earliest.replace(microsecond=0) or message.created_at>datetime.utcnow()+timedelta(minutes=5):return
     if question.get('type')=='products':
+        from question_greasing_service import pending as service_pending,receive as receive_service
+        if service_pending(run):receive_service(db,run,message,choice);return
         from question_product_service import receive_choice
         receive_choice(db,run,message,choice,c.phone_number);return
     expected='question_list' if question.get('type','buttons')=='list' else 'question_reply'

@@ -45,6 +45,15 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         return templates.TemplateResponse('customer_questions.html',{'request':request,'user':user,
             'page_title':'Customer Question Automation','csrf_token':csrf_token(request)})
 
+    @router.get('/crm/quick-messages/customer-questions/voices')
+    def voices(q:str=Query('',max_length=100),db=Depends(get_db),user=Depends(require_user)):
+        admin(user)
+        from models import SavedVoice
+        from audio_service import NORMALIZATION_VERSION
+        rows=db.query(SavedVoice).filter_by(active=True,processing_status='READY',normalization_version=NORMALIZATION_VERSION)
+        if q:rows=rows.filter(SavedVoice.title.ilike('%'+q.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')+'%',escape='\\'))
+        return {'voices':[{'id':v.id,'revision':v.revision,'title':v.title,'duration':v.duration_seconds} for v in rows.order_by(SavedVoice.title).limit(100)]}
+
     @router.get('/crm/quick-messages/customer-questions/collections')
     def collections(q:str=Query('',max_length=100),user=Depends(require_user)):
         admin(user)
@@ -82,6 +91,8 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         from settings import settings
         if p['enabled'] and not settings.META_APP_SECRET:raise HTTPException(409,'Webhook signature verification must be configured before enabling customer questions')
         definition=questions.validate(p['definition']);questions.write_transaction(db);c=questions.config(db,True)
+        from question_greasing_service import verify_recordings
+        verify_recordings(db,definition)
         if c.version!=p['version']:raise HTTPException(409,'Settings changed. Refresh before saving.')
         flow_id=p.get('flow_id',1)
         if type(flow_id) is not int or not 1<=flow_id<=2147483647:raise HTTPException(422,'Choose a saved flow')

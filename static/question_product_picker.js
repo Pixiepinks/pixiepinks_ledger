@@ -21,7 +21,8 @@ window.QuestionProducts={attach(box,items,changed,settings={}){
   const limit=()=>box.productChoose?10:20;
   choice.onchange=()=>{box.productChoose=choice.checked;update();changed();};
   body.oninput=()=>{box.choiceBody=body.value;changed();};opener.oninput=()=>{box.choiceButton=opener.value;changed();};
-  root.append(choiceLabel,wording,count,note,selected,collectionQuery,findCollections,collection,collectionStatus,query,search,type,min,max,status,results,more);let products=[],cursor=null,generation=0,collectionGeneration=0;
+  const service=window.QuestionGreasing.attach(box,settings.service,changed);
+  root.append(choiceLabel,wording,service,count,note,selected,collectionQuery,findCollections,collection,collectionStatus,query,search,type,min,max,status,results,more);let products=[],cursor=null,generation=0,collectionGeneration=0;
   async function find(){
     const current=++collectionGeneration;collectionStatus.textContent='Loading Shopify collections…';
     try{const response=await fetch('/crm/quick-messages/customer-questions/collections?q='+encodeURIComponent(collectionQuery.value));const data=await response.json();if(current!==collectionGeneration||!box.isConnected)return;if(!response.ok)throw Error(data.detail||'Collections unavailable');
@@ -37,7 +38,7 @@ window.QuestionProducts={attach(box,items,changed,settings={}){
   const button=(text,fn)=>{const el=document.createElement('button');el.type='button';el.className='btn btn-secondary';el.textContent=text;el.onclick=fn;return el;};
   function update(){
     count.textContent=`Selected: ${box.selectedProducts.length}/${limit()}`;selected.replaceChildren();
-    wording.hidden=!box.productChoose;for(const field of [body,opener]){field.disabled=!box.productChoose;field.required=box.productChoose;}
+    service.sync();wording.hidden=!box.productChoose;for(const field of [body,opener]){field.disabled=!box.productChoose;field.required=box.productChoose;}
     choice.setCustomValidity(box.productChoose&&box.selectedProducts.length>10?'Choose 10 or fewer products for a selection list.':'');
     note.textContent=box.productChoose?'Cards are numbered in this order. A matching list follows confirmed sends; the customer’s choice is saved for staff. Live prices and stock are checked before sending.':'Select 1–20 product variants. Live prices and stock are checked when sending. Each selected item sends one card; this step then finishes for staff.';
     box.selectedProducts.forEach((item,index)=>{const row=document.createElement('div');row.className='selected-product';const label=document.createElement('span');label.textContent=`${index+1}. ${item.label}`;row.append(label);
