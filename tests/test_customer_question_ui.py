@@ -151,3 +151,44 @@ def test_flow_library_create_duplicate_archive_choose_and_start(questions):
             run=q.latest(db,ids[0]);assert run.flow_id==3 and run.definition['title']=='Gift packs'
         assert not errors and not calls and not sends
         browser.close()
+
+
+def test_tick_any_range_products_reorder_save_and_reload(questions,monkeypatch):
+    import shopify_catalog_service as catalogue
+    from test_shopify_collection_sends import product
+    client,_,_,_,_,_,_=questions
+    rows=[]
+    for number,range_name in [(1,'Bicycles'),(2,'Gift packs'),(3,'School items')]:
+        p=product(number)
+        rows.append({'id':p['id'],'title':range_name+' example','status':'ACTIVE','published':True,'product_type':range_name,
+            'variants':[{'id':p['variant_id'],'title':'Standard','price':str(p['price']),'available':True}]})
+    monkeypatch.setattr(catalogue,'search_products_for_inbox',lambda *a,**kw:{'products':rows,'has_next_page':False,'next_cursor':None})
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    def serve(route):
+        request=route.request;url=urlsplit(request.url)
+        if url.hostname!='question.test':route.fulfill(status=200,body='');return
+        response=client.request(request.method,url.path+('?' +url.query if url.query else ''),content=request.post_data_buffer,
+            headers={k:v for k,v in request.headers.items() if k in {'content-type','x-csrf-token'}},follow_redirects=False)
+        route.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+    with api.sync_playwright() as p:
+        browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1366,'height':1000});errors=[]
+        page.on('pageerror',lambda e:errors.append(str(e)));page.route('**/*',serve)
+        page.goto('https://question.test/crm/quick-messages/customer-questions');page.locator('#question-steps > fieldset').nth(1).wait_for()
+        page.get_by_role('button',name='Add question',exact=True).click();step=page.locator('#question-steps > fieldset').nth(2)
+        step.locator('[data-field=key]').fill('recommendations');step.locator('[data-field=type]').select_option('products')
+        step.get_by_role('button',name='Search catalogue',exact=True).click()
+        step.get_by_role('checkbox',name='Bicycles example',exact=True).check()
+        step.get_by_role('checkbox',name='Gift packs example',exact=True).check()
+        assert 'Selected: 2/20' in step.inner_text()
+        step.get_by_label('Move product down',exact=True).first.click()
+        assert 'Gift packs example' in step.locator('.selected-product').first.inner_text()
+        page.get_by_role('button',name='Save settings',exact=True).click();page.get_by_role('status').filter(has_text='Saved.').wait_for()
+        page.reload();step=page.locator('#question-steps > fieldset').nth(2);step.wait_for()
+        assert step.locator('[data-field=type]').input_value()=='products'
+        assert 'Selected: 2/20' in step.inner_text() and 'Gift packs example' in step.locator('.selected-product').first.inner_text()
+        assert 'Send 2 selected products' in page.locator('#question-flow-preview').inner_text()
+        page.screenshot(path='/tmp/question-selected-products.png',full_page=True)
+        step.screenshot(path='/tmp/question-product-step.png')
+        assert not errors
+        browser.close()

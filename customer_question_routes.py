@@ -31,7 +31,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     async def body(request):
         csrf(request);raw=bytearray()
         async for chunk in request.stream():
-            if len(raw)+len(chunk)>32768:raise HTTPException(413,'Question settings are too large')
+            if len(raw)+len(chunk)>262144:raise HTTPException(413,'Question settings are too large')
             raw.extend(chunk)
         try:
             value=json.loads(raw)
@@ -44,6 +44,13 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         admin(user)
         return templates.TemplateResponse('customer_questions.html',{'request':request,'user':user,
             'page_title':'Customer Question Automation','csrf_token':csrf_token(request)})
+
+    @router.get('/crm/quick-messages/customer-questions/products')
+    def products(q:str=Query('',max_length=100),cursor:str|None=Query(None,max_length=500,pattern=r'^[A-Za-z0-9_+=/.-]+$'),user=Depends(require_user)):
+        admin(user)
+        from shopify_catalog_service import search_products_for_inbox,ShopifyCatalogError
+        try:return search_products_for_inbox(q,20,cursor)
+        except ShopifyCatalogError:raise HTTPException(503,'Product catalogue is temporarily unavailable') from None
 
     @router.get('/crm/quick-messages/customer-questions/api')
     def settings(request:Request,flow_id:int|None=Query(None,ge=1,le=2147483647),db=Depends(get_db),user=Depends(require_user)):
@@ -114,7 +121,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         events=[]
         if run:
             events=[{'action':e.action,'actor':e.actor,'at':e.created_at.isoformat()+'Z'} for e in db.query(Event).filter_by(run_id=run.id).order_by(Event.id.desc()).limit(30)]
-        return {'enabled':cfg.enabled,'title':cfg.definition['title'],'flows':questions.library(db),'run':questions.snapshot(run),'history':events,
+        return {'enabled':cfg.enabled,'title':cfg.definition['title'],'flows':questions.library(db),'run':questions.snapshot(run,db),'history':events,
             'can_manage':conversation_access.permissions(db,user,c)['can_manage'],'csrf_token':csrf_token(request)}
 
     @router.post('/crm/whatsapp/api/conversations/{cid}/customer-questions')
@@ -128,5 +135,5 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         if conn.dialect.name=='sqlite' and not conn.connection.driver_connection.in_transaction:conn.exec_driver_sql('BEGIN IMMEDIATE')
         if 'flow_id' in p and (type(p.get('flow_version')) is not int):raise HTTPException(422,'Preview the selected flow before starting')
         run=questions.start(db,c,user,p.get('flow_id',1),p.get('flow_version')) if p.get('action')=='start' else questions.change(db,c,user,p.get('action'),p.get('version'))
-        db.commit();return {'run':questions.snapshot(run)}
+        db.commit();return {'run':questions.snapshot(run,db)}
     return router

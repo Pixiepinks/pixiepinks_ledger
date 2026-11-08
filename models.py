@@ -1155,3 +1155,17 @@ class CustomerQuestionEvent(Base):
 @event.listens_for(CustomerQuestionEvent,'before_delete')
 def _customer_question_event_immutable(*args):
     raise ValueError('Customer question history is append-only')
+
+
+class CustomerQuestionProductSend(Base):
+    __tablename__='customer_question_product_sends'
+    id=Column(Integer,primary_key=True)
+    run_id=Column(Integer,ForeignKey('customer_question_runs.id',ondelete='RESTRICT'),nullable=False,index=True)
+    step=Column(Integer,nullable=False)
+    position=Column(Integer,nullable=False)
+    status=Column(String(16),nullable=False)
+    provider_id=Column(String(255))
+    reason=Column(String(200))
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    __table_args__=(UniqueConstraint('run_id','step','position',name='uq_question_product_position'),
+        CheckConstraint("status IN ('QUEUED','SENDING','SENT','SKIPPED','FAILED','UNCERTAIN')",name='ck_question_product_status'))

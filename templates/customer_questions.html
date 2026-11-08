@@ -1,7 +1,7 @@
 {% extends 'base.html' %}{% block content %}
 <section class="card" id="question-builder" data-csrf="{{ csrf_token }}">
 <h2>Customer Question Automation</h2>
-<p>Ask predefined questions, one at a time. Choose Buttons (up to 3 options) or List (up to 10 options) for each question. Global AI remains separate. Answers are preferences, not marketing consent.</p>
+<p>Ask predefined questions, one at a time. Choose Buttons (up to 3 options) or List (up to 10 options), or Send selected products (up to 20 cards) for each step. Global AI remains separate. Answers are preferences, not marketing consent.</p>
 <p>Staff start a sequence from an open customer chat. Questions run on the server while your browser is closed. WhatsApp’s 24-hour reply window applies.</p>
 <section class="question-library" aria-label="Flow library"><h3>Flow library</h3>
 <label>Saved flow<select id="question-flow-select"></select></label>
@@ -19,6 +19,6 @@
 </fieldset><a class="btn btn-secondary" href="/crm/quick-messages">Back to Quick Messages</a>
 </form><p id="question-feedback" role="status" aria-live="polite"></p>
 </section>
-<link rel="stylesheet" href="/static/customer_questions.css?v=composer-icon-5">
-<script src="/static/customer_question_builder.js?v=library-4"></script>
+<link rel="stylesheet" href="/static/customer_questions.css?v=products-6">
+<script src="/static/question_product_picker.js?v=1"></script><script src="/static/customer_question_builder.js?v=products-6"></script>
 {% endblock %}

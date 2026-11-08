@@ -2873,28 +2873,13 @@ def whatsapp_product_search(q: str = Query("", max_length=100),
         raise HTTPException(503, "Shopify product search is temporarily unavailable") from None
 
 
-def _staff_product_caption(product):
-    variant_line = (f"\n{product['variant_title']}" if product.get("variant_title")
-                    and product["variant_title"] != "Default Title" else "")
-    caption = (f"{product['title']}{variant_line}\n"
-               f"Price: Rs. {product['price']:,.2f}\nView Product: {product['url']}")
-    return caption
+from product_card_service import caption as _staff_product_caption, message as _product_card_message
 
 
 def _record_staff_product(db, conversation, user, product, attempt, message_id):
     """Shared persistence for single-product and collection image sends."""
-    caption = _staff_product_caption(product)
     attempt.status, attempt.whatsapp_message_id = "SENT", message_id
-    db.add(WhatsAppConversationMessage(
-        phone_number=conversation.phone_number, direction="outbound", message_text=caption,
-        whatsapp_message_id=message_id, response_kind="staff_product", send_status="sent",
-        sent_by=user.username, shopify_product_reference=product["id"],
-        shopify_variant_reference=product["variant_id"], product_handle=product["handle"],
-        product_title=product["title"], variant_title=product.get("variant_title"),
-        product_sku=product.get("sku"), product_price=product["price"],
-        product_currency=product["currency"], product_image_url=product["image"],
-        product_url=product["url"],
-    ))
+    db.add(_product_card_message(conversation.phone_number,product,message_id,actor=user.username))
     if message_id and not db.query(WhatsAppOutboundProductMessage).filter_by(
             whatsapp_message_id=message_id).first():
         db.add(WhatsAppOutboundProductMessage(

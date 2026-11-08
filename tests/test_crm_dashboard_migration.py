@@ -30,7 +30,7 @@ def exercise(engine,monkeypatch):
     command.stamp(cfg,'20261106_25');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
     sessions=sessionmaker(bind=engine,autoflush=False)
     with sessions() as db:
-        assert db.execute(text('select version_num from alembic_version')).scalar()=='20261108_30'
+        assert db.execute(text('select version_num from alembic_version')).scalar()=='20261108_31'
         assert db.get(User,1).password_hash=='preserved' and db.get(Conversation,1).unread_count==3
         assert db.get(GlobalAIReplyControl,1).enabled is False and db.get(MarketingConsent,1).status=='NOT_REQUESTED'
         assert db.query(MarketingConsentEvent).count()==0
