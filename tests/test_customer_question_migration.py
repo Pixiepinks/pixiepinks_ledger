@@ -23,7 +23,7 @@ def exercise(engine,monkeypatch):
     monkeypatch.setattr(database,'engine',engine);cfg=AlembicConfig(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
     command.stamp(cfg,'20261107_28');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
     with sessions() as db:
-        assert db.execute(text('select version_num from alembic_version')).scalar()=='20261108_33'
+        assert db.execute(text('select version_num from alembic_version')).scalar()=='20261108_34'
         control=q.config(db);assert control.enabled is False and control.definition==q.DEFAULT
         assert db.query(Run).count()==0 and db.query(Event).count()==0
         assert db.get(C,cid).unread_count==2 and db.get(C,cid).mode=='HUMAN'

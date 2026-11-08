@@ -19,3 +19,5 @@
 .payment-picker{margin-top:16px;padding-top:8px;border-top:1px solid #dfd7e0}.payment-picker img{display:block;max-width:100%;max-height:320px;object-fit:contain;margin:12px 0}.payment-picker audio{width:100%;max-width:340px}
 
 @media(max-width:600px){#question-builder{padding:12px 8px}#question-builder fieldset{padding:10px 8px}.question-product-picker,.greasing-picker{padding:8px 4px}#question-builder .payment-picker fieldset{padding:10px 4px;border-left:0;border-right:0}.payment-picker button{max-width:100%;white-space:normal}}
+
+.payment-review{border-top:1px solid #ddd;margin-top:16px;padding-top:12px}.payment-review label{display:block;margin:12px 0}.payment-review input:not([type=checkbox]),.payment-review select{width:100%;box-sizing:border-box;padding:8px}.payment-review button{margin:8px 0;max-width:100%;white-space:normal}.payment-review a{overflow-wrap:anywhere}

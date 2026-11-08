@@ -51,7 +51,7 @@ def send_claimed(db,run,conversation):
     from quick_message_service import require_reply_window
     item=db.query(Item).filter_by(run_id=run.id,step=run.step,status='SENDING').one()
     step=run.definition['steps'][run.step]
-    if item.position in {-200,-201}:
+    if item.position in {-200,-201,-202}:
         from question_payment_followup import send_claimed as send_payment
         send_payment(db,run,conversation,item);return
     if item.position<=-4:

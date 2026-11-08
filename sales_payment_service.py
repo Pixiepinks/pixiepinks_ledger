@@ -132,7 +132,7 @@ def _audit(db: Session, payment: SalesPayment, action: str, previous: str | None
 
 
 def record_payment_claim(db: Session, order_id: int, payload: dict, actor: str,
-                         idempotency_key: str) -> tuple[SalesPayment, bool]:
+                         idempotency_key: str, *, commit: bool = True) -> tuple[SalesPayment, bool]:
     if not isinstance(payload, dict) or not idempotency_key or len(idempotency_key) > 100:
         raise PaymentValidationError("A valid idempotency key and payload are required")
     request_hash = _payload_hash(payload)
@@ -145,6 +145,12 @@ def record_payment_claim(db: Session, order_id: int, payload: dict, actor: str,
     order = db.query(SalesOrder).filter_by(id=order_id).with_for_update().one_or_none()
     if not order:
         raise PaymentValidationError("Sales order not found", status_code=404)
+    # Another request may have committed while this one waited for the order lock.
+    existing = db.query(SalesPayment).filter_by(idempotency_key=idempotency_key).one_or_none()
+    if existing:
+        if existing.sales_order_id != order_id or existing.request_payload_hash != request_hash:
+            raise PaymentValidationError("Idempotency key was already used for a different payment claim", status_code=409)
+        return existing, False
     if order.order_status in {"CANCELLED", "RETURNED"}:
         raise PaymentValidationError("Payments cannot be recorded for this order", status_code=409)
     method = str(payload.get("payment_method") or "").upper()
@@ -179,8 +185,10 @@ def record_payment_claim(db: Session, order_id: int, payload: dict, actor: str,
         _audit(db, payment, "CLAIM_RECORDED", None, "PENDING", actor,
                f"claim:{idempotency_key}")
         _derive_summary(db, order)
-        db.commit(); db.refresh(payment)
+        db.commit() if commit else db.flush()
+        db.refresh(payment)
     except IntegrityError:
+        if not commit:raise PaymentValidationError("Concurrent payment request; refresh before retrying", status_code=409) from None
         db.rollback()
         existing = db.query(SalesPayment).filter_by(idempotency_key=idempotency_key).one_or_none()
         if existing and existing.sales_order_id == order_id and existing.request_payload_hash == request_hash:
@@ -191,7 +199,7 @@ def record_payment_claim(db: Session, order_id: int, payload: dict, actor: str,
 
 
 def decide_payment(db: Session, order_id: int, payment_id: int, *, approve: bool,
-                   actor: str, idempotency_key: str, reason: str | None = None) -> tuple[SalesPayment, bool]:
+                   actor: str, idempotency_key: str, reason: str | None = None, commit: bool = True) -> tuple[SalesPayment, bool]:
     if not idempotency_key or len(idempotency_key) > 100:
         raise PaymentValidationError("A valid idempotency key is required")
     audit_key = f"decision:{idempotency_key}"
@@ -208,6 +216,11 @@ def decide_payment(db: Session, order_id: int, payment_id: int, *, approve: bool
         id=payment_id, sales_order_id=order_id).with_for_update().one_or_none()
     if not order or not payment:
         raise PaymentValidationError("Payment claim not found", status_code=404)
+    prior = db.query(SalesPaymentAuditEvent).filter_by(idempotency_key=audit_key).one_or_none()
+    if prior:
+        if prior.sales_payment_id != payment_id or prior.action != ("CLAIM_VERIFIED" if approve else "CLAIM_REJECTED"):
+            raise PaymentValidationError("Idempotency key was already used for a different action", status_code=409)
+        return payment, False
     if payment.verification_status != "PENDING":
         raise PaymentValidationError("Only pending payment claims can be decided", status_code=409)
     now = datetime.utcnow()
@@ -230,8 +243,10 @@ def decide_payment(db: Session, order_id: int, payment_id: int, *, approve: bool
            payment.rejection_reason if not approve else None)
     _derive_summary(db, order)
     try:
-        db.commit(); db.refresh(payment)
+        db.commit() if commit else db.flush()
+        db.refresh(payment)
     except IntegrityError:
+        if not commit:raise PaymentValidationError("Concurrent payment request; refresh before retrying", status_code=409) from None
         db.rollback()
         prior = db.query(SalesPaymentAuditEvent).filter_by(idempotency_key=audit_key).one_or_none()
         if prior and prior.sales_payment_id == payment_id:

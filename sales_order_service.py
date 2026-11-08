@@ -51,6 +51,7 @@ class OrderTotals:
     subtotal: Decimal
     discount_total: Decimal
     shipping_total: Decimal
+    service_total: Decimal
     tax_total: Decimal
     grand_total: Decimal
 
@@ -67,7 +68,7 @@ def _decimal(value: Any, field: str, *, quantum: Decimal = MONEY, minimum: Decim
 
 
 def calculate_order(lines: list[dict], order_discount: Any = 0, shipping: Any = 0,
-                    tax: Any = 0) -> OrderTotals:
+                    tax: Any = 0, service: Any = 0) -> OrderTotals:
     if not isinstance(lines, list) or not lines:
         raise SalesOrderValidationError("At least one order line is required")
     calculated = []
@@ -92,15 +93,16 @@ def calculate_order(lines: list[dict], order_discount: Any = 0, shipping: Any = 
     order_discount_value = _decimal(order_discount, "Order discount")
     shipping_value = _decimal(shipping, "Shipping")
     order_tax = _decimal(tax, "Order tax")
+    service_value = _decimal(service, "Service charge", maximum=Decimal("1000000"))
     if order_discount_value > subtotal - line_discounts:
         raise SalesOrderValidationError("Order discount exceeds the discounted subtotal")
     discount_total = (line_discounts + order_discount_value).quantize(MONEY)
     tax_total = (line_taxes + order_tax).quantize(MONEY)
-    grand_total = (subtotal - discount_total + shipping_value + tax_total).quantize(MONEY)
+    grand_total = (subtotal - discount_total + shipping_value + tax_total + service_value).quantize(MONEY)
     if grand_total > Decimal("999999999999.99"):
         raise SalesOrderValidationError("Order total is outside the allowed range")
     return OrderTotals(tuple(calculated), subtotal.quantize(MONEY), discount_total,
-                       shipping_value, tax_total, grand_total)
+                       shipping_value, service_value, tax_total, grand_total)
 
 
 def _required_text(payload: dict, name: str, maximum: int) -> str:
@@ -121,14 +123,14 @@ def _order_number() -> str:
     return f"SO-{datetime.utcnow():%Y%m%d}-{secrets.token_hex(4).upper()}"
 
 
-def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str) -> tuple[SalesOrder, bool]:
+def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str, *, commit: bool = True) -> tuple[SalesOrder, bool]:
     if not isinstance(payload, dict) or not idempotency_key or len(idempotency_key) > 100:
         raise SalesOrderValidationError("A valid payload and idempotency key are required")
     existing = db.query(SalesOrder).filter_by(idempotency_key=idempotency_key).one_or_none()
     if existing:
         return existing, False
     totals = calculate_order(payload.get("lines"), payload.get("order_discount", 0),
-                             payload.get("shipping_total", 0), payload.get("tax_total", 0))
+                             payload.get("shipping_total", 0), payload.get("tax_total", 0), payload.get("service_total", 0))
     order = SalesOrder(
         internal_order_number=_order_number(), idempotency_key=idempotency_key,
         crm_conversation_id=payload.get("crm_conversation_id"), crm_lead_id=payload.get("crm_lead_id"),
@@ -143,7 +145,7 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str) -
         customer_notes=str(payload.get("customer_notes") or "").strip() or None,
         notes=str(payload.get("notes") or "").strip() or None,
         subtotal=totals.subtotal, discount_total=totals.discount_total,
-        shipping_total=totals.shipping_total, tax_total=totals.tax_total,
+        shipping_total=totals.shipping_total, service_total=totals.service_total, tax_total=totals.tax_total,
         grand_total=totals.grand_total, amount_paid=Decimal("0.00"), created_by=actor,
     )
     for raw, calculated in zip(payload["lines"], totals.lines):
@@ -162,8 +164,9 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str) -
         ))
     db.add(order)
     try:
-        db.commit()
+        db.commit() if commit else db.flush()
     except IntegrityError:
+        if not commit:raise
         db.rollback()
         existing = db.query(SalesOrder).filter_by(idempotency_key=idempotency_key).one_or_none()
         if existing:
@@ -182,7 +185,7 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
         raise SalesOrderValidationError("A valid payload is required")
     # Reuse creation validation without committing a second order.
     totals = calculate_order(payload.get("lines"), payload.get("order_discount", 0),
-                             payload.get("shipping_total", 0), payload.get("tax_total", 0))
+                             payload.get("shipping_total", 0), payload.get("tax_total", 0), payload.get("service_total", order.service_total or 0))
     order.customer_name = _required_text(payload, "customer_name", 255)
     order.whatsapp_phone = _validate_phone(payload.get("whatsapp_phone", ""))
     for field in ("alternative_phone", "delivery_contact_person", "delivery_address", "city",
@@ -203,6 +206,7 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
             discount_amount=calculated.discount_amount, tax_amount=calculated.tax_amount,
             line_total=calculated.line_total))
     order.subtotal, order.discount_total = totals.subtotal, totals.discount_total
+    order.service_total = totals.service_total
     order.shipping_total, order.tax_total, order.grand_total = totals.shipping_total, totals.tax_total, totals.grand_total
     order.updated_at = datetime.utcnow()
     db.commit(); db.refresh(order)
@@ -210,7 +214,7 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
 
 
 def transition_order(db: Session, order: SalesOrder, new_status: str, actor: str,
-                     reason: str | None = None) -> SalesOrder:
+                     reason: str | None = None, *, commit: bool = True) -> SalesOrder:
     target = str(new_status or "").upper()
     if target not in ORDER_STATUSES or target not in TRANSITIONS.get(order.order_status, set()):
         raise InvalidOrderTransition(f"Cannot transition {order.order_status} to {target or 'empty status'}")
@@ -221,5 +225,6 @@ def transition_order(db: Session, order: SalesOrder, new_status: str, actor: str
     db.add(SalesOrderStatusHistory(sales_order_id=order.id, previous_status=previous,
                                    new_status=target, changed_by=actor,
                                    reason=(reason or "").strip() or None))
-    db.commit(); db.refresh(order)
+    db.commit() if commit else db.flush()
+    db.refresh(order)
     return order

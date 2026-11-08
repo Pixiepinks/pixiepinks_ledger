@@ -96,7 +96,7 @@ def selected(run):
 
 def pending(run):
     answer = selected(run)
-    return bool(answer and answer.get('payment', {}).get('status') in {'VOICE_QUEUED', 'IMAGE_QUEUED', 'AWAITING_SLIP'})
+    return bool(answer and answer.get('payment', {}).get('status') in {'VOICE_QUEUED', 'IMAGE_QUEUED', 'AWAITING_SLIP', 'VERIFIED'})
 
 
 def save(run, state):
@@ -112,7 +112,8 @@ def begin(run):
 
 
 def claim(db, run):
-    position = VOICE_POSITION if selected(run)['payment']['status'] == 'VOICE_QUEUED' else IMAGE_POSITION
+    from question_payment_review import NOTIFICATION_POSITION
+    position = NOTIFICATION_POSITION if selected(run)['payment']['status']=='VERIFIED' else VOICE_POSITION if selected(run)['payment']['status'] == 'VOICE_QUEUED' else IMAGE_POSITION
     item = db.query(Item).filter_by(run_id=run.id, step=run.step, position=position).one_or_none()
     if item is None:
         db.add(Item(run_id=run.id, step=run.step, position=position, status='SENDING'))
@@ -139,6 +140,9 @@ def send_claimed(db, run, conversation, item):
     from customer_questions import audit
     from question_greasing_service import send_explanation
     from quick_message_service import require_reply_window
+    if item.position==-202:
+        from question_payment_review import send_confirmation
+        send_confirmation(db,run,conversation,item);return
     config = run.definition['steps'][run.step]['service']['payment']
     if item.position == VOICE_POSITION:
         # Verify both configured assets before beginning this follow-up.

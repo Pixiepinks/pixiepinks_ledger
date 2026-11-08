@@ -585,3 +585,15 @@ def test_detail_hides_create_for_ineligible_order_and_offers_safe_reconciliation
     assert "Reconcile Shopify Draft" in detail.text
     assert "will not blindly create another draft" in detail.text
     assert "(create || reconcile) ? 'draft' : 'refresh'" in detail.text
+
+
+def test_service_charge_is_separate_non_shipping_custom_line(monkeypatch):
+    monkeypatch.setattr(sync,'resolve_inbox_product',available)
+    with SessionLocal() as db:
+        draft=order(db);draft.service_total=Decimal('1800.00');draft.grand_total+=Decimal('1800.00');db.commit()
+        remote=FakeShopify(total='2800.00',tax='0.00')
+        saved,created=sync.create_shopify_draft(db,draft,'sync-admin',remote)
+        assert created and saved.shopify_sync_status=='SYNCED'
+        data=next(call[1]['input'] for call in remote.calls if 'CreateLedgerDraft' in call[0])
+        assert data['lineItems'][1]=={'title':'Initial greasing / service charge','originalUnitPrice':'1800.00','quantity':1,'requiresShipping':False,'taxable':False}
+        assert len(saved.lines)==1 and saved.shipping_total==0 and saved.tax_total==0
