@@ -127,3 +127,11 @@ Dispatch and the message claim commit together before the provider call. A repea
 When staff have confirmed actual delivery, click **Mark Delivered**. Both the local shipment and the sales order become Delivered, the delivery date/timestamp and audit history are recorded, and the action cannot be used before dispatch. No extra customer message, accounting entry, payment change, stock operation or Shopify write occurs. Marking Delivered is manual; visiting the carrier tracking page does not change CRM status. The simple panel handles a single full shipment; partial or multiple shipments retain the existing Fulfilment & Delivery workflow.
 
 The existing tracking editor also validates the `MC` format and canonical link when Prompt Xpress is selected. Other couriers' formats are unchanged. No database migration is needed: existing delivery details, fulfilment history and durable manual-send records are reused.
+
+## Staff completion of city and district
+
+Customer questions continue to collect the full address and phone numbers only; city/district questions have not been added. Missing city or district never blocks the customer's quote, order confirmation or payment.
+
+Before Shopify Draft synchronization, authorized staff can open a paid/confirmed **Sales Order → Customer & delivery → Edit delivery details** and fill **City**, **District** and optional **Postal code**. Each field is optional for saving, so staff can complete known information now and return later. Shopify's existing city/district requirements remain in place before synchronization. No location is guessed automatically from the street address.
+
+This editor changes only those three location fields. It preserves customer answers, street address, products, prices, totals, bank payment records and statuses. Changes and the staff actor are recorded in the existing order history; stale forms are rejected and repeated identical saves do not duplicate history. Existing Sales Orders/edit and conversation owner/administrator permissions apply, with CSRF protection. Editing is unavailable after Shopify linkage/synchronization starts, dispatch, delivery, cancellation or return, including shipments dispatched through the older fulfilment workflow while the order header has not changed. No database migration is needed.
