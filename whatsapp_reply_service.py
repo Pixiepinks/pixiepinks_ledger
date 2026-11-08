@@ -77,4 +77,10 @@ def interactive_previews(db,conversation,messages):
             titles=[b['title'] for b in evidence['buttons']]
             if evidence.get('v')==1 and titles==list(LABELS.values()):result[provider]=titles
         except (ValueError,TypeError,KeyError):continue
+    from models import CustomerQuestionRun as QuestionRun,CustomerQuestionEvent as QuestionEvent
+    events=db.query(QuestionEvent.detail).join(QuestionRun,QuestionEvent.run_id==QuestionRun.id).filter(
+        QuestionRun.conversation_id==conversation.id,QuestionEvent.action=='SENT').all()
+    for (detail,) in events:
+        if isinstance(detail,dict) and detail.get('provider_id') in ids:
+            result[detail['provider_id']]=detail.get('options',[])
     return result

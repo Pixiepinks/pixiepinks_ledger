@@ -359,7 +359,7 @@
     return wrapper;
   }
   const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context, message.can_reply, message.interactive_buttons]);
-  const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${inboxTime(message.timestamp)} · ${message.status}`;
+  const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : message.source === "customer_question" ? "Customer questions" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${inboxTime(message.timestamp)} · ${message.status}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
     const containerTop = messages.getBoundingClientRect().top;

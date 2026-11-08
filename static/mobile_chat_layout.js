@@ -19,7 +19,7 @@
     dialog.addEventListener('click',event=>{
       const control=event.target.closest('button');
       if(!control || control.hasAttribute('data-mobile-close'))return;
-      if(dialog===actions || ['mode-action','team-notes-open','details-action'].includes(control.id))close(dialog);
+      if(dialog===actions || ['mode-action','team-notes-open','details-action','customer-question-button'].includes(control.id))close(dialog);
     },true);
   }
   function autosize(){
