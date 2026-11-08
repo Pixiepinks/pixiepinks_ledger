@@ -171,6 +171,9 @@ def inbound(db,c,message,button_id):
     question=run.definition['steps'][step]
     earliest=run.updated_at
     if question.get('type')=='products':
+        from question_delivery_details import pending as delivery_pending,receive_button
+        if delivery_pending(run):
+            receive_button(db,run,message,choice);return
         from question_greasing_service import pending as service_pending
         invitation=db.query(ProductSend).filter_by(run_id=run.id,step=step,position=-3 if service_pending(run) else -1,status='SENT').one_or_none()
         if invitation is not None:earliest=invitation.created_at

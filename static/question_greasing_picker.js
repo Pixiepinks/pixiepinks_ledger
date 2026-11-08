@@ -1,5 +1,5 @@
 (()=>{'use strict';window.QuestionGreasing={attach(box,settings,changed){
-  box.serviceEnabled=Boolean(settings);box.serviceConfig={voice_id:settings?.voice_id??null,revision:settings?.revision??null,voice_title:settings?.voice_title||'',charge:settings?.charge??'',question:settings?.question||'ඔබගේ බයිසිකලයට මූලික ග්‍රීස් කිරීමේ සේවාව අවශ්‍යද?',yes:settings?.yes||'ඔව්, අවශ්‍යයි',no:settings?.no||'නැහැ, අවශ්‍ය නැහැ'};
+  box.serviceEnabled=Boolean(settings);box.serviceConfig={voice_id:settings?.voice_id??null,revision:settings?.revision??null,voice_title:settings?.voice_title||'',charge:settings?.charge??'',question:settings?.question||'ඔබගේ බයිසිකලයට මූලික ග්‍රීස් කිරීමේ සේවාව අවශ්‍යද?',yes:settings?.yes||'ඔව්, අවශ්‍යයි',no:settings?.no||'නැහැ, අවශ්‍ය නැහැ',collect_delivery:settings?.collect_delivery===true};
   const root=document.createElement('section');root.className='greasing-picker';
   const label=document.createElement('label'),enabled=document.createElement('input');enabled.type='checkbox';enabled.checked=box.serviceEnabled;label.append(enabled,document.createTextNode(' After product choice: send Saved Voice, then ask about initial greasing service'));
   const fields=document.createElement('fieldset'),legend=document.createElement('legend');legend.textContent='Greasing service follow-up';fields.append(legend);
@@ -17,6 +17,8 @@
   for(const [key,title,max] of [['charge','Service charge (LKR)',null],['question','Greasing service question',900],['yes','Yes button label',20],['no','No button label',20]]){
     const wrap=document.createElement('label');wrap.textContent=title;const input=document.createElement(key==='question'?'textarea':'input');input.value=box.serviceConfig[key];input.setAttribute('aria-label',title);input.required=true;if(max)input.maxLength=max;if(key==='charge'){input.type='number';input.min='0';input.max='1000000';input.step='0.01';}input.oninput=()=>{box.serviceConfig[key]=input.value;changed();};wrap.append(input);fields.append(wrap);
   }
+  const deliveryLabel=document.createElement('label'),delivery=document.createElement('input');delivery.type='checkbox';delivery.checked=box.serviceConfig.collect_delivery;delivery.setAttribute('aria-label','Collect delivery details after service answer');delivery.onchange=()=>{box.serviceConfig.collect_delivery=delivery.checked;changed();};deliveryLabel.append(delivery,document.createTextNode(' Collect name, delivery address, Phone 1 and optional Phone 2 after either service answer; then Confirm order / Edit details.'));fields.append(deliveryLabel);
+  const deliveryNote=document.createElement('p');deliveryNote.textContent='Questions run one at a time in WhatsApp chat. The customer reviews a quantity-1 quote with free delivery. Confirmed details are saved for staff to prepare the invoice; no invoice or payment is sent automatically.';fields.append(deliveryNote);
   root.sync=()=>{root.hidden=!box.productChoose;fields.disabled=!(box.productChoose&&box.serviceEnabled);fields.hidden=!box.serviceEnabled;};
   enabled.onchange=()=>{box.serviceEnabled=enabled.checked;root.sync();changed();};root.append(label,fields);root.sync();return root;
 }};})();

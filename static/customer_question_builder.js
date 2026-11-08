@@ -32,7 +32,7 @@ function previewFlow(){
   if(!data.length){area.textContent='Add a first question to start the flow.';return;}
   const entry=document.createElement('strong');entry.textContent=`Start → ${data[0].key||'(first question)'}`;area.append(entry);
   for(const step of data){const group=document.createElement('div');const title=document.createElement('b');title.textContent=step.key||'(Question needs a key)';group.append(title);
-    if(step.type==='products'){const row=document.createElement('p');row.textContent=`Send ${step.products.length} selected products → ${step.choose?(step.service?'Customer chooses → Saved Voice → Greasing Yes/No → Staff continues':'Numbered list → Customer chooses → Staff continues'):'Finish — staff continues'}`;group.append(row);area.append(group);continue;}
+    if(step.type==='products'){const row=document.createElement('p');row.textContent=`Send ${step.products.length} selected products → ${step.choose?(step.service?'Customer chooses → Saved Voice → Greasing Yes/No → '+(step.service.collect_delivery?'Delivery details → Confirm / Edit → Staff invoice':'Staff continues'):'Numbered list → Customer chooses → Staff continues'):'Finish — staff continues'}`;group.append(row);area.append(group);continue;}
     step.options.forEach((label,i)=>{const row=document.createElement('p');row.textContent=`${label} → ${step.next[i]===null?'Finish — staff continues':step.next[i]}`;group.append(row);});area.append(group);}
 }
 function add(step){

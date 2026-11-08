@@ -16,7 +16,8 @@ DEFAULT_NO='නැහැ, අවශ්‍ය නැහැ'
 
 
 def validate(value):
-    if not isinstance(value,dict) or not {'voice_id','revision','charge','question','yes','no'}<=set(value) or set(value)-{'voice_id','revision','charge','question','yes','no','voice_title'}:raise HTTPException(422,'Select a Saved Voice, service charge and Yes/No wording')
+    if not isinstance(value,dict) or not {'voice_id','revision','charge','question','yes','no'}<=set(value) or set(value)-{'voice_id','revision','charge','question','yes','no','voice_title','collect_delivery'}:raise HTTPException(422,'Select a Saved Voice, service charge and Yes/No wording')
+    if 'collect_delivery' in value and type(value['collect_delivery']) is not bool:raise HTTPException(422,'Choose whether to collect delivery details')
     if 'voice_title' in value and (not isinstance(value['voice_title'],str) or len(value['voice_title'])>100):raise HTTPException(422,'Invalid recording title')
     if any(type(value[key]) is not int or not 1<=value[key]<=2147483647 for key in ['voice_id','revision']):raise HTTPException(422,'Select the Saved Voice and its current revision')
     if not isinstance(value['charge'],str) or not re.fullmatch(r'\d{1,7}(?:\.\d{1,2})?',value['charge']) or Decimal(value['charge'])>Decimal('1000000'):raise HTTPException(422,'Service charge must be a non-negative LKR amount, up to two decimal places')
@@ -125,9 +126,13 @@ def receive(db,run,incoming,choice):
     decision={'accepted':choice==0,'charge':f'{charge:.2f}','quoted_total':f'{price+charge:.2f}','currency':'LKR',
         'voice_id':config['voice_id'],'voice_revision':config['revision']}
     selected['greasing_service']=decision;run.answers={**run.answers,step['key']:selected}
-    run.step=len(run.definition['steps']);run.status='COMPLETE';run.updated_at=datetime.utcnow();run.version+=1
+    if config.get('collect_delivery'):
+        from question_delivery_details import begin
+        begin(run)
+    else:run.step=len(run.definition['steps']);run.status='COMPLETE'
+    run.updated_at=datetime.utcnow();run.version+=1
     audit(db,run,'GREASING_SERVICE_DECIDED','Customer',**decision,inbound_id=incoming.id)
-    audit(db,run,'COMPLETE','System',note='Service decision saved. Staff can review the quoted total; no payment message or order was sent.')
+    if run.status=='COMPLETE':audit(db,run,'COMPLETE','System',note='Service decision saved. Staff can review the quoted total; no payment message or order was sent.')
 
 
 def playback(db,conversation_id,provider):
