@@ -2,6 +2,8 @@ import shutil
 from urllib.parse import urlsplit
 import pytest
 from test_customer_questions import inbox,questions
+from test_saved_voices import voices
+from test_greasing_followup import greasing
 
 
 def test_builder_preview_and_mobile_inbox_controls(questions):
@@ -282,4 +284,64 @@ def test_product_choice_wording_numbered_cards_and_recorded_choice(questions,mon
         page.locator('.question-content').get_by_text('recommendations: 2. Bicycle 2 · Red',exact=True).wait_for()
         assert '[object Object]' not in page.locator('.question-content').inner_text() and not errors
         page.screenshot(path='/tmp/product-choice-recorded.png',full_page=True)
+        browser.close()
+
+
+def test_service_voice_picker_charge_and_wording_persist(voices):
+    from test_product_choice_list import choosing
+    from test_customer_questions import settings
+    client=voices.client;recording=voices.create().json()['voice']
+    assert settings(client,voices.csrf,definition=choosing(1)).status_code==200
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    def serve(route):
+        request=route.request;url=urlsplit(request.url)
+        if url.hostname!='question.test':route.fulfill(status=200,body='');return
+        response=client.request(request.method,url.path+('?' +url.query if url.query else ''),content=request.post_data_buffer,
+            headers={k:v for k,v in request.headers.items() if k in {'content-type','x-csrf-token','range'}},follow_redirects=False)
+        route.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+    with api.sync_playwright() as p:
+        browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1366,'height':1000});errors=[]
+        page.on('pageerror',lambda e:errors.append(str(e)));page.route('**/*',serve)
+        page.goto('https://question.test/crm/quick-messages/customer-questions');step=page.locator('#question-steps > fieldset').first;step.wait_for()
+        step.get_by_role('checkbox',name='After product choice: send Saved Voice, then ask about initial greasing service',exact=True).check()
+        step.get_by_role('button',name='Find Saved Voices',exact=True).click()
+        step.locator('.greasing-picker select option').nth(1).wait_for(state='attached')
+        step.get_by_label('Service explanation recording',exact=True).select_option(f"{recording['id']}:{recording['revision']}")
+        step.get_by_label('Service charge (LKR)',exact=True).fill('1000.00')
+        page.get_by_role('button',name='Save settings',exact=True).click();page.get_by_role('status').filter(has_text='Saved.').wait_for()
+        page.reload();step=page.locator('#question-steps > fieldset').first;step.wait_for()
+        assert step.get_by_label('Service charge (LKR)',exact=True).input_value()=='1000.00'
+        assert step.get_by_label('Service explanation recording',exact=True).locator('option:checked').inner_text()==recording['title']
+        assert step.get_by_label('Greasing service question',exact=True).input_value().startswith('ඔබගේ')
+        assert step.locator('.greasing-picker audio').get_attribute('src').endswith(f"/{recording['id']}/audio")
+        step.locator('.greasing-picker').screenshot(path='/tmp/greasing-service-picker.png')
+        assert not errors
+        browser.close()
+
+
+def test_greasing_decision_and_quoted_total_visible_in_inbox(greasing):
+    import customer_questions as q
+    from test_greasing_followup import selected
+    from test_customer_questions import reply
+    v,_,_,value,_,_=selected(greasing)
+    assert q.dispatch_one(v.sessions) and q.dispatch_one(v.sessions)
+    assert reply(value,index=0).status_code==200
+    api=pytest.importorskip('playwright.sync_api');chromium=shutil.which('chromium')
+    if not chromium:pytest.skip('Chromium unavailable')
+    def serve(route):
+        request=route.request;url=urlsplit(request.url)
+        if url.hostname!='question.test':route.fulfill(status=200,body='');return
+        response=v.client.request(request.method,url.path+('?' +url.query if url.query else ''),content=request.post_data_buffer,
+            headers={k:val for k,val in request.headers.items() if k in {'content-type','x-csrf-token','range'}},follow_redirects=False)
+        route.fulfill(status=response.status_code,body=response.content,headers={k:val for k,val in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
+    with api.sync_playwright() as p:
+        browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1366,'height':1000});errors=[]
+        page.on('pageerror',lambda e:errors.append(str(e)));page.route('**/*',serve)
+        page.goto(f'https://question.test/crm/whatsapp?conversation={v.ids[0]}')
+        page.locator('#messages audio').first.wait_for()
+        page.get_by_role('button',name='Customer questions',exact=True).click()
+        page.locator('.question-content').get_by_text('Quoted total LKR 46000.00',exact=False).wait_for()
+        assert 'Greasing: Yes' in page.locator('.question-content').inner_text() and not errors
+        page.screenshot(path='/tmp/greasing-service-decision.png',full_page=True)
         browser.close()

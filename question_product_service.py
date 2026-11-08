@@ -21,6 +21,8 @@ def validate_selection(items):
 
 
 def claim(db,run):
+    from question_greasing_service import pending as service_pending,claim as claim_service
+    if service_pending(run):return claim_service(db,run)
     items=db.query(Item).filter(Item.run_id==run.id,Item.step==run.step,Item.position>=0).order_by(Item.position).all()
     if any(item.status in {'SENDING','FAILED','UNCERTAIN'} for item in items):
         run.status='UNCERTAIN';run.version+=1;return False
@@ -45,6 +47,9 @@ def send_claimed(db,run,conversation):
     from quick_message_service import require_reply_window
     item=db.query(Item).filter_by(run_id=run.id,step=run.step,status='SENDING').one()
     step=run.definition['steps'][run.step]
+    if item.position in {-2,-3}:
+        from question_greasing_service import send_claimed as send_service
+        send_service(db,run,conversation,item);return
     if item.position==-1:
         send_choice_list(db,run,conversation,item);return
     selection=step['products'][item.position]
@@ -118,7 +123,17 @@ def receive_choice(db,run,incoming,position,phone):
     if sent.shopify_product_reference!=product['product_id'] or sent.shopify_variant_reference!=product['variant_id']:return
     selected={'product_id':product['product_id'],'variant_id':product['variant_id'],'number':position+1,
               'title':sent.product_title,'variant_title':sent.variant_title}
-    run.answers={**run.answers,step['key']:selected};run.step=len(run.definition['steps']);run.status='COMPLETE'
+    if step.get('service'):
+        from decimal import Decimal
+        if sent.product_price is None or not Decimal(sent.product_price).is_finite() or sent.product_price<0 or sent.product_currency!='LKR':
+            run.answers={**run.answers,step['key']:selected};run.status='UNCERTAIN';run.version+=1
+            audit(db,run,'SERVICE_QUOTE_REVIEW','System',reason='The selected card has no valid LKR price. Staff review is required.');return
+        selected.update(price=f'{sent.product_price:.2f}',currency=sent.product_currency)
+    run.answers={**run.answers,step['key']:selected}
+    if step.get('service'):
+        import secrets
+        run.status='QUEUED';run.provider_id=None;run.token=secrets.token_urlsafe(24)
+    else:run.step=len(run.definition['steps']);run.status='COMPLETE'
     run.updated_at=datetime.utcnow();run.version+=1
     audit(db,run,'PRODUCT_SELECTED','Customer',**selected,inbound_id=incoming.id)
-    audit(db,run,'COMPLETE','System',note='Customer selected a product. Staff can continue.')
+    if run.status=='COMPLETE':audit(db,run,'COMPLETE','System',note='Customer selected a product. Staff can continue.')

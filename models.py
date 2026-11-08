@@ -1159,6 +1159,7 @@ def _customer_question_event_immutable(*args):
 
 class CustomerQuestionProductSend(Base):
     __tablename__='customer_question_product_sends'
+    audio_snapshot=Column(JSON,nullable=True)
     choice_label=Column(String(24),nullable=True)  # Exact numbered label retained at card send.
     id=Column(Integer,primary_key=True)
     run_id=Column(Integer,ForeignKey('customer_question_runs.id',ondelete='RESTRICT'),nullable=False,index=True)

@@ -2545,6 +2545,10 @@ def whatsapp_message_media(conversation_id: int, message_id: int, request: Reque
     ).one_or_none()
     if message is None or not message.media_id:
         raise HTTPException(status_code=404, detail="Audio message not found")
+    if message.response_kind == 'question_voice':
+        from question_greasing_service import playback
+        from saved_voice_routes import audio_response
+        return audio_response(playback(db,conversation_id,message.whatsapp_message_id),'audio/ogg',request)
     if message.response_kind == "staff_saved_voice":
         quick_messages.authorize(user)
         from models import SavedVoice, SavedVoiceSend

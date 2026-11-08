@@ -23,7 +23,7 @@ def exercise(engine,monkeypatch):
     monkeypatch.setattr(database,'engine',engine);cfg=AlembicConfig(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
     command.stamp(cfg,'20261107_28');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
     with sessions() as db:
-        assert db.execute(text('select version_num from alembic_version')).scalar()=='20261108_32'
+        assert db.execute(text('select version_num from alembic_version')).scalar()=='20261108_33'
         control=q.config(db);assert control.enabled is False and control.definition==q.DEFAULT
         assert db.query(Run).count()==0 and db.query(Event).count()==0
         assert db.get(C,cid).unread_count==2 and db.get(C,cid).mode=='HUMAN'
@@ -209,6 +209,51 @@ def test_product_choice_migration_postgresql(monkeypatch):
     with admin.begin() as conn:conn.execute(text('CREATE SCHEMA '+schema))
     engine=create_engine(url,connect_args={'options':'-csearch_path='+schema})
     try:exercise_choice_labels(engine,monkeypatch)
+    finally:
+        engine.dispose()
+        with admin.begin() as conn:conn.execute(text('DROP SCHEMA '+schema+' CASCADE'))
+        admin.dispose()
+
+
+def exercise_greasing_snapshot(engine,monkeypatch):
+    from models import CustomerQuestionProductSend as ProductSend,CustomerQuestionFlow as Flow
+    from test_question_products import flow
+    Base.metadata.create_all(engine);sessions=sessionmaker(bind=engine,autoflush=False,expire_on_commit=False)
+    with sessions() as db:
+        db.add(Config(id=1,definition=flow(1),enabled=True,version=7));db.add(Flow(id=1,definition=flow(1),archived=False,created_by='admin',version=2))
+        c=C(phone_number='94770012301',mode='HUMAN');db.add(c);db.flush()
+        run=Run(conversation_id=c.id,flow_id=1,definition=flow(1),status='COMPLETE',step=1,answers={'age':'Seven'},token='retained-greasing-fixture',created_by='staff',version=5)
+        db.add(run);db.flush();rid=run.id
+        db.add(ProductSend(run_id=rid,step=0,position=0,status='SENT',provider_id='wamid.old.product',choice_label='1. Original card'))
+        db.get(GlobalAIReplyControl,1).enabled=False;db.commit()
+    with engine.begin() as connection:connection.execute(text('ALTER TABLE customer_question_product_sends DROP COLUMN audio_snapshot'))
+    monkeypatch.setattr(database,'engine',engine);cfg=AlembicConfig(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
+    command.stamp(cfg,'20261108_32');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
+    snap={'storage_name':'a'*32+'.ogg','sha256':'b'*64,'size_bytes':123,'voice_id':1,'revision':2,'duration':1.25}
+    with sessions() as db:
+        item=db.query(ProductSend).one();assert item.audio_snapshot is None and item.choice_label=='1. Original card' and item.provider_id=='wamid.old.product'
+        assert db.get(Run,rid).version==5 and db.get(Run,rid).answers=={'age':'Seven'} and db.get(Flow,1).definition==flow(1)
+        assert db.get(Config,1).enabled and db.get(Config,1).version==7 and db.get(GlobalAIReplyControl,1).enabled is False
+        db.add(ProductSend(run_id=rid,step=0,position=-2,status='SENT',provider_id='wamid.voice.fixture',audio_snapshot=snap));db.commit()
+    assert not q.dispatch_one(sessions)
+    command.downgrade(cfg,'20261108_32');command.upgrade(cfg,'head')
+    with sessions() as db:assert db.query(ProductSend).filter_by(position=-2).one().audio_snapshot==snap
+
+
+def test_greasing_snapshot_migration_sqlite(tmp_path,monkeypatch):
+    engine=create_engine('sqlite:///'+str(tmp_path/'greasing.db'))
+    try:exercise_greasing_snapshot(engine,monkeypatch)
+    finally:engine.dispose()
+
+
+def test_greasing_snapshot_migration_postgresql(monkeypatch):
+    url=os.getenv('TEST_POSTGRESQL_URL')
+    if not url:pytest.skip('Isolated PostgreSQL fixture not configured')
+    admin=create_engine(url);assert admin.url.host in {'127.0.0.1','localhost'} and admin.url.database=='pixiepinks_test'
+    schema='greasing_'+uuid4().hex
+    with admin.begin() as conn:conn.execute(text('CREATE SCHEMA '+schema))
+    engine=create_engine(url,connect_args={'options':'-csearch_path='+schema})
+    try:exercise_greasing_snapshot(engine,monkeypatch)
     finally:
         engine.dispose()
         with admin.begin() as conn:conn.execute(text('DROP SCHEMA '+schema+' CASCADE'))
