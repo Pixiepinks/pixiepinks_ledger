@@ -383,7 +383,7 @@ def _store_conversation_message(
             question_text=(direction=='inbound' and response_kind is None and
                 (processed_record is None or processed_record.message_type=='text'))
             delivery_owned=False
-            if question_button_id is not None or question_stop or question_text:
+            if question_button_id is not None or question_stop or question_text or (direction=='inbound' and attachment_metadata is not None):
                 customer_questions.write_transaction(db)
                 if question_button_id is not None:customer_questions.config(db,True)
                 elif customer_questions.config(db,True,optional=True) is None:question_stop=False
@@ -433,9 +433,13 @@ def _store_conversation_message(
                     import marketing_consent_buttons
                     marketing_consent_buttons.inbound(db,message,consent_button_id)
                 elif question_button_id is None:
-                    if question_text and not question_stop:
-                        import question_delivery_details
-                        delivery_owned=question_delivery_details.receive_text(db,conversation,message,verified=bool(settings.META_APP_SECRET))
+                    if not question_stop and (question_text or attachment_metadata is not None):
+                        import question_payment_followup
+                        attachment=db.query(WhatsAppMessageAttachment).filter_by(message_id=message.id).one_or_none() if attachment_metadata is not None else None
+                        delivery_owned=question_payment_followup.inbound(db,conversation,message,attachment,verified=bool(settings.META_APP_SECRET))
+                        if question_text and not delivery_owned:
+                            import question_delivery_details
+                            delivery_owned=question_delivery_details.receive_text(db,conversation,message,verified=bool(settings.META_APP_SECRET))
                         if delivery_owned and processed_record is not None:processed_record.ai_reply_generation=None
                     if not delivery_owned:marketing_consent_service.inbound(db,message)
                 if question_button_id is not None:
@@ -1671,7 +1675,7 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                         )
                     if result == "failed":
                         raise HTTPException(status_code=503, detail="Media metadata registration unavailable")
-                    if result == "duplicate":
+                    if result in {"duplicate", "stored_delivery"}:
                         continue
                     with SessionLocal() as db:
                         conversation = _conversation_for_phone(db, sender)
@@ -2510,7 +2514,11 @@ def whatsapp_attachment_media(conversation_id: int, message_id: int, attachment_
     headers = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
                "Content-Security-Policy": "sandbox; default-src 'none'", "Referrer-Policy": "no-referrer"}
     try:
-        content, mime = download_whatsapp_attachment(attachment.media_id, attachment.media_type)
+        parent=db.get(WhatsAppConversationMessage,message_id)
+        if parent.response_kind=='payment_image':
+            from question_payment_followup import image_for_message
+            content,mime=image_for_message(db,conversation_id,parent.whatsapp_message_id)
+        else:content, mime = download_whatsapp_attachment(attachment.media_id, attachment.media_type)
     except AttachmentMediaError as exc:
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
     filename = attachment.filename or f"whatsapp-{attachment.media_type}"
@@ -2553,7 +2561,7 @@ def whatsapp_message_media(conversation_id: int, message_id: int, request: Reque
     ).one_or_none()
     if message is None or not message.media_id:
         raise HTTPException(status_code=404, detail="Audio message not found")
-    if message.response_kind == 'question_voice':
+    if message.response_kind in {'question_voice','payment_voice'}:
         from question_greasing_service import playback
         from saved_voice_routes import audio_response
         return audio_response(playback(db,conversation_id,message.whatsapp_message_id),'audio/ogg',request)

@@ -16,7 +16,11 @@ DEFAULT_NO='නැහැ, අවශ්‍ය නැහැ'
 
 
 def validate(value):
-    if not isinstance(value,dict) or not {'voice_id','revision','charge','question','yes','no'}<=set(value) or set(value)-{'voice_id','revision','charge','question','yes','no','voice_title','collect_delivery'}:raise HTTPException(422,'Select a Saved Voice, service charge and Yes/No wording')
+    if not isinstance(value,dict) or not {'voice_id','revision','charge','question','yes','no'}<=set(value) or set(value)-{'voice_id','revision','charge','question','yes','no','voice_title','collect_delivery','payment'}:raise HTTPException(422,'Select a Saved Voice, service charge and Yes/No wording')
+    if 'payment' in value:
+        if value.get('collect_delivery') is not True:raise HTTPException(422,'Enable delivery collection before adding payment instructions')
+        from question_payment_followup import validate as validate_payment
+        validate_payment(value['payment'])
     if 'collect_delivery' in value and type(value['collect_delivery']) is not bool:raise HTTPException(422,'Choose whether to collect delivery details')
     if 'voice_title' in value and (not isinstance(value['voice_title'],str) or len(value['voice_title'])>100):raise HTTPException(422,'Invalid recording title')
     if any(type(value[key]) is not int or not 1<=value[key]<=2147483647 for key in ['voice_id','revision']):raise HTTPException(422,'Select the Saved Voice and its current revision')
@@ -39,6 +43,8 @@ def verify_recordings(db,definition):
     for step in definition['steps']:
         if step.get('service'):
             voice=recording(db,step['service']);step['service']['voice_title']=voice.title
+    from question_payment_followup import verify
+    verify(db,definition)
 
 
 def pending(run):
@@ -68,10 +74,10 @@ def send_claimed(db,run,conversation,item):
     else:send_question(db,run,conversation,item)
 
 
-def send_explanation(db,run,conversation,item):
+def send_explanation(db,run,conversation,item,*,config=None,source='question_voice',event='SERVICE_VOICE_SENT'):
     from customer_questions import audit
     from quick_message_service import require_reply_window
-    config=run.definition['steps'][run.step]['service']
+    config=config if config is not None else run.definition['steps'][run.step]['service']
     try:
         voice=recording(db,config,True)
         raw=library.read_audio(voice);duration=voice.duration_seconds;variant=ffmpeg_encoder_enabled()
@@ -81,7 +87,7 @@ def send_explanation(db,run,conversation,item):
             'voice_id':voice.id,'revision':voice.revision,'title':voice.title,'duration':duration,'staff_variant_c':variant}
         item.audio_snapshot=snapshot
         media=upload_whatsapp_audio(raw)
-        if not isinstance(media,str) or not media.strip():fail(db,run,item,'Service voice upload failed. No follow-up question was sent.');return
+        if not isinstance(media,str) or not media.strip():fail(db,run,item,'Saved Voice upload failed. No later step was sent.');return
         db.refresh(conversation);require_reply_window(db,conversation)
         outcome,provider=send_whatsapp_audio(conversation.phone_number,media,voice=not variant,return_outcome=True)
     except (HTTPException,VoiceAudioError):
@@ -92,10 +98,10 @@ def send_explanation(db,run,conversation,item):
         fail(db,run,item,'Voice delivery was not confirmed. Check chat; no automatic retry.');return
     item.status='SENT';item.provider_id=provider
     db.add(Message(phone_number=conversation.phone_number,direction='outbound',message_text=f'{voice.title}\n{voice.transcript}',
-        whatsapp_message_id=provider,response_kind='question_voice',send_status='sent',analytics_actor_kind='automatic',
+        whatsapp_message_id=provider,response_kind=source,send_status='sent',analytics_actor_kind='automatic',
         media_id=media,media_mime_type='audio/ogg',media_duration_seconds=duration))
     run.status='QUEUED';run.version+=1;run.updated_at=datetime.utcnow();conversation.last_message_at=max(conversation.last_message_at or run.updated_at,run.updated_at)
-    audit(db,run,'SERVICE_VOICE_SENT','System',voice_id=voice.id,revision=voice.revision,provider_id=provider)
+    audit(db,run,event,'System',voice_id=voice.id,revision=voice.revision,provider_id=provider)
 
 
 def send_question(db,run,conversation,item):
@@ -137,7 +143,7 @@ def receive(db,run,incoming,choice):
 
 def playback(db,conversation_id,provider):
     from models import CustomerQuestionRun as Run
-    item=db.query(Item).join(Run,Run.id==Item.run_id).filter(Run.conversation_id==conversation_id,Item.position==-2,Item.provider_id==provider,Item.status=='SENT').one_or_none()
+    item=db.query(Item).join(Run,Run.id==Item.run_id).filter(Run.conversation_id==conversation_id,Item.position.in_([-2,-200]),Item.provider_id==provider,Item.status=='SENT').one_or_none()
     if item is None or not item.audio_snapshot:raise HTTPException(404,'Service voice snapshot is unavailable')
     snap=item.audio_snapshot;raw=library._read_file(snap['storage_name'])
     if len(raw)!=snap['size_bytes'] or hashlib.sha256(raw).hexdigest()!=snap['sha256']:raise HTTPException(409,'Sent audio snapshot failed integrity validation')
