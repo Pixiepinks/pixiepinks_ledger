@@ -5,7 +5,7 @@ import logging
 from datetime import datetime,timedelta
 from fastapi import HTTPException
 from sqlalchemy import select,update
-from models import CustomerQuestionFlow as Flow,CustomerQuestionConfig as Config,CustomerQuestionRun as Run,CustomerQuestionEvent as Event
+from models import CustomerQuestionProductSend as ProductSend,CustomerQuestionFlow as Flow,CustomerQuestionConfig as Config,CustomerQuestionRun as Run,CustomerQuestionEvent as Event
 from models import WhatsAppConversation as Conversation,WhatsAppConversationMessage as Message
 from quick_message_service import require_reply_window
 
@@ -22,24 +22,31 @@ def validate(value):
     if not isinstance(value,dict) or set(value)!={'title','steps'}:raise HTTPException(422,'Provide a title and question steps')
     if not isinstance(value['title'],str) or not 1<=len(value['title'].strip())<=100:raise HTTPException(422,'Title must be 1–100 characters')
     steps=value['steps']
-    if not isinstance(steps,list) or not 1<=len(steps)<=10:raise HTTPException(422,'Use 1–10 questions')
+    if not isinstance(steps,list) or not 1<=len(steps)<=50:raise HTTPException(422,'Use 1–50 flow steps')
     keys=set()
     for step in steps:
-        if not isinstance(step,dict) or not {'key','body','options'}<=set(step) or set(step)-{'key','body','options','type','list_button','next'}:raise HTTPException(422,'Each question needs a key, body and reply options')
+        if not isinstance(step,dict):raise HTTPException(422,'Invalid flow step')
+        key=step.get('key')
+        if not isinstance(key,str) or not re.fullmatch('[a-z][a-z0-9_]{0,29}',key) or key in keys:raise HTTPException(422,'Question keys must be unique lowercase names')
+        keys.add(key)
+        if step.get('type')=='products':
+            from question_product_service import validate_selection
+            if set(step)!={'key','type','products'}:raise HTTPException(422,'Product steps need a key and selected products only; they finish for staff')
+            validate_selection(step['products']);continue
+        if not {'key','body','options'}<=set(step) or set(step)-{'key','body','options','type','list_button','next'}:raise HTTPException(422,'Each question needs a key, body and reply options')
         kind=step.get('type','buttons')
         if not isinstance(kind,str) or kind not in {'buttons','list'}:raise HTTPException(422,'Choose Buttons or List')
         if 'list_button' in step and kind!='list':raise HTTPException(422,'List button text is only available for List questions')
         label=step.get('list_button','Choose option')
         if not isinstance(label,str) or not 1<=len(label)<=20 or label!=label.strip() or any(ord(c)<32 for c in label):raise HTTPException(422,'List button text must be 1–20 characters')
         key=step['key'];body=step['body'];options=step['options']
-        if not isinstance(key,str) or not re.fullmatch('[a-z][a-z0-9_]{0,29}',key) or key in keys:raise HTTPException(422,'Question keys must be unique lowercase names')
-        keys.add(key)
         if not isinstance(body,str) or not 1<=len(body.strip())<=1024:raise HTTPException(422,'Question text must be 1–1024 characters')
         count,limit=(10,24) if kind=='list' else (3,20)
         if not isinstance(options,list) or not 1<=len(options)<=count or any(not isinstance(o,str) or not 1<=len(o)<=limit or o!=o.strip() or any(ord(c)<32 for c in o) for o in options):raise HTTPException(422,f'Use 1–{count} options with 1–{limit} characters each')
         if len(set(options))!=len(options):raise HTTPException(422,'Button labels must be different')
     graph={}
     for index,step in enumerate(steps):
+        if step.get('type')=='products':graph[step['key']]=[];continue
         targets=step.get('next',[steps[index+1]['key'] if index+1<len(steps) else None]*len(step['options']))
         if not isinstance(targets,list) or len(targets)!=len(step['options']):raise HTTPException(422,'Choose one next step for every answer')
         if any(target is not None and (not isinstance(target,str) or target not in keys) for target in targets):raise HTTPException(422,'A next step refers to a missing question. Review the answer routes.')
@@ -76,11 +83,19 @@ def latest(db,cid,lock=False):
     return db.execute(q.with_for_update() if lock else q).scalar_one_or_none()
 
 
-def snapshot(run):
+def snapshot(run,db=None):
     if run is None:return None
-    return {'id':run.id,'flow_id':run.flow_id,'status':run.status,'step':run.step,'title':run.definition['title'],
+    result={'id':run.id,'flow_id':run.flow_id,'status':run.status,'step':run.step,'title':run.definition['title'],
             'answers':run.answers,'version':run.version,'updated_at':run.updated_at.isoformat()+'Z',
             'questions':len(run.definition['steps'])}
+    if db is not None:
+        items=db.query(ProductSend).filter_by(run_id=run.id).order_by(ProductSend.position).all()
+        index=items[0].step if items else run.step
+        if index<len(run.definition['steps']) and run.definition['steps'][index].get('type')=='products':
+            result['products']={'total':len(run.definition['steps'][index]['products']),
+                'sent':sum(item.status=='SENT' for item in items),'skipped':sum(item.status=='SKIPPED' for item in items),
+                'issues':[{'position':item.position+1,'status':item.status,'reason':item.reason} for item in items if item.status not in {'SENT','SENDING'}]}
+    return result
 
 
 def start(db,c,user,flow_id=1,flow_version=None):
@@ -130,6 +145,7 @@ def inbound(db,c,message,button_id):
     if message.reply_to_whatsapp_message_id!=run.provider_id:return
     if message.created_at < run.updated_at.replace(microsecond=0) or message.created_at>datetime.utcnow()+timedelta(minutes=5):return
     question=run.definition['steps'][step]
+    if question.get('type')=='products':return
     expected='question_list' if question.get('type','buttons')=='list' else 'question_reply'
     if message.response_kind!=expected or not 0<=choice<len(question['options']):return
     # Labels and answers come from the retained configuration, never reply text.
@@ -184,6 +200,9 @@ def dispatch_one(sessions):
         run=db.execute(select(Run).where(Run.status=='QUEUED').order_by(Run.id).limit(1).with_for_update(skip_locked=True)).scalar_one_or_none()
         if not run:return False
         rid=run.id
+        if run.definition['steps'][run.step].get('type')=='products':
+            from question_product_service import claim
+            if not claim(db,run):db.commit();return True
         claimed=db.execute(update(Run).where(Run.id==rid,Run.status=='QUEUED').values(status='SENDING',updated_at=datetime.utcnow(),version=Run.version+1)).rowcount
         if not claimed:db.rollback();return False
         audit(db,run,'SEND_CLAIM','System',step=run.step);db.commit()
@@ -194,12 +213,16 @@ def dispatch_one(sessions):
         if run.status!='SENDING':return True
         c=db.get(Conversation,run.conversation_id)
         if not control.enabled:
+            db.query(ProductSend).filter_by(run_id=run.id,step=run.step,status='SENDING').update({'status':'QUEUED'},synchronize_session=False)
             run.status='PAUSED';run.version+=1;run.updated_at=datetime.utcnow()
             audit(db,run,'PAUSE','System',reason='Automation is OFF');db.commit();return True
         try:require_reply_window(db,c)
         except HTTPException:
             run.status='WINDOW_CLOSED';run.version+=1;audit(db,run,'WINDOW_CLOSED','System');db.commit();return True
         step=run.definition['steps'][run.step]
+        if step.get('type')=='products':
+            from question_product_service import send_claimed
+            send_claimed(db,run,c);db.commit();return True
         buttons=[{'id':f'ppq:{run.token}:{run.step}:{i}','title':label} for i,label in enumerate(step['options'])]
         provider=(send_buttons(c.phone_number,step['body'],buttons,list_button=step.get('list_button','Choose option'))
             if step.get('type','buttons')=='list' else send_buttons(c.phone_number,step['body'],buttons))
