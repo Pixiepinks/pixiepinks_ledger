@@ -55,8 +55,8 @@ def current(collection):
         return run.status, run.answers['recommendations']['delivery_details'], run.provider_id, run.token
 
 
-def complete_fields(collection, phone2='0772345678'):
-    for value in ['අමායා පෙරේරා','123, Temple Road, Colombo 05','0771234567',phone2]:
+def complete_fields(collection, phone2='0772345678', city='Colombo'):
+    for value in ['අමායා පෙරේරා','123, Temple Road, Colombo 05',city,'0771234567',phone2]:
         assert text(collection,value).status_code==200
         assert q.dispatch_one(collection[0][0].sessions)
 
@@ -85,7 +85,7 @@ def test_both_service_answers_collect_review_and_confirm(collecting,choice,total
         run=q.latest(db,v.ids[0]);assert run.answers['recommendations']['greasing_service']['quoted_total']==total
         assert db.query(Event).filter_by(action='DELIVERY_CONFIRMED').count()==1
         assert db.get(GlobalAIReplyControl,1).enabled is False
-        assert db.query(Message).filter_by(direction='outbound',analytics_actor_kind='automatic').count()==9
+        assert db.query(Message).filter_by(direction='outbound',analytics_actor_kind='automatic').count()==10
     # Existing conversation permissions also protect the saved delivery details.
     v.login('quick-agent')
     assert v.client.get(f'/crm/whatsapp/api/conversations/{v.ids[0]}/customer-questions').status_code in {403,404}
@@ -106,7 +106,7 @@ def test_invalid_input_duplicates_early_and_stale_messages(collecting):
     assert text(c,'Long enough address',when=datetime.utcnow()-timedelta(days=2)).status_code==200
     assert text(c,'Long enough address',sender='94770012302').status_code==200
     assert current(c)[1]['stage']=='address'
-    for value in ['A real full address','12345']:
+    for value in ['A real full address','Colombo','12345']:
         assert text(c,value).status_code==200 and q.dispatch_one(v.sessions)
     assert current(c)[1]['stage']=='phone1' and current(c)[1]['invalid']
     assert text(c,'+94 77 123 4567').status_code==200 and q.dispatch_one(v.sessions)
@@ -168,7 +168,7 @@ def test_invalid_config_rejected_and_default_existing_flow_unchanged(greasing):
 def test_maximum_review_fits_whatsapp_limit():
     answer={'title':'T'*100,'variant_title':'V'*60,'price':'9999999.99',
         'greasing_service':{'accepted':True,'charge':'1000000.00','quoted_total':'10999999.99'},
-        'delivery_details':{'name':'N'*100,'address':'A'*350,'phone1':'+123456789012345','phone2':'+123456789012345'}}
+        'delivery_details':{'name':'N'*100,'address':'A'*350,'city':'C'*120,'phone1':'+123456789012345','phone2':'+123456789012345'}}
     assert len(delivery.summary(answer))<=1024
 
 

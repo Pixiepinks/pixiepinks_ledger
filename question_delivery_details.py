@@ -10,16 +10,19 @@ import secrets
 from models import CustomerQuestionProductSend as Item, WhatsAppConversationMessage as Message
 from whatsapp_service import send_whatsapp_text
 
-FIELDS = ('name', 'address', 'phone1', 'phone2')
+LEGACY_FIELDS = ('name', 'address', 'phone1', 'phone2')
+FIELDS = ('name', 'address', 'city', 'phone1', 'phone2')
 PROMPTS = {
     'name': 'ඇණවුම සඳහා ඔබගේ සම්පූර්ණ නම එවන්න.',
     'address': 'බයිසිකලය එවිය යුතු සම්පූර්ණ ලිපිනය එවන්න. නිවසේ අංකය, වීදිය, ප්‍රදේශය සහ නගරය ඇතුළත් කරන්න.',
+    'city': 'ඔබගේ ආසන්නතම නගරය කුමක්ද? නගරයේ නම එවන්න.',
     'phone1': 'ඔබව සම්බන්ධ කරගත හැකි ප්‍රධාන දුරකථන අංකය එවන්න. උදා: 0771234567 හෝ +94771234567',
     'phone2': 'දෙවන දුරකථන අංකයක් තිබේ නම් එවන්න. නැත්නම් පහත Skip බොත්තම තෝරන්න.',
 }
 ERRORS = {
     'name': 'කරුණාකර අකුරු 2–100 අතර සම්පූර්ණ නමක් එවන්න.',
     'address': 'කරුණාකර අකුරු 10–350 අතර සම්පූර්ණ ලිපිනයක් එවන්න.',
+    'city': 'කරුණාකර ආසන්නතම නගරයේ නම අකුරු 2–120 අතර එවන්න, නැත්නම් Skip තෝරන්න.',
     'phone1': 'වලංගු දුරකථන අංකයක් එවන්න. උදා: 0771234567 හෝ +94771234567',
     'phone2': 'වලංගු දෙවන දුරකථන අංකයක් එවන්න, නැත්නම් Skip තෝරන්න.',
 }
@@ -44,7 +47,7 @@ def save(run, details):
 
 
 def begin(run):
-    save(run, {'stage': 'name', 'sequence': 0, 'status': 'COLLECTING'})
+    save(run, {'stage': 'name', 'sequence': 0, 'status': 'COLLECTING', 'schema_version': 2})
     run.status = 'QUEUED'
     run.provider_id = None
     run.token = secrets.token_urlsafe(24)
@@ -70,16 +73,20 @@ def claim(db, run):
 def summary(answer):
     details = answer['delivery_details']
     service = answer['greasing_service']
+    title=answer['title'];variant=answer.get('variant_title','')
+    title=title if len(title)<=80 else title[:79]+'…'
+    variant=variant if len(variant)<=40 else variant[:39]+'…'
+    city_line=f"නගරය: {details['city'] or '—'}\n" if 'city' in details else ''
     return (
         'ඔබගේ ඇණවුමේ විස්තර පරීක්ෂා කරන්න 💖\n'
-        f"භාණ්ඩය: {answer['title'][:100]} · {answer.get('variant_title', '')[:60]}\n"
+        f"භාණ්ඩය: {title} · {variant}\n"
         'ප්‍රමාණය: 1\n'
         f"බයිසිකලයේ මිල: Rs. {Decimal(answer['price']):,.2f}\n"
         f"ග්‍රීස් සේවාව: {'ඔව්' if service['accepted'] else 'නැහැ'} · Rs. {Decimal(service['charge']):,.2f}\n"
         'Delivery: FREE\n'
         f"මුළු මුදල: Rs. {Decimal(service['quoted_total']):,.2f}\n\n"
         f"නම: {details['name']}\nලිපිනය: {details['address']}\n"
-        f"Phone 1: {details['phone1']}\nPhone 2: {details.get('phone2') or '—'}\n\n"
+        f"{city_line}Phone 1: {details['phone1']}\nPhone 2: {details.get('phone2') or '—'}\n\n"
         'විස්තර නිවැරදි නම් Confirm order තෝරන්න. වෙනස් කිරීමට Edit details තෝරන්න.'
     )
 
@@ -90,7 +97,7 @@ def send_claimed(db, run, conversation, item):
     details = answer['delivery_details']
     stage = details['stage']
     body = summary(answer) if stage == 'review' else ((ERRORS[stage] + '\n\n') if details.get('invalid') else '') + PROMPTS[stage]
-    labels = ['Confirm order', 'Edit details'] if stage == 'review' else ['Skip'] if stage == 'phone2' else []
+    labels = ['Confirm order', 'Edit details'] if stage == 'review' else ['Skip'] if stage in {'city','phone2'} else []
     options = [{'id': f'ppq:{run.token}:{run.step}:{i}', 'title': label} for i, label in enumerate(labels)]
     try:
         provider = (send_buttons(conversation.phone_number, body, options) if labels else
@@ -119,12 +126,12 @@ def valid_text(stage, raw):
     text = raw.strip()
     if any(ord(c) < 32 and c not in '\n\r\t' for c in text):
         return None
-    if stage in {'name', 'address'}:
-        text = ' '.join(text.split())
-        minimum, maximum = (2, 100) if stage == 'name' else (10, 350)
-        return text if minimum <= len(text) <= maximum and any(c.isalpha() for c in text) else None
-    if stage == 'phone2' and text.casefold() in {'skip', 'none', 'no', 'නැහැ'}:
+    if stage in {'city','phone2'} and text.casefold() in {'skip','none','no','නැහැ'}:
         return ''
+    if stage in {'name', 'address', 'city'}:
+        text = ' '.join(text.split())
+        minimum, maximum = (2, 100) if stage == 'name' else (2, 120) if stage == 'city' else (10, 350)
+        return text if minimum <= len(text) <= maximum and any(c.isalpha() for c in text) else None
     if not re.fullmatch(r'\+?[0-9 ()-]+', text):
         return None
     phone = re.sub(r'[ ()-]', '', text)
@@ -162,7 +169,7 @@ def advance(db, run, incoming, value=None, choice=None):
             if run.status == 'COMPLETE':audit(db, run, 'COMPLETE', 'System', note='Customer confirmed delivery details and quote. Staff can prepare the invoice; payment is not verified.')
             return
         # Re-enter all fields without altering the product or service decision.
-        details = {'stage': 'name', 'status': 'COLLECTING', 'sequence': details['sequence']}
+        details = {'stage': 'name', 'status': 'COLLECTING', 'sequence': details['sequence'], 'schema_version':2}
         audit(db, run, 'DELIVERY_EDIT', 'Customer', inbound_id=incoming.id)
     elif value is None:
         details['invalid'] = True
@@ -170,7 +177,10 @@ def advance(db, run, incoming, value=None, choice=None):
     else:
         details[stage] = value
         details.pop('invalid', None)
-        details['stage'] = FIELDS[FIELDS.index(stage) + 1] if stage != 'phone2' else 'review'
+        # Upgrade an old address-stage run only at the safe boundary before phone collection.
+        if stage=='address':details['schema_version']=2
+        fields=FIELDS if details.get('schema_version',1)>=2 else LEGACY_FIELDS
+        details['stage'] = fields[fields.index(stage) + 1] if stage != 'phone2' else 'review'
         details['status'] = 'REVIEW' if details['stage'] == 'review' else 'COLLECTING'
         audit(db, run, 'DELIVERY_FIELD', 'Customer', field=stage, inbound_id=incoming.id)
     details['sequence'] += 1
@@ -206,7 +216,7 @@ def receive_button(db, run, incoming, choice):
     if incoming.response_kind != 'question_reply' or not sent_prompt(db, run, incoming):
         return
     stage = selected(run)['delivery_details']['stage']
-    if stage == 'phone2' and choice == 0:
+    if stage in {'city','phone2'} and choice == 0:
         advance(db, run, incoming, '')
     elif stage == 'review' and choice in {0, 1}:
         advance(db, run, incoming, choice=choice)

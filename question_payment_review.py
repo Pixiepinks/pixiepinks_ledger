@@ -95,7 +95,7 @@ def prepare(db,conversation,run,key,answer,user):
         raise HTTPException(409,'Product availability or price changed. Review with the customer before creating an order.')
     d=answer['delivery_details']
     payload={'crm_conversation_id':conversation.id,'customer_name':d['name'],'whatsapp_phone':conversation.phone_number,
-        'alternative_phone':d['phone1'],'delivery_contact_person':d['name'],'delivery_address':d['address'],
+        'alternative_phone':d['phone1'],'delivery_contact_person':d['name'],'delivery_address':d['address'],'city':d.get('city') or '',
         'customer_notes':f"Delivery phone 1: {d['phone1']}\nDelivery phone 2: {d.get('phone2') or 'Not provided'}\nQuestion run: {run.id}",
         'service_total':answer['greasing_service']['charge'],'shipping_total':'0','tax_total':'0',
         'lines':[{'shopify_product_id':product['id'],'shopify_variant_id':product['variant_id'],'sku':product.get('sku'),
