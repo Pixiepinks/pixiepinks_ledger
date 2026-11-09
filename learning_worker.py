@@ -344,6 +344,12 @@ def main():
             from learning_diagnostics import diagnose
             with SessionLocal() as db:print(json.dumps(diagnose(db,max(0,args.offset)),ensure_ascii=False));db.rollback()
             return
+        # Optional read-only Ads tick shares the existing cron process without another service.
+        from meta_ads_client import enabled as ads_enabled
+        if ads_enabled():
+            from meta_ads_worker import tick as ads_tick
+            try: print('meta_ads status='+ads_tick(SessionLocal))
+            except Exception: logger.error('Meta Ads sync unavailable; existing learning job continues')
         result=tick(engine,SessionLocal);print('learning_worker status='+result)
     except Exception:
         logger.error('Learning worker unavailable; verify additive migrations and database health')

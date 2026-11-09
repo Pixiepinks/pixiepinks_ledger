@@ -1,0 +1,23 @@
+{% extends 'base.html' %}{% block content %}
+<link rel="stylesheet" href="/static/meta_ads.css?v=1">
+<section id="ads-app" data-ad="{{ detail_ad }}" class="ads-app">
+<header><div><h1>Ad Analytics</h1><p>Meta advertising &amp; verified CRM sales</p></div>{% if ads_admin %}<button id="ads-sync" class="btn btn-primary" type="button">Sync Now</button><a id="ads-export" class="btn btn-secondary" href="/crm/ad-analytics/export">Export CSV</a>{% endif %}</header>
+<form id="ads-filters" aria-label="Advertising report filters">
+<label>Period<select id="ads-preset"><option value="30">Last 30 days</option><option value="7">Last 7 days</option><option value="1">Today</option><option value="custom">Custom</option></select></label>
+<label>From<input type="date" name="date_from"></label><label>Through<input type="date" name="date_to"></label>
+<label>Report by<select name="level"><option value="ad">Advertisement</option><option value="adset">Ad set</option><option value="campaign">Campaign</option></select></label>
+<label>Campaign<select name="campaign"><option value="">All campaigns</option></select></label><label>Ad set<select name="adset"><option value="">All ad sets</option></select></label><label>Advertisement<select name="ad"><option value="">All advertisements</option>{% if detail_ad %}<option value="{{ detail_ad }}" selected>{{ detail_ad }}</option>{% endif %}</select></label>
+<label>Product interest<input name="interest" maxlength="100"></label><label>Lead status<input name="status" maxlength="100" placeholder="e.g. INTERESTED"></label>
+<label>Sort by<select name="sort"><option value="spend">Spend</option><option value="leads">Leads</option><option value="confirmed_orders">Orders</option><option value="revenue">Revenue</option><option value="roas">ROAS</option><option value="name">Name</option></select></label>
+<button class="btn btn-primary" type="submit">Apply</button></form>
+<p id="ads-feedback" role="status" aria-live="polite">Loading report…</p><p id="ads-health"></p>
+<div id="ads-kpis" class="ads-kpis"></div>
+<p>Meta spend covers selected advertisements. Product interest and status filters apply to CRM evidence only. ROAS is revenue ÷ ad spend, not profit.</p>
+<div class="ads-table" tabindex="0" role="region" aria-label="Advertisement performance"><table><thead><tr><th>Advertisement / group</th><th>Spend</th><th>Impressions</th><th>Reach*</th><th>Meta conversations</th><th>CRM unique leads</th><th>Confirmed orders</th><th>Verified revenue</th><th>Cost per lead</th><th>ROAS</th></tr></thead><tbody id="ads-rows"></tbody></table></div>
+<div class="ads-pages"><button id="ads-prev" type="button">Previous</button><span id="ads-count"></span><button id="ads-next" type="button">Next</button></div>
+<section id="ads-details" aria-label="Advertisement details"></section>
+<details><summary>Unattributed orders</summary><div id="ads-unattributed"></div></details>
+<details open><summary>Data quality &amp; attribution</summary><p id="ads-method"></p><ul id="ads-limitations"></ul></details>
+{% if ads_admin %}<details><summary>Administrator setup</summary><p>Configure a separate read-only Ads token with ads_read, account access, META_ADS_ACCOUNT_ID and META_ADS_SYNC_ENABLED in Railway. Never enter secrets in this page. Run python -m meta_ads_worker daily using your existing scheduler. Setup and rollback instructions: docs/meta-ads-analytics.md in the repository.</p></details>{% endif %}
+</section><script src="/static/meta_ads.js?v=1"></script>
+{% endblock %}

@@ -4625,3 +4625,6 @@ app.include_router(prompt_xpress_router(get_db,require_user,_require_csrf))
 from sales_order_delivery_location import build_router as delivery_location_router
 from customer_question_routes import QuestionRoute
 app.include_router(delivery_location_router(get_db,require_user,_require_csrf,QuestionRoute))
+
+from meta_ads_routes import build_router as build_meta_ads_router
+app.include_router(build_meta_ads_router(get_db,require_user,_require_csrf,_csrf_token,templates))
