@@ -372,7 +372,7 @@ def test_confirmed_delivery_details_visible_to_staff_desktop_and_mobile(collecti
         page.get_by_role('button',name='Customer questions',exact=True).click()
         page.locator('.question-content').get_by_text('Delivery: CONFIRMED',exact=False).wait_for()
         content=page.locator('.question-content').inner_text()
-        assert 'Phone 1: +94771234567' in content and 'Phone 2: Not provided' in content
+        assert 'Phone 1: +94771234567' in content and 'Phone 2: Not provided' in content and 'City: Colombo' in content
         assert '123, Temple Road, Colombo 05' in content and 'Quoted total LKR 46800.00' in content
         assert 'Ready for staff to prepare the invoice' in content
         page.screenshot(path='/tmp/delivery-confirmed-desktop.png',full_page=True)

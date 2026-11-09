@@ -6,7 +6,7 @@ function answerText(value){
   const base=`${value.number}. ${value.title}${value.variant_title&&value.variant_title!=='Default Title'?' · '+value.variant_title:''}`;
   const service=value.greasing_service;
   const details=value.delivery_details;
-  const delivery=details?'\nDelivery: '+details.status+(details.name?'\nName: '+details.name:'')+(details.address?'\nAddress: '+details.address:'')+(details.phone1?'\nPhone 1: '+details.phone1:'')+(Object.hasOwn(details,'phone2')?'\nPhone 2: '+(details.phone2||'Not provided'):''):'';
+  const delivery=details?'\nDelivery: '+details.status+(details.name?'\nName: '+details.name:'')+(details.address?'\nAddress: '+details.address:'')+(Object.hasOwn(details,'city')?'\nCity: '+(details.city||'Not provided'):'')+(details.phone1?'\nPhone 1: '+details.phone1:'')+(Object.hasOwn(details,'phone2')?'\nPhone 2: '+(details.phone2||'Not provided'):''):'';
   const payment=value.payment;
   const paymentText=payment?'\nPayment: '+(payment.status==='AWAITING_SLIP'?'Awaiting deposit slip':payment.status==='SLIP_REVIEW'?'Slip received — awaiting staff verification':payment.status==='VERIFIED'?'Verified · Customer confirmation '+payment.confirmation_status:payment.status):'';
   return service?`${base} · Greasing: ${service.accepted?'Yes':'No'} · Charge LKR ${service.charge} · Quoted total LKR ${service.quoted_total}${delivery}${paymentText}`:base;
