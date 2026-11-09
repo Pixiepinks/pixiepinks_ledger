@@ -6,6 +6,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
+import meta_ads_diagnostics as diagnostics
 
 MESSAGE_ACTION = 'onsite_conversion.messaging_conversation_started_7d'
 RETRY_CODES = {1, 2, 4, 17, 32, 613, 80004}
@@ -18,21 +19,47 @@ class AdsError(Exception):
 
 
 def account_id():
-    account = os.getenv('META_ADS_ACCOUNT_ID', '').removeprefix('act_')
+    account = os.getenv('META_ADS_ACCOUNT_ID', '').strip().removeprefix('act_')
     return 'act_' + account if re.fullmatch(r'[0-9]{1,40}', account) else None
 
 
+def configuration_errors():
+    errors = []
+    flag = os.getenv('META_ADS_SYNC_ENABLED', '').strip().lower()
+    if flag not in {'', 'true', 'false'}: errors.append('INVALID_SYNC_ENABLED')
+    raw_account = os.getenv('META_ADS_ACCOUNT_ID', '').strip()
+    if not raw_account: errors.append('MISSING_ACCOUNT_ID')
+    elif account_id() is None: errors.append('INVALID_ACCOUNT_ID')
+    token = os.getenv('META_ADS_ACCESS_TOKEN', '').strip()
+    if not token: errors.append('MISSING_ACCESS_TOKEN')
+    elif any(ord(c) < 33 or ord(c) > 126 for c in token) or token.startswith(('"', "'")) or token.endswith(('"', "'")):
+        errors.append('INVALID_ACCESS_TOKEN_FORMAT')
+    if not re.fullmatch(r'v[0-9]{1,3}\.0', os.getenv('META_ADS_GRAPH_VERSION', 'v26.0').strip()):
+        errors.append('INVALID_GRAPH_VERSION')
+    try:
+        days = int(os.getenv('META_ADS_LOOKBACK_DAYS', '30').strip())
+        if not 1 <= days <= 90: raise ValueError()
+    except ValueError: errors.append('INVALID_LOOKBACK_DAYS')
+    return errors
+
+
 def configuration():
-    account = account_id()
-    version = os.getenv('META_ADS_GRAPH_VERSION', 'v26.0')
-    token = os.getenv('META_ADS_ACCESS_TOKEN', '')
-    if not account or not re.fullmatch(r'v[0-9]{1,3}\.0', version) or not token:
-        raise AdsError('NOT_CONFIGURED')
-    return account, version, token
+    errors = configuration_errors()
+    if errors: raise AdsError(errors[0])
+    return account_id(), os.getenv('META_ADS_GRAPH_VERSION', 'v26.0').strip(), os.getenv('META_ADS_ACCESS_TOKEN', '').strip()
 
 
 def enabled():
-    return os.getenv('META_ADS_SYNC_ENABLED', '').lower() == 'true'
+    return os.getenv('META_ADS_SYNC_ENABLED', '').strip().lower() == 'true'
+
+
+def configuration_status():
+    errors = configuration_errors()
+    version = os.getenv('META_ADS_GRAPH_VERSION', 'v26.0').strip()
+    # No raw values for invalid settings; token presence is a boolean, never a length/hash.
+    return {'enabled': enabled(), 'configured': not errors, 'errors': errors,
+            'account_id': account_id(), 'token_present': bool(os.getenv('META_ADS_ACCESS_TOKEN', '').strip()),
+            'graph_version': version if re.fullmatch(r'v[0-9]{1,3}\.0', version) else None}
 
 
 def number(value, integer=False):
@@ -56,21 +83,34 @@ class Client:
                                  headers={'Authorization': 'Bearer ' + token})
         self.sleep = sleep
         self.deadline = time.monotonic() + 300
+        self.diagnostics = {"api_requests": 0}
 
     def close(self):
         self.http.close()
 
     def get(self, path, params=None):
         # Only fixed account paths supplied by this module; never follow provider paging URLs.
+        level = (params or {}).get('level', '')
+        stage = ('PERMISSIONS' if path == 'me/permissions' else 'ACCOUNT_VERIFY' if path == self.account else
+                 'AD_METADATA' if path == self.account + '/ads' else 'INSIGHTS_' + level.upper())
+        if stage not in diagnostics.STAGES: raise AdsError('INVALID_RESPONSE')
+        self.diagnostics['stage'] = stage
         for attempt in range(4):
             if time.monotonic() > self.deadline: raise AdsError('SYNC_TIME_LIMIT')
+            self.diagnostics = {'stage': stage, 'api_requests': self.diagnostics['api_requests'] + 1}
+            diagnostics.log('api_request', self.diagnostics)
             try:
                 response = self.http.get('https://graph.facebook.com/' + self.version + '/' + path, params=params)
                 payload = response.json()
             except (httpx.HTTPError, ValueError):
                 payload = {}; response = None
             error = payload.get('error', {}) if isinstance(payload, dict) else {}
+            if not isinstance(error, dict): raise AdsError('INVALID_RESPONSE')
             code = error.get('code')
+            self.diagnostics.update(diagnostics.safe({'http_status': response.status_code if response is not None else None,
+                'provider_code': code, 'provider_subcode': error.get('error_subcode')}))
+            diagnostics.log('api_response', self.diagnostics)
+            if code is not None and type(code) is not int: raise AdsError('INVALID_RESPONSE')
             if code == 190:
                 raise AdsError('TOKEN_EXPIRED_OR_INVALID')
             if code in {10, 200, 294} or (response is not None and response.status_code in {401, 403}):
@@ -93,6 +133,7 @@ class Client:
     def verify(self):
         # Explicit granted-scope check independently of the WhatsApp integration.
         permissions = self.get('me/permissions').get('data', [])
+        if not isinstance(permissions, list) or any(not isinstance(p, dict) for p in permissions): raise AdsError('INVALID_RESPONSE')
         if not any(p.get('permission') == 'ads_read' and p.get('status') == 'granted' for p in permissions):
             raise AdsError('ADS_READ_REQUIRED')
         account = self.get(self.account, {'fields': 'id,currency,timezone_name,account_status'})

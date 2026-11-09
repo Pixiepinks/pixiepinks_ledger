@@ -2,10 +2,12 @@
 import csv
 import io
 from fastapi import APIRouter, Depends, Request, Query, HTTPException, BackgroundTasks
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 from crm_dashboard_routes import DashboardRoute
 from staff_access import managed_grant
-from meta_ads_client import AdsError
+from meta_ads_client import AdsError, account_id, configuration_status
+from meta_ads_models import MetaAdsSync
+import meta_ads_diagnostics as diagnostics
 import meta_ads_report as reporting
 import meta_ads_worker as worker
 
@@ -47,6 +49,13 @@ def build_router(get_db, require_user, csrf_check, csrf_token, templates):
                 row[field+'_total']=len(row[field]);row[field]=row[field][:100]
         result['unattributed_total']=len(result['unattributed']);result['unattributed']=result['unattributed'][:100]
         result['csrf_token']=csrf_token(request) if user.role=='ADMIN' else None
+        if user.role=='ADMIN':
+            config = configuration_status()
+            result['integration']['configuration_errors'] = config['errors']
+            result['integration']['error_hint'] = diagnostics.hint(result['integration']['error']) if result['integration']['error'] else None
+            row = db.get(MetaAdsSync, account_id()) if account_id() else None
+            result['integration']['diagnostics'] = diagnostics.safe(row.diagnostics) if row else {}
+            result['integration']['requested_at'] = reporting.iso(row.requested_at) if row else None
         return result
 
     @router.get('/crm/ad-analytics/export')
@@ -62,12 +71,36 @@ def build_router(get_db, require_user, csrf_check, csrf_token, templates):
         for row in result['rows']:writer.writerow([csv_cell(row.get(f)) for f in fields])
         return Response(stream.getvalue(),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="pixiepinks-ad-analytics.csv"'})
 
+    @router.get('/crm/ad-analytics/diagnostics')
+    def diagnose(db=Depends(get_db),user=Depends(viewer)):
+        if user.role!='ADMIN':raise HTTPException(403,'Only administrators can inspect sync diagnostics')
+        import os
+        import re
+        config = configuration_status()
+        row = db.get(MetaAdsSync, config['account_id']) if config['account_id'] else None
+        evidence = diagnostics.safe(row.diagnostics) if row else {}
+        revision = os.getenv('RAILWAY_GIT_COMMIT_SHA','')
+        deployment = os.getenv('RAILWAY_DEPLOYMENT_ID','')
+        return {'configuration':config,'configuration_hints':[diagnostics.hint(code) for code in config['errors']],
+            'revision':revision if re.fullmatch(r'[a-f0-9]{40}',revision) else None,
+            'deployment_id':deployment if re.fullmatch(r'[A-Za-z0-9-]{1,80}',deployment) else None,
+            'sync':{'status':row.status if row else 'NEVER', 'error':row.error_code if row else None,
+                'error_hint':diagnostics.hint(row.error_code) if row and row.error_code else None,
+                'started_at':reporting.iso(row.started_at) if row else None,
+                'requested_at':reporting.iso(row.requested_at) if row else None,
+                'last_success':reporting.iso(row.last_success_at) if row else None,
+                'active_lease':worker.active(row) if row else False,'evidence':evidence,
+                'api_attempted':evidence['api_requests']>0 if 'api_requests' in evidence else None},
+            'note':'Reads this running service configuration and stored evidence only. No Meta request is performed. In-flight request progress is logged; stored counts describe completed or rejected attempts.'}
+
     @router.post('/crm/ad-analytics/sync')
     def sync(request:Request,tasks:BackgroundTasks,db=Depends(get_db),user=Depends(viewer)):
         if user.role!='ADMIN':raise HTTPException(403,'Only administrators can synchronize advertising analytics')
         csrf_check(request)
         try:status=worker.request_sync(db)
-        except AdsError as exc:raise HTTPException(409,exc.code) from None
+        except AdsError as exc:
+            code = diagnostics.error_code(exc.code)
+            return JSONResponse({'detail':code,'hint':diagnostics.hint(code),'stage':'PREFLIGHT','api_requests':0},status_code=409)
         if status=='QUEUED':
             # Reuse the configured database engine, never request-scoped sessions in background work.
             from sqlalchemy.orm import sessionmaker

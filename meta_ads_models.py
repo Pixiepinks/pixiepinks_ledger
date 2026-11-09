@@ -39,6 +39,7 @@ class MetaAdsSync(Base):
     started_at = Column(DateTime)
     last_success_at = Column(DateTime)
     error_code = Column(String(64))
+    diagnostics = Column(JSON)
     requested_at = Column(DateTime)
     date_from = Column(Date)
     date_to = Column(Date)
