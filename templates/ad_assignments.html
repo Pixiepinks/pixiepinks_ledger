@@ -1,0 +1,23 @@
+{% extends 'base.html' %}{% block content %}
+<link rel="stylesheet" href="/static/ad_assignments.css?v=1">
+<section id="ad-assignments" data-csrf="{{ csrf_token }}">
+<header><h1>Ad Assignments</h1><p>Choose which staff member receives unassigned conversations from each advertisement.</p></header>
+<p id="ad-routing-security" role="status"></p>
+<form id="ad-rule-form" aria-label="Ad assignment rule">
+<h2 id="ad-rule-heading">New assignment rule</h2>
+<label>Choose a recorded advertisement<select id="ad-rule-picker"><option value="">Enter an Ad ID below</option></select></label>
+<label>Ad ID<input id="ad-rule-id" required inputmode="numeric" pattern="[0-9]{1,40}" maxlength="40" placeholder="Numeric Meta Ad ID"></label>
+<label>Rule name<input id="ad-rule-label" maxlength="120" placeholder="e.g. Bicycle campaign"></label>
+<label>Assign to<select id="ad-rule-staff" required><option value="">Choose staff</option></select></label>
+<label class="ad-check"><input id="ad-rule-enabled" type="checkbox" checked> Enable automatic assignment</label>
+<p>Existing owners stay assigned. Assignment does not change AI mode, reply status or send a message.</p>
+<div class="ad-actions"><button id="ad-rule-save" type="submit">Save rule</button><button id="ad-rule-new" type="button">New rule</button></div>
+</form>
+<p id="ad-rule-feedback" role="status" aria-live="polite">Loading rules…</p>
+<form id="ad-rule-search"><label>Find a rule<input name="q" maxlength="100" placeholder="Ad ID or rule name"></label><button type="submit">Search</button></form>
+<div id="ad-rule-list" aria-label="Saved assignment rules"></div>
+<div class="ad-actions"><button id="ad-rule-prev" type="button">Previous</button><span id="ad-rule-count"></span><button id="ad-rule-next" type="button">Next</button></div>
+<section id="ad-rule-history" hidden aria-label="Rule and assignment history"></section>
+<dialog id="ad-rule-preview" aria-labelledby="ad-preview-heading"><h2 id="ad-preview-heading">Apply to existing unassigned chats</h2><p id="ad-preview-summary"></p><ul id="ad-preview-list"></ul><label class="ad-check"><input id="ad-preview-confirm" type="checkbox"> Assign this previewed batch</label><div class="ad-actions"><button id="ad-preview-apply" type="button" disabled>Assign previewed chats</button><button id="ad-preview-close" type="button">Cancel</button></div><p id="ad-preview-feedback" role="status"></p></dialog>
+</section><script src="/static/ad_assignments.js?v=1"></script>
+{% endblock %}

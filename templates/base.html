@@ -28,6 +28,7 @@
 {% if can_access_section(nav_user,"bot") %}      <a href="/crm/bot-management" class="{{ 'active' if request.url.path.startswith('/crm/bot-management') else '' }}"><span>✦</span> AI Bot Management</a>{% endif %}
 {% if can_access_section(nav_user,"marketing") or can_access_section(nav_user,"ad_analytics") %}<div class="nav-label">Marketing</div>{% endif %}{% if can_access_section(nav_user,"marketing") %}<a href="/crm/marketing-consent" class="{{ 'active' if request.url.path.startswith('/crm/marketing-consent') else '' }}"><span>✓</span> Consent Management</a>{% endif %}
 {% if can_access_section(nav_user,"ad_analytics") %}<a href="/crm/ad-analytics" class="{{ 'active' if request.url.path.startswith('/crm/ad-analytics') else '' }}"><span>▥</span> Ad Analytics</a>{% endif %}
+{% if nav_user and nav_user.role=="ADMIN" %}<a href="/crm/ad-assignments" class="{{ 'active' if request.url.path.startswith('/crm/ad-assignments') else '' }}"><span>⇥</span> Ad Assignments</a>{% endif %}
 {% if can_access_section(nav_user,"customers") %}      <a href="/customers" class="{{ 'active' if request.url.path == '/customers' else '' }}"><span>♙</span> Customers</a>{% endif %}
       <p class="nav-label">Sales</p>
 {% if can_access_section(nav_user,"intents") %}      <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>{% endif %}

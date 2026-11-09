@@ -426,6 +426,9 @@ def _store_conversation_message(
                 conversation.unread_count = (conversation.unread_count or 0) + 1
             db.flush()
             if direction == 'inbound':
+                if referral_metadata is not None:
+                    import ad_assignment_service
+                    ad_assignment_service.inbound(db,conversation,message,referral_metadata,verified=bool(settings.META_APP_SECRET))
                 import conversation_work_service
                 conversation_work_service.inbound(db,conversation,message,processed_record is None or processed_record.message_type in {'text','image','audio','video','document','sticker','interactive'})
                 import marketing_consent_service
@@ -4628,3 +4631,6 @@ app.include_router(delivery_location_router(get_db,require_user,_require_csrf,Qu
 
 from meta_ads_routes import build_router as build_meta_ads_router
 app.include_router(build_meta_ads_router(get_db,require_user,_require_csrf,_csrf_token,templates))
+
+from ad_assignment_routes import build_router as build_ad_assignment_router
+app.include_router(build_ad_assignment_router(get_db,require_user,_require_csrf,_csrf_token,templates))
