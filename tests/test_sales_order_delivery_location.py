@@ -16,6 +16,8 @@ from test_question_payment_review import reviewing,prepare,verify
 @pytest.fixture
 def editing(reviewing):
     oid=prepare(reviewing);assert verify(reviewing,oid).status_code==200
+    # Preserve coverage of historical paid orders created before nearest-town collection.
+    with reviewing[1].sessions() as db:db.get(SalesOrder,oid).city=None;db.commit()
     return reviewing,reviewing[1],oid,f'/api/sales-orders/{oid}/delivery-location'
 
 
