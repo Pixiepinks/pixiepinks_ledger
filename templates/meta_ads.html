@@ -11,6 +11,7 @@
 <label>Sort by<select name="sort"><option value="spend">Spend</option><option value="leads">Leads</option><option value="confirmed_orders">Orders</option><option value="revenue">Revenue</option><option value="roas">ROAS</option><option value="name">Name</option></select></label>
 <button class="btn btn-primary" type="submit">Apply</button></form>
 <p id="ads-feedback" role="status" aria-live="polite">Loading report…</p><p id="ads-health"></p>
+{% if ads_admin %}<details><summary>Sync diagnostics</summary><button id="ads-check" type="button">Check configuration &amp; sync</button><pre id="ads-diagnostics" style="white-space:pre-wrap;overflow-wrap:anywhere" aria-live="polite"></pre></details>{% endif %}
 <div id="ads-kpis" class="ads-kpis"></div>
 <p>Meta spend covers selected advertisements. Product interest and status filters apply to CRM evidence only. ROAS is revenue ÷ ad spend, not profit.</p>
 <div class="ads-table" tabindex="0" role="region" aria-label="Advertisement performance"><table><thead><tr><th>Advertisement / group</th><th>Spend</th><th>Impressions</th><th>Reach*</th><th>Meta conversations</th><th>CRM unique leads</th><th>Confirmed orders</th><th>Verified revenue</th><th>Cost per lead</th><th>ROAS</th></tr></thead><tbody id="ads-rows"></tbody></table></div>
@@ -19,5 +20,5 @@
 <details><summary>Unattributed orders</summary><div id="ads-unattributed"></div></details>
 <details open><summary>Data quality &amp; attribution</summary><p id="ads-method"></p><ul id="ads-limitations"></ul></details>
 {% if ads_admin %}<details><summary>Administrator setup</summary><p>Configure a separate read-only Ads token with ads_read, account access, META_ADS_ACCOUNT_ID and META_ADS_SYNC_ENABLED in Railway. Never enter secrets in this page. Run python -m meta_ads_worker daily using your existing scheduler. Setup and rollback instructions: docs/meta-ads-analytics.md in the repository.</p></details>{% endif %}
-</section><script src="/static/meta_ads.js?v=1"></script>
+</section><script src="/static/meta_ads.js?v=sync-diagnostics-2"></script>
 {% endblock %}

@@ -30,7 +30,7 @@ Official references: [Marketing API Insights](https://developers.facebook.com/do
 | `META_ADS_ACCOUNT_ID` | Numeric ID, optionally prefixed `act_`; only one authorized account |
 | `META_ADS_GRAPH_VERSION` | `v26.0` default; explicitly choose a supported version for your app |
 | `META_ADS_SYNC_ENABLED` | `false` unless exactly `true`; gate for both automatic and manual retrieval |
-| `META_ADS_LOOKBACK_DAYS` | `30` default, clamped to 1–90; refreshed on every sync |
+| `META_ADS_LOOKBACK_DAYS` | `30` default, validated from 1–90; refreshed on every sync |
 
 Integration settings and secrets are configured server-side through Railway, not exposed as editable browser credentials. Changing accounts creates a separate cache/sync namespace. Existing cached account data is retained and is not mixed into the new account's reporting.
 
@@ -103,3 +103,6 @@ Foundation: `meta_ads_models.py`, `meta_ads_client.py`, `meta_ads_worker.py`, `a
 Reporting: `meta_ads_report.py`, `meta_ads_routes.py`, `templates/meta_ads.html`, `static/meta_ads.js`, `static/meta_ads.css`.
 Integration: `main.py`, `learning_worker.py`, `staff_access.py`, `templates/base.html`.
 Validation/documentation: `tests/test_meta_ads.py`, `tests/test_meta_ads_ui.py`, `docs/meta-ads-analytics.md`.
+
+
+For disabled-gate failures, precise configuration diagnostics, migration 20261109_36 and bounded automatic result refresh, see [Meta Ads sync investigation](meta-ads-sync-investigation.md). No live Meta request is performed by the administrator diagnostics endpoint.
