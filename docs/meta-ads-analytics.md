@@ -93,6 +93,7 @@ Tests use httpx mock transports and isolated databases. They cover authenticatio
 
 - 35 new Ads tests passed, including Chromium at 1366, 390 and 320 pixels, additive migration, safe exports, concurrent status claims and no-write identity normalization.
 - 113 existing tests passed across dashboard analytics/UI, staff access, quick messages and worker diagnostics.
+- After merging current main (nearest-city flow, PR #149), all 42 selected Ads and nearest-city tests passed together.
 - Two existing learning tests failed and were independently reproduced on unchanged main `33a2892`: `test_manager_publication_review_edit_validation_and_withdrawal` (403 vs expected 409 after switching logins) and `test_chromium_zero_run_history_diagnostics_and_mobile` (non-zero-padded browser day vs expected zero-padded day). These are not changed by this branch.
 - Python syntax, JavaScript syntax and whitespace checks passed. All Meta calls were mocked; no production API synchronization or scheduled production run was performed.
 
