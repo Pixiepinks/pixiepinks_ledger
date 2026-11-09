@@ -628,6 +628,35 @@ class ConversationAssignmentAudit(Base):
     previous_owner_id=Column(Integer,ForeignKey('users.id'),nullable=True)
     new_owner_id=Column(Integer,ForeignKey('users.id'),nullable=True)
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    source=Column(String(24),nullable=False,default='MANUAL',server_default='MANUAL')
+    ad_id=Column(String(64),nullable=True)
+    rule_id=Column(Integer,nullable=True,index=True)  # Immutable audit reference; rules are disabled, never deleted.
+    rule_version=Column(Integer,nullable=True)
+
+
+class AdAssignmentRule(Base):
+    __tablename__='ad_assignment_rules'
+    id=Column(Integer,primary_key=True)
+    ad_id=Column(String(64),nullable=False,unique=True,index=True)
+    label=Column(String(120),nullable=False,default='')
+    staff_user_id=Column(Integer,ForeignKey('users.id',ondelete='RESTRICT'),nullable=False)
+    enabled=Column(Boolean,nullable=False,default=True)
+    version=Column(Integer,nullable=False,default=1)
+    created_by_user_id=Column(Integer,ForeignKey('users.id',ondelete='RESTRICT'),nullable=False)
+    updated_by_user_id=Column(Integer,ForeignKey('users.id',ondelete='RESTRICT'),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class AdAssignmentRuleAudit(Base):
+    __tablename__='ad_assignment_rule_audits'
+    __table_args__=(UniqueConstraint('rule_id','version',name='uq_ad_assignment_rule_audit_version'),)
+    id=Column(Integer,primary_key=True)
+    rule_id=Column(Integer,ForeignKey('ad_assignment_rules.id',ondelete='RESTRICT'),nullable=False,index=True)
+    actor_id=Column(Integer,ForeignKey('users.id',ondelete='RESTRICT'),nullable=False)
+    version=Column(Integer,nullable=False)
+    changes=Column(JSON,nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
 
 
 class WhatsAppManualSend(Base):

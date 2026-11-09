@@ -32,5 +32,5 @@ def build_router(get_db,require_user,csrf):
     def history(cid:int,response:Response,db=Depends(get_db),user=Depends(require_user)):
         admin(user);access.require_owned(db,user,cid);response.headers['Cache-Control']='private, no-store'
         rows=db.query(ConversationAssignmentAudit).filter_by(conversation_id=cid).order_by(ConversationAssignmentAudit.id.desc()).limit(50).all()
-        return {'history':[{'actor_id':r.actor_id,'previous_owner_id':r.previous_owner_id,'new_owner_id':r.new_owner_id,'at':r.created_at.isoformat()+'Z'} for r in rows]}
+        return {'history':[{'actor_id':r.actor_id,'previous_owner_id':r.previous_owner_id,'new_owner_id':r.new_owner_id,'source':r.source,'ad_id':r.ad_id,'rule_id':r.rule_id,'rule_version':r.rule_version,'at':r.created_at.isoformat()+'Z'} for r in rows]}
     return router
