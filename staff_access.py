@@ -2,6 +2,7 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('ad_analytics','Ad Analytics','/crm/ad-analytics'),
     ('marketing','Consent Management','/crm/marketing-consent'),
     ('crm','CRM Dashboard','/crm'),('finance','Finance Overview','/dashboard'),
     ('whatsapp','WhatsApp Inbox','/crm/whatsapp'),('quick_messages','Quick Messages','/crm/quick-messages'),
@@ -19,6 +20,7 @@ KEYS={key for key,_,_ in SECTIONS}
 def allowed(user, section):
     if user is None or getattr(user,'is_active',True) is False:return False
     if user.role=='ADMIN':return True
+    if section=='ad_analytics':return isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     grants=getattr(user,'section_access',None)
     if grants is None and section=='quick_messages':return user.role in {'ADMIN','SALES_MANAGER'}
     return grants is None or isinstance(grants,list) and section in grants
