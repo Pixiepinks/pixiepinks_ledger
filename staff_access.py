@@ -31,6 +31,7 @@ def managed_grant(user,section):
 
 
 def section_for(path):
+    if path=='/crm/ad-flows' or path.startswith('/crm/ad-flows/'):return 'quick_messages'
     if path=='/crm/ad-assignments' or path.startswith('/crm/ad-assignments/'):return 'ad_analytics'
     if path.startswith("/crm/dashboard/"):return "crm"
     if path.startswith('/api/fulfillments/') or (path.startswith('/api/sales-orders/') and '/fulfillments' in path):return 'fulfillments'

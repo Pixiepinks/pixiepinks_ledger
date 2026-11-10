@@ -76,7 +76,8 @@ def message_job(sessions, message_id, sender):
                 return None
             current = state(db)
             if current["enabled"] and current["generation"] == record[0]:
-                return Job(sessions, record[0], message_id)
+                from ad_flow_service import blocks_ai
+                if not blocks_ai(db,message_id):return Job(sessions, record[0], message_id)
     except SQLAlchemyError:
         logger.warning("Global AI setting unavailable; queued reply denied")
     return None
@@ -93,7 +94,8 @@ def checkpoint(*, require_job=False):
         with job.sessions() as db:
             current = state(db)
             if current["enabled"] and current["generation"] == job.generation:
-                return
+                from ad_flow_service import blocks_ai
+                if not blocks_ai(db,job.message_id):return
     except SQLAlchemyError:
         logger.warning("Global AI setting unavailable; running reply denied")
     raise AutoReplyBlocked()
@@ -157,6 +159,8 @@ def send_boundary(*, require_job=False):
                 .where(GlobalAIReplyControl.id == 1).with_for_update(read=True)).one()
             if not row.enabled or row.generation != job.generation:
                 raise AutoReplyBlocked()
+            from ad_flow_service import blocks_ai
+            if blocks_ai(db,job.message_id,lock_config=True):raise AutoReplyBlocked()
             token = _send_lock.set(True)
             try:
                 entered = True
