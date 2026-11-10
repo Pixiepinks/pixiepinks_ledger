@@ -5,3 +5,5 @@ __pycache__/
 ledger.db
 
 /build_revision.json
+# Generated local notification key material (never commit).
+*push.env

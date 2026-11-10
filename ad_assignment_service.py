@@ -74,7 +74,10 @@ def assign(db,conversation,rule,actor_id,source):
     if not changed:return False
     db.add(Audit(conversation_id=conversation.id,actor_id=actor_id,previous_owner_id=None,new_owner_id=rule.staff_user_id,
                  source=source,ad_id=rule.ad_id,rule_id=rule.id,rule_version=rule.version))
-    db.flush();db.refresh(conversation);return True
+    db.flush();db.refresh(conversation)
+    import staff_notifications
+    staff_notifications.assignment(db,conversation,actor_id)
+    return True
 
 
 def inbound(db,conversation,message,metadata,verified=False):

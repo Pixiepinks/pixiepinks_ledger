@@ -460,6 +460,9 @@ def _store_conversation_message(
                 if question_stop:customer_questions.stop_for_customer(db,conversation)
                 ad_flow_owned=ad_flow_service.inbound(db,conversation,message,referral_metadata,ad_flow_new_conversation,verified=bool(settings.META_APP_SECRET))
                 if ad_flow_owned and processed_record is not None:processed_record.ai_reply_generation=None
+            if direction == 'inbound' and processed_record is not None:
+                import staff_notifications
+                staff_notifications.inbound(db, conversation, message, live=bool(settings.META_APP_SECRET))
             db.commit()
             return "stored_delivery" if delivery_owned else "stored"
     except IntegrityError as error:
@@ -1932,6 +1935,7 @@ def startup():
             db.commit()
 
     _start_customer_question_worker()
+    _start_staff_notification_worker()
 
 
 def ensure_item_sku_column():
@@ -2031,6 +2035,8 @@ def login_post(
     request.session.clear()
     user = db.query(User).filter(User.username == username).first()
     if user and user.is_active and verify_password(password, user.password_hash):
+        from staff_notification_routes import revoke_browser
+        revoke_browser(db, request)
         request.session["uid"] = user.id
         request.session['auth_version']=user.session_version or 0
         request.session["user"] = {"username": user.username}
@@ -2042,6 +2048,9 @@ def login_post(
 
 @app.get("/logout")
 def logout(request: Request):
+    from staff_notification_routes import revoke_browser
+    with SessionLocal() as db:
+        revoke_browser(db, request)
     request.session.clear()
     return RedirectResponse(LOGIN_PATH, status_code=303)
 
@@ -4655,3 +4664,29 @@ app.include_router(build_ad_assignment_router(get_db,require_user,_require_csrf,
 
 from ad_flow_routes import build_router as build_ad_flow_router
 app.include_router(build_ad_flow_router(get_db,require_user,_require_csrf,_csrf_token,templates))
+
+
+from staff_notification_routes import build_router as build_staff_notification_router
+app.include_router(build_staff_notification_router(get_db, require_user, _require_csrf, _csrf_token, templates))
+_notification_stop = None
+_notification_thread = None
+
+
+def _start_staff_notification_worker():
+    global _notification_stop, _notification_thread
+    import threading
+    import staff_notifications
+    if _notification_thread is not None and _notification_thread.is_alive():
+        return
+    _notification_stop = threading.Event()
+    _notification_thread = threading.Thread(target=staff_notifications.worker, args=(SessionLocal, _notification_stop),
+        daemon=True, name='staff-notifications')
+    _notification_thread.start()
+
+
+@app.on_event('shutdown')
+def _stop_staff_notification_worker():
+    if _notification_stop is not None:
+        _notification_stop.set()
+    if _notification_thread is not None:
+        _notification_thread.join(timeout=12)
