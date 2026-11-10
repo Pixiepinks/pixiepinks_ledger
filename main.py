@@ -383,7 +383,7 @@ def _store_conversation_message(
             question_text=(direction=='inbound' and response_kind is None and
                 (processed_record is None or processed_record.message_type=='text'))
             delivery_owned=False
-            if question_button_id is not None or question_stop or question_text or (direction=='inbound' and attachment_metadata is not None):
+            if direction=='inbound':
                 customer_questions.write_transaction(db)
                 if question_button_id is not None:customer_questions.config(db,True)
                 elif customer_questions.config(db,True,optional=True) is None:question_stop=False
@@ -414,6 +414,7 @@ def _store_conversation_message(
             phone = _normalize_whatsapp_phone(phone_number)
             conversation = db.query(WhatsAppConversation).filter_by(phone_number=phone).one_or_none()
             when = created_at or datetime.utcnow()
+            ad_flow_new_conversation = conversation is None
             if conversation is None:
                 conversation = WhatsAppConversation(phone_number=phone, mode="AI", unread_count=0)
                 db.add(conversation)
@@ -426,6 +427,14 @@ def _store_conversation_message(
                 conversation.unread_count = (conversation.unread_count or 0) + 1
             db.flush()
             if direction == 'inbound':
+                import ad_flow_service
+                if question_text and settings.META_APP_SECRET and ad_flow_service.normalized_stop(message.message_text):
+                    conversation.ad_flow_opted_out=True
+                    ad_flow_service.stop(db,conversation,'Customer')
+                if question_text and settings.META_APP_SECRET and (ad_flow_service.normalized_stop(message.message_text) or ' '.join((message.message_text or '').casefold().split())=='start ad flows'):
+                    question_text=False  # Customer control commands are never delivery-detail answers.
+                active_question=customer_questions.latest(db,conversation.id)
+                if active_question:ad_flow_service.guard_run(db,active_question,conversation)
                 if referral_metadata is not None:
                     import ad_assignment_service
                     ad_assignment_service.inbound(db,conversation,message,referral_metadata,verified=bool(settings.META_APP_SECRET))
@@ -449,6 +458,8 @@ def _store_conversation_message(
                     import customer_questions
                     customer_questions.inbound(db,conversation,message,question_button_id)
                 if question_stop:customer_questions.stop_for_customer(db,conversation)
+                ad_flow_owned=ad_flow_service.inbound(db,conversation,message,referral_metadata,ad_flow_new_conversation,verified=bool(settings.META_APP_SECRET))
+                if ad_flow_owned and processed_record is not None:processed_record.ai_reply_generation=None
             db.commit()
             return "stored_delivery" if delivery_owned else "stored"
     except IntegrityError as error:
@@ -512,6 +523,9 @@ def _conversation_for_phone(db: Session, phone: str) -> WhatsAppConversation | N
 
 def _set_conversation_mode(phone: str, mode: str, staff: str | None = None) -> None:
     with SessionLocal() as db:
+        if mode=="HUMAN":
+            import ad_flow_service
+            ad_flow_service.lock(db)
         conversation = _conversation_for_phone(db, phone)
         if conversation is None:
             conversation = WhatsAppConversation(phone_number=_normalize_whatsapp_phone(phone))
@@ -519,6 +533,7 @@ def _set_conversation_mode(phone: str, mode: str, staff: str | None = None) -> N
         conversation.mode = mode
         conversation.updated_at = datetime.utcnow()
         if mode == "HUMAN":
+            ad_flow_service.stop(db,conversation,staff or "System")
             conversation.taken_over_at = datetime.utcnow()
             conversation.taken_over_by = staff
         else:
@@ -2627,7 +2642,10 @@ def whatsapp_mark_read(conversation_id: int, db: Session = Depends(get_db),
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/takeover")
 def whatsapp_takeover(conversation_id: int, db: Session = Depends(get_db),
                       user: User = Depends(require_user)):
+    import ad_flow_service
+    ad_flow_service.lock(db)
     conversation = _get_conversation(db, conversation_id)
+    ad_flow_service.stop(db,conversation,user.username)
     conversation.mode = "HUMAN"
     conversation.taken_over_at = datetime.utcnow()
     conversation.taken_over_by = user.username
@@ -4634,3 +4652,6 @@ app.include_router(build_meta_ads_router(get_db,require_user,_require_csrf,_csrf
 
 from ad_assignment_routes import build_router as build_ad_assignment_router
 app.include_router(build_ad_assignment_router(get_db,require_user,_require_csrf,_csrf_token,templates))
+
+from ad_flow_routes import build_router as build_ad_flow_router
+app.include_router(build_ad_flow_router(get_db,require_user,_require_csrf,_csrf_token,templates))

@@ -101,6 +101,8 @@ def snapshot(run,db=None):
             'answers':run.answers,'version':run.version,'updated_at':run.updated_at.isoformat()+'Z',
             'questions':len(run.definition['steps'])}
     if db is not None:
+        import ad_flow_service
+        result['ad_automation']=ad_flow_service.inbox(db,db.get(Conversation,run.conversation_id))
         items=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.position>=0).order_by(ProductSend.position).all()
         index=items[0].step if items else run.step
         if index<len(run.definition['steps']) and run.definition['steps'][index].get('type')=='products':
@@ -147,6 +149,9 @@ def change(db,c,user,action,version):
     config(db,True)
     run=latest(db,c.id,True)
     if not run or type(version) is not int or version!=run.version:raise HTTPException(409,'Questions changed. Refresh and review.')
+    if action=='resume':
+        import ad_flow_service
+        if not ad_flow_service.guard_run(db,run,c):raise HTTPException(409,'Ad-based flow is blocked by its master switch, mapping, opt-out or staff takeover')
     if action=='stop' and run.status not in TERMINAL:run.status='STOPPED'
     elif action=='pause' and run.status in {'QUEUED','WAITING'}:
         run.status='PAUSED'
@@ -164,6 +169,8 @@ def inbound(db,c,message,button_id):
     control=config(db,True)
     run=latest(db,c.id,True)
     if not run:return
+    import ad_flow_service
+    if not ad_flow_service.guard_run(db,run,c):return
     parts=button_id.split(':')
     if len(parts)!=4 or parts[0]!='ppq' or not secrets.compare_digest(parts[1],run.token):return
     try:step=int(parts[2]);choice=int(parts[3])
@@ -240,6 +247,9 @@ def dispatch_one(sessions):
         if not control.enabled:return False
         run=db.execute(select(Run).where(Run.status=='QUEUED').order_by(Run.id).limit(1).with_for_update(skip_locked=True)).scalar_one_or_none()
         if not run:return False
+        import ad_flow_service
+        if not ad_flow_service.guard_run(db,run,db.get(Conversation,run.conversation_id)):
+            db.commit();return True
         rid=run.id
         if run.definition['steps'][run.step].get('type')=='products':
             from question_product_service import claim
@@ -253,6 +263,9 @@ def dispatch_one(sessions):
         run=db.execute(select(Run).where(Run.id==rid).with_for_update()).scalar_one()
         if run.status!='SENDING':return True
         c=db.get(Conversation,run.conversation_id)
+        import ad_flow_service
+        if not ad_flow_service.guard_run(db,run,c,claimed_unsent=True):
+            db.commit();return True
         if not control.enabled:
             db.query(ProductSend).filter_by(run_id=run.id,step=run.step,status='SENDING').update({'status':'QUEUED'},synchronize_session=False)
             run.status='PAUSED';run.version+=1;run.updated_at=datetime.utcnow()

@@ -611,6 +611,7 @@ class WhatsAppConversation(Base):
     assignment_version = Column(Integer,nullable=False,default=0,server_default='0')
     # Authoritative, restart-safe discovery state.  Message history remains useful
     # for AI context, but must never be used as the bicycle state machine.
+    ad_flow_opted_out=Column(Boolean,nullable=False,default=False,server_default=false())
     active_product_category = Column(String(50))
     workflow_state = Column(String(50), index=True)
     bicycle_gender = Column(String(10))
@@ -1201,3 +1202,6 @@ class CustomerQuestionProductSend(Base):
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
     __table_args__=(UniqueConstraint('run_id','step','position',name='uq_question_product_position'),
         CheckConstraint("status IN ('QUEUED','SENDING','SENT','SKIPPED','FAILED','UNCERTAIN')",name='ck_question_product_status'))
+
+# Additive ad-trigger metadata; saved question runs remain the execution authority.
+from ad_flow_models import AdFlowControl, AdFlowRule, AdFlowExecution, AdFlowAudit

@@ -181,7 +181,8 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         events=[]
         if run:
             events=[{'action':e.action,'actor':e.actor,'at':e.created_at.isoformat()+'Z'} for e in db.query(Event).filter_by(run_id=run.id).order_by(Event.id.desc()).limit(30)]
-        return {'enabled':cfg.enabled,'title':cfg.definition['title'],'flows':questions.library(db),'run':questions.snapshot(run,db),'history':events,
+        import ad_flow_service
+        return {'ad_automation':ad_flow_service.inbox(db,c),'enabled':cfg.enabled,'title':cfg.definition['title'],'flows':questions.library(db),'run':questions.snapshot(run,db),'history':events,
             'can_manage':conversation_access.permissions(db,user,c)['can_manage'],'can_review_payments':eligible(user) and settings.SALES_ORDERS_ENABLED and settings.SALES_PAYMENT_TRACKING_ENABLED,'csrf_token':csrf_token(request)}
 
     @router.post('/crm/whatsapp/api/conversations/{cid}/customer-questions')

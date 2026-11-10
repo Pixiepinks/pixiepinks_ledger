@@ -1,0 +1,23 @@
+{% extends 'base.html' %}{% block content %}
+<link rel="stylesheet" href="/static/ad_assignments.css?v=1">
+<section id="ad-assignments" data-csrf="{{ csrf_token }}">
+<h1>Ad-Based Flows</h1><p>Start an existing saved flow when a customer initiates a conversation from a mapped ad. No Ads sync is required.</p>
+<label class="ad-check"><input id="flow-master" type="checkbox" disabled> Enable ad-based saved flows</label><p id="flow-controls-status"></p>
+<form id="flow-rule-form"><h2 id="flow-editor-title">Create mapping</h2>
+<label>Recorded or mapped advertisement<select id="flow-ad-picker"><option value="">Enter Ad ID below</option></select></label>
+<label>Meta Ad ID<input id="flow-ad-id" pattern="[0-9]{1,40}" maxlength="40" inputmode="numeric" required></label>
+<label>Advertisement display name<input id="flow-rule-name" maxlength="120" required></label>
+<label>Saved flow<select id="flow-id" required></select></label>
+<label>Trigger policy<select id="flow-policy"><option value="FIRST">A — First message in a new CRM conversation</option><option value="REPEAT">B — Repeat enquiry after cooldown</option></select></label>
+<label>Repeat cooldown (hours)<input id="flow-cooldown" type="number" min="1" max="8760" value="24" required></label>
+<label class="ad-check"><input id="flow-assigned" type="checkbox"> Allow on assigned chats, keeping the staff owner (HUMAN takeover still blocks)</label>
+<label class="ad-check"><input id="flow-enabled" type="checkbox" checked> Enable mapping</label>
+<div class="ad-actions"><button type="submit">Save mapping</button><button id="flow-new" type="button">Create Mapping</button><a href="/crm/quick-messages/customer-questions">Open saved-flow builder</a></div>
+</form>
+<p id="flow-feedback" role="status" aria-live="polite">Loading…</p>
+<form id="flow-search"><label>Search advertisements or mappings<input id="flow-query" maxlength="100"></label><button type="submit">Search</button></form>
+<div id="flow-rules"></div><div class="ad-actions"><button id="flow-prev" type="button">Previous</button><span id="flow-count"></span><button id="flow-next" type="button">Next</button></div>
+<section id="flow-history" hidden></section>
+<dialog id="flow-action"><h2 id="flow-action-title"></h2><p id="flow-action-note"></p><label id="flow-test-label">Existing conversation ID (optional; blank simulates a new customer)<input id="flow-test-cid" type="number" min="1"></label><div class="ad-actions"><button id="flow-action-confirm" type="button">Confirm</button><button id="flow-action-close" type="button">Cancel</button></div><p id="flow-action-feedback" role="status"></p></dialog>
+</section><style>#flow-rule-form,#flow-history{background:white;border:1px solid #ddd;border-radius:12px;padding:18px;margin:18px 0;display:grid;gap:12px}#flow-rule-form{grid-template-columns:repeat(2,minmax(0,1fr))}#flow-rule-form>h2,#flow-rule-form>.ad-check,#flow-rule-form>.ad-actions{grid-column:1/-1}#flow-search{display:flex;gap:10px;align-items:end}#flow-search label{flex:1;min-width:0}@media(max-width:650px){ #flow-rule-form{grid-template-columns:minmax(0,1fr)}}#flow-action{width:min(600px,90vw);border:1px solid #ddd;border-radius:12px;padding:18px}#flow-action::backdrop{background:#17203670}.ad-rule img{width:100px;max-height:100px;object-fit:contain}</style>
+<script src="/static/ad_flows.js?v=1"></script>{% endblock %}
