@@ -111,4 +111,32 @@ Provider transports are mocked in isolated SQLite tests and Chromium is used for
 - Total: **223 passed, 2 skipped** (unique tests; focused positive-acceptance recheck also passed). Python/JavaScript syntax and whitespace checks passed.
 - These are local, isolated tests with mocked provider sends, not live Meta delivery validation. No production flags, messages or data were changed.
 
-The completed implementation is retained on a local review branch. It is not pushed, merged, deployed or enabled automatically.
+The reviewed implementation is delivered on `feature/ad-saved-flow-automation` for a pull request to `main`. Merging, deployment and activation remain separate actions.
+
+## Final review (10 November 2026)
+
+The review corrected a recovery hazard: disabling a mapping/master must not turn a persisted `SENDING` or `UNCERTAIN` outcome into a resumable pause. Such sends now remain `UNCERTAIN` with `UNREVIEWED_SEND`; a closed-window run remains closed. Only the worker holding its own known-unsent claim may safely release that claim before entering the transport. This prevents control cycling from causing duplicate delivery after a crash or ambiguous provider outcome.
+
+### Production activation checklist
+
+1. Review and merge separately; deploy the additive migration through the normal process.
+2. Verify existing conversations, saved flows, ownership, consent and Global AI configuration. Keep ad automation OFF during verification.
+3. Approve a saved-flow version and exact numeric Ad ID mapping; check FIRST/REPEAT policy, cooldown and assigned-chat handling.
+4. Use the read-only dry run with representative conversations. Check opt-out, ownership and reply-window exclusions.
+5. An authorized administrator can explicitly enable both required automation controls and the approved rule for a limited customer-initiated test. This review did not perform that activation or send live messages.
+6. Monitor execution history and accepted/failed/uncertain outcomes before extending the rollout.
+
+### Monitoring and troubleshooting
+
+Use mapping history for trigger decisions and configuration audits, and Inbox run history for step/send outcomes. Check both automation masters, the rule, pinned flow availability, exact referral Ad ID, active runs, customer cooldown, ownership, opt-out and the 24-hour window when no question starts. Meta Ads Analytics synchronization is not a prerequisite.
+
+A stopped run requires a deliberate new eligible interaction; webhook retries cannot restart it. Re-enabling a master does not resume paused runs. For `UNREVIEWED_SEND`, inspect the customer chat and transport evidence before any manual recovery; do not toggle controls to retry. A process restart does not replay a persisted send claim. Dry runs and local mocked sends do not prove live provider delivery.
+
+### Updated validation
+
+- Broad relevant regression sweep: **905 passed, 35 failed, 22 skipped** across 49 files. All **35 failures reproduce on unchanged main (`947f8b8`)**, including legacy migration expectations and referral/attachment access fixtures. The full suite is therefore not green; these are baseline failures, not introduced by this feature.
+- After the recovery correction: **40 feature/review/UI tests passed**, including restart, transaction rollback, ambiguous transport outcomes, in-flight takeover/disable, cross-ad cooldown and control-cycle recovery. Desktop and narrow mobile layouts are covered; the mapping form now uses compact responsive columns.
+- A disposable PostgreSQL 16 database passed the **two previously skipped Global AI concurrency tests**, plus **two new migration/concurrent signed-webhook tests**. The new PostgreSQL tests require `AD_FLOW_TEST_DATABASE_URL` pointing to a disposable loopback `pixiepinks_test` database and isolate their tables in temporary schemas. No production database was used.
+- Added review suites: `tests/test_ad_flows_review.py` and `tests/test_ad_flows_postgres_review.py`. Provider calls remain mocked; production settings and Global AI were unchanged.
+
+- Post-correction shared-worker regression: **136 passed, 2 skipped** across core questions, selected products, delivery details, payment follow-up/review and Global AI. The two PostgreSQL-only skips in this SQLite run passed separately against disposable PostgreSQL as recorded above.

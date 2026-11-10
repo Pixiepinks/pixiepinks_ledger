@@ -264,7 +264,7 @@ def dispatch_one(sessions):
         if run.status!='SENDING':return True
         c=db.get(Conversation,run.conversation_id)
         import ad_flow_service
-        if not ad_flow_service.guard_run(db,run,c):
+        if not ad_flow_service.guard_run(db,run,c,claimed_unsent=True):
             db.commit();return True
         if not control.enabled:
             db.query(ProductSend).filter_by(run_id=run.id,step=run.step,status='SENDING').update({'status':'QUEUED'},synchronize_session=False)

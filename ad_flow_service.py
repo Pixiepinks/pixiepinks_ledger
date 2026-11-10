@@ -21,6 +21,7 @@ REASONS={
  'ACTIVE_FLOW':'Another saved flow already owns this conversation.','COOLDOWN':'The repeat cooldown has not expired.',
  'HUMAN_TAKEOVER':'Staff took over this conversation.','STAFF_OWNED':'Assigned conversations are blocked by this mapping.',
  'OPTED_OUT':'Customer stopped automatic ad flows.','WINDOW_CLOSED':'WhatsApp reply window is closed.',
+ 'UNREVIEWED_SEND':'A previous send may have reached WhatsApp. Review it; automatic resume is blocked.',
  'OTHER_AUTOMATION':'An existing product workflow is active.','START_REJECTED':'The existing flow engine rejected the start.'}
 
 
@@ -125,7 +126,7 @@ def inbound(db,c,message,metadata,is_new=False,verified=False):
     return True
 
 
-def guard_run(db,run,c):
+def guard_run(db,run,c,*,claimed_unsent=False):
     """Question config lock must already be held. Called before sends/advancement/resume."""
     entry=db.query(Execution).filter_by(run_id=run.id).one_or_none()
     if entry is None:return True
@@ -135,12 +136,19 @@ def guard_run(db,run,c):
             'STAFF_OWNED' if c.assigned_to_user_id is not None and not rule.allow_assigned else None)
     if reason and run.status not in questions.TERMINAL:
         desired='STOPPED' if reason=='OPTED_OUT' else 'PAUSED'
-        if run.status==desired and entry.reason==reason:return False
-        entry.reason=reason
-        # Config lock fences HTTP; SENDING here is a claim not yet sent.
-        if run.status=='SENDING':db.query(Product).filter_by(run_id=run.id,status='SENDING').update({'status':'QUEUED'},synchronize_session=False)
-        run.status='STOPPED' if reason=='OPTED_OUT' else 'PAUSED';run.version+=1;run.updated_at=datetime.utcnow()
-        questions.audit(db,run,'AD_GUARD','System',reason=reason)
+        recorded_reason=reason
+        # A persisted claim can survive HTTP acceptance followed by process/DB failure.
+        # Only the worker that just claimed this send knows it has not entered HTTP.
+        if reason!='OPTED_OUT':
+            if run.status=='UNCERTAIN' or (run.status=='SENDING' and not claimed_unsent):
+                desired='UNCERTAIN';recorded_reason='UNREVIEWED_SEND'
+            elif run.status=='WINDOW_CLOSED':desired='WINDOW_CLOSED'
+        if run.status==desired and entry.reason==recorded_reason:return False
+        entry.reason=recorded_reason
+        if run.status=='SENDING' and claimed_unsent:
+            db.query(Product).filter_by(run_id=run.id,status='SENDING').update({'status':'QUEUED'},synchronize_session=False)
+        run.status=desired;run.version+=1;run.updated_at=datetime.utcnow()
+        questions.audit(db,run,'AD_GUARD','System',reason=recorded_reason)
     if reason is None and entry.reason in {'MASTER_OFF','DISABLED','HUMAN_TAKEOVER','STAFF_OWNED'}:entry.reason=None
     return reason is None
 
