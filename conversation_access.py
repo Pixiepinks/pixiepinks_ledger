@@ -85,4 +85,7 @@ def assign(db,actor,cid,owner_id,expected_version):
         'assignment_version':expected_version+1},synchronize_session=False)
     if not changed:db.rollback();raise HTTPException(409,'Assignment changed. Refresh before assigning again')
     db.add(ConversationAssignmentAudit(conversation_id=cid,actor_id=actor.id,previous_owner_id=previous,new_owner_id=owner_id))
+    db.flush();db.refresh(row)
+    import staff_notifications
+    staff_notifications.assignment(db,row,actor.id)
     db.commit();db.refresh(row);return row

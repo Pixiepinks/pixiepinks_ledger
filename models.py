@@ -1205,3 +1205,6 @@ class CustomerQuestionProductSend(Base):
 
 # Additive ad-trigger metadata; saved question runs remain the execution authority.
 from ad_flow_models import AdFlowControl, AdFlowRule, AdFlowExecution, AdFlowAudit
+
+from staff_notification_models import (StaffNotificationPreference, StaffNotificationControl,
+    StaffPushDevice, StaffNotification, StaffPushDelivery, StaffNotificationInbound)

@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block content %}
+<section id="staff-notification-settings" class="card notification-settings" data-manager="{{ 'true' if notification_manager else 'false' }}">
+  <h2>Staff notifications</h2>
+  <p id="notification-diagnostics" role="status">Checking this device…</p>
+  <div class="notification-actions"><button type="button" id="push-enable" class="btn-primary">Enable this device</button>
+    <button type="button" id="push-disable">Disable this device</button><button type="button" id="push-test">Test notification</button>
+    <button type="button" id="push-install" hidden>Install CRM</button></div>
+  <p>Android Chrome: open this site over HTTPS → Chrome menu ⋮ → <strong>Install app</strong> or <strong>Add to Home screen</strong>. Open the installed CRM, sign in, then tap Enable this device and Allow.</p>
+  <form id="notification-preferences"><h3>My preferences</h3>
+    <label><input type="checkbox" name="messages"> New WhatsApp messages</label>
+    <label><input type="checkbox" name="assignments"> Conversation assignments</label>
+    <label><input type="checkbox" name="reminders"> Reminders and escalation</label>
+    <label><input type="checkbox" name="sound"> Sound and supported Android vibration</label>
+    <button type="submit">Save preferences</button><button type="button" id="sound-enable">Enable sound in this open CRM</button>
+  </form>
+  <p>Android controls lock-screen sound and vibration. Silent mode, Do Not Disturb, Chrome restrictions, notification categories and battery optimization can suppress alerts. Custom lock-screen sounds are not provided. Keep Chrome background activity allowed.</p>
+  <h3>Registered devices</h3><div id="notification-devices"></div>
+  {% if notification_manager %}
+  <form id="notification-controls"><h3>Inbox team and escalation</h3>
+    <p>Choose recipients who already have access to the conversation. These settings do not grant Inbox access. Unassigned chats normally require an administrator or an existing conversation share.</p>
+    <label>Shared Inbox recipients<select name="shared_users" multiple aria-label="Shared Inbox recipients"></select></label>
+    <label>Escalation managers<select name="escalation_users" multiple aria-label="Escalation managers"></select></label>
+    <label><input type="checkbox" name="reminders_enabled"> Enable reminder delivery (off by default)</label>
+    <label>Reminder after minutes<input type="number" name="reminder_minutes" min="1" max="1440" value="5" required></label>
+    <label><input type="checkbox" name="escalations_enabled"> Enable escalation delivery (off by default)</label>
+    <label>Escalation after minutes<input type="number" name="escalation_minutes" min="2" max="1440" value="15" required></label>
+    <button type="submit">Save team settings</button>
+  </form>
+  {% endif %}
+  <h3>Recent notifications</h3><p>Up to 100 recent alerts that you can currently access.</p><div id="notification-history"></div>
+</section>
+{% endblock %}
