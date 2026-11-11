@@ -12,6 +12,7 @@ from models import CustomerQuestionProductSend as Item, CustomerQuestionRun as R
 from models import WhatsAppConversationMessage as Message, WhatsAppMessageAttachment as Attachment
 from settings import settings
 import outbound_media_service as media
+from question_flow_actions import checkout_config
 
 image_slots = threading.BoundedSemaphore(2)
 VOICE_POSITION = -200
@@ -79,7 +80,7 @@ def validate(value):
 def verify(db, definition):
     from question_greasing_service import recording
     for step in definition['steps']:
-        payment = step.get('service', {}).get('payment')
+        payment = checkout_config(step).get('payment')
         if payment:
             voice = recording(db, payment)
             payment['voice_title'] = voice.title
@@ -91,7 +92,7 @@ def selected(run):
         return None
     step = run.definition['steps'][run.step]
     answer = run.answers.get(step['key'])
-    return answer if step.get('service', {}).get('payment') and isinstance(answer, dict) and answer.get('delivery_details', {}).get('status') == 'CONFIRMED' else None
+    return answer if checkout_config(step).get('payment') and isinstance(answer, dict) and answer.get('delivery_details', {}).get('status') == 'CONFIRMED' else None
 
 
 def pending(run):
@@ -143,7 +144,7 @@ def send_claimed(db, run, conversation, item):
     if item.position==-202:
         from question_payment_review import send_confirmation
         send_confirmation(db,run,conversation,item);return
-    config = run.definition['steps'][run.step]['service']['payment']
+    config = checkout_config(run.definition['steps'][run.step])['payment']
     if item.position == VOICE_POSITION:
         # Verify both configured assets before beginning this follow-up.
         try:
@@ -230,4 +231,4 @@ def image_for_message(db, conversation_id, provider):
     if item is None:
         raise HTTPException(404, 'Bank image is unavailable')
     run = db.get(Run, item.run_id)
-    return read_image(run.definition['steps'][item.step]['service']['payment']['image_ref'])
+    return read_image(checkout_config(run.definition['steps'][item.step])['payment']['image_ref'])
