@@ -102,3 +102,53 @@ def test_background_subscription_renewal_requires_current_opted_in_device():
             assert result[0]['headers']['X-CSRF-Token'] == 'csrf-test'
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize('width', [320, 390, 1280])
+def test_populated_inbox_alert_dropdown_has_full_height_nonoverlapping_rows(inbox, width):
+    api = pytest.importorskip('playwright.sync_api'); chromium = shutil.which('chromium')
+    if not chromium: pytest.skip('Chromium unavailable')
+    from models import User, WhatsAppConversation, WhatsAppConversationMessage
+    import staff_notifications as service
+    client, sessions, ids, _, _, _ = inbox
+    with sessions() as db:
+        user = db.query(User).filter_by(username='quick-admin').one()
+        c = db.get(WhatsAppConversation, ids[0]); c.assigned_to_user_id = user.id
+        c.customer_name = 'Prakash · Customer with a longer name'
+        message = WhatsAppConversationMessage(phone_number=c.phone_number, direction='inbound',
+            message_text='Please send bicycle prices and delivery details for my child. Thank you for your help with this order.')
+        db.add(message); db.flush()
+        for n in range(3): service.enqueue(db, c, [user.id], 'MESSAGE', f'layout:{n}', message.id)
+        db.commit()
+    with api.sync_playwright() as runtime:
+        browser = runtime.chromium.launch(executable_path=chromium, headless=True, args=['--no-sandbox'])
+        try:
+            page = browser.new_page(viewport={'width': width, 'height': 800}); errors = []
+            page.on('pageerror', lambda error: errors.append(str(error)))
+            def serve(route):
+                request = route.request; url = urlsplit(request.url)
+                if url.hostname != 'staff-dropdown.test': route.fulfill(status=200, body=''); return
+                response = client.request(request.method, url.path + ('?' + url.query if url.query else ''),
+                    content=request.post_data_buffer, headers={k: v for k, v in request.headers.items() if k in {'content-type', 'x-csrf-token'}})
+                route.fulfill(status=response.status_code, body=response.content,
+                    headers={k: v for k, v in response.headers.items() if k in {'content-type', 'cache-control'}})
+            page.route('**/*', serve)
+            page.goto('https://staff-dropdown.test/crm/whatsapp'); page.wait_for_load_state('networkidle')
+            page.locator('#staff-alert-bell').click()
+            api.expect(page.locator('#staff-alert-list .staff-alert-item')).to_have_count(3)
+            layout = page.evaluate('''() => {
+              const panel=document.getElementById('staff-alert-panel').getBoundingClientRect();
+              return {left:panel.left,right:panel.right,rows:[...document.querySelectorAll('#staff-alert-list .staff-alert-item')].map(row=>{
+                const r=row.getBoundingClientRect();return {top:r.top,bottom:r.bottom,height:r.height,
+                  childBottom:Math.max(...[...row.children].map(c=>c.getBoundingClientRect().bottom))};})};
+            }''')
+            assert layout['left'] >= 8 and layout['right'] <= width - 8
+            for index, row in enumerate(layout['rows']):
+                assert row['height'] >= 70, layout
+                assert row['childBottom'] <= row['bottom'] + 1, layout
+                if index: assert row['top'] >= layout['rows'][index - 1]['bottom'], layout
+            page.screenshot(path=f'/tmp/staff-alert-dropdown-{width}.png')
+            page.locator('#staff-alert-list button').first.click()
+            api.expect(page.locator('#staff-alert-count')).to_have_text('2')
+            assert not errors, errors
+        finally: browser.close()
