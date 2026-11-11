@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="manifest" href="/crm/manifest.webmanifest">
   <meta name="theme-color" content="#bf1766">
-  <link rel="stylesheet" href="/static/staff_notifications.css?v=1">
+  <link rel="stylesheet" href="/static/staff_notifications.css?v=dropdown-2">
   <title>{{ page_title or request.app.title }}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -51,7 +51,7 @@
     <div class="sidebar-user"><span class="avatar">{{ (request.session.get('user', {}).get('username', 'S'))[:1]|upper }}</span><span><strong>{{ request.session.get('user', {}).get('username', 'Staff') }}</strong><small>Staff account</small></span><a href="/logout" title="Log out">↪</a></div>
   </aside>
   <div class="app-shell">
-    <header class="topbar"><div>{% if request.url.path != "/crm/whatsapp" %}<small>PixiePinks Workspace</small>{% endif %}<h1>{{ "WhatsApp" if request.url.path == "/crm/whatsapp" else page_title or "Business Operations" }}</h1></div>{% if global_ai is defined and request.url.path.startswith('/crm/whatsapp') %}{% with compact=true %}{% include '_global_ai_status.html' %}{% endwith %}{% else %}<div class="topbar-status"><span class="status-dot"></span> System online</div>{% endif %}{% if can_access_section(nav_user,"whatsapp") %}<div class="staff-alerts" id="staff-alerts"><button type="button" id="staff-alert-bell" aria-label="Staff notifications" aria-expanded="false">🔔 <span class="staff-alerts-count" id="staff-alert-count" hidden>0</span></button><div class="staff-alert-panel" id="staff-alert-panel" hidden><a href="/crm/notifications">Notification settings</a><button type="button" id="staff-alert-sound">Enable sound in this tab</button><p>Recent alerts (up to 100)</p><div id="staff-alert-list"></div></div></div>{% endif %}</header>
+    <header class="topbar"><div>{% if request.url.path != "/crm/whatsapp" %}<small>PixiePinks Workspace</small>{% endif %}<h1>{{ "WhatsApp" if request.url.path == "/crm/whatsapp" else page_title or "Business Operations" }}</h1></div>{% if global_ai is defined and request.url.path.startswith('/crm/whatsapp') %}{% with compact=true %}{% include '_global_ai_status.html' %}{% endwith %}{% else %}<div class="topbar-status"><span class="status-dot"></span> System online</div>{% endif %}{% if can_access_section(nav_user,"whatsapp") %}<div class="staff-alerts" id="staff-alerts"><button type="button" id="staff-alert-bell" aria-label="Staff notifications" aria-expanded="false">🔔 <span class="staff-alerts-count" id="staff-alert-count" hidden>0</span></button><div class="staff-alert-panel" id="staff-alert-panel" hidden><div class="staff-alert-tools"><a href="/crm/notifications">Notification settings</a><button type="button" id="staff-alert-sound">Enable sound in this tab</button></div><p>Recent alerts (up to 100)</p><div id="staff-alert-list"></div></div></div>{% endif %}</header>
     <main class="main-content">
 {% else %}
   <main>
@@ -68,6 +68,6 @@ function toggleNav(){const open=sidebar.classList.toggle('open');scrim.classList
 menu?.addEventListener('click',toggleNav);scrim?.addEventListener('click',toggleNav);
 </script>
 {% if request.url.path == '/login' %}<script>navigator.serviceWorker?.getRegistration('/crm/').then(r=>r?.active?.postMessage({type:'STAFF_LOGOUT'}));</script>{% endif %}
-{% if request.url.path != '/login' %}<script src="/static/staff_notifications.js?v=1" defer></script>{% endif %}
+{% if request.url.path != '/login' %}<script src="/static/staff_notifications.js?v=dropdown-2" defer></script>{% endif %}
 </body>
 </html>

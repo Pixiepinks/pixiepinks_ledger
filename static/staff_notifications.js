@@ -26,11 +26,13 @@
     target.replaceChildren();
     if (!notices.length) { target.textContent = 'No recent notifications.'; return; }
     notices.forEach(item => {
-      const row = document.createElement('div'); row.className = 'staff-alert-item' + (item.read ? '' : ' unread');
+      const row = document.createElement('div'); row.className = 'staff-alert-item' + (item.read ? '' : ' staff-alert-unread');
       const link = document.createElement('a');
       // The server constructs these destinations; also enforce a local allowlist.
       link.href = /^\/crm\/whatsapp\?conversation=\d+$/.test(item.url) ? item.url : '/crm/notifications';
-      link.textContent = `${item.title} · ${item.body}`;
+      const title = document.createElement('strong'); title.textContent = item.title.replace(/^PixiePinks CRM — /, '');
+      const preview = document.createElement('span'); preview.textContent = item.body;
+      link.append(title, preview);
       link.addEventListener('click', event => { event.preventDefault(); api(`/${item.id}/read`, {}).catch(() => {}).finally(() => location.assign(link.href)); });
       const time = document.createElement('small'); time.textContent = new Date(item.created_at).toLocaleString('en-LK', {timeZone: 'Asia/Colombo'}) + ' · ' + (item.read ? 'Read' : 'Unread');
       const read = document.createElement('button'); read.type = 'button'; read.textContent = 'Mark read'; read.hidden = item.read;
