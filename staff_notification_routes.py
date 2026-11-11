@@ -53,8 +53,9 @@ def build_router(get_db, require_user, csrf, csrf_token, templates):
     def manifest():
         return Response(json.dumps({'id': '/crm/whatsapp', 'name': 'PixiePinks CRM', 'short_name': 'PixiePinks',
             'start_url': '/crm/whatsapp', 'scope': '/crm/', 'display': 'standalone', 'background_color': '#f6f7fb',
-            'theme_color': '#bf1766', 'icons': [{'src': '/static/pwa-icon-192.png', 'sizes': '192x192', 'type': 'image/png', 'purpose': 'any'},
-                {'src': '/static/pwa-icon-512.png', 'sizes': '512x512', 'type': 'image/png', 'purpose': 'any maskable'}]}),
+            'theme_color': '#bf1766', 'icons': [{'src': '/static/pwa-icon-192.png?v=pixiepinks-logo-1', 'sizes': '192x192', 'type': 'image/png', 'purpose': 'any'},
+                {'src': '/static/pwa-icon-512.png?v=pixiepinks-logo-1', 'sizes': '512x512', 'type': 'image/png', 'purpose': 'any'},
+                {'src': '/static/pwa-icon-maskable-512.png?v=pixiepinks-logo-1', 'sizes': '512x512', 'type': 'image/png', 'purpose': 'maskable'}]}),
             media_type='application/manifest+json', headers={'Cache-Control': 'public, max-age=3600'})
 
     @router.get('/crm/notifications')

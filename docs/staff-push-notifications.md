@@ -91,3 +91,9 @@ For rollback, set `STAFF_PUSH_ENABLED=false`, disable both reminder controls, an
 - The three skipped PostgreSQL checks were subsequently run against disposable PostgreSQL 16 and passed. Together with the two new notification database checks, the PostgreSQL run was **5 passed**. The existing Saved Voices migration assertion now follows Alembic's current head rather than the obsolete hard-coded revision, retaining its audio and concurrent-send checks.
 - Final notification tests: **37 backend tests passed**, including real pywebpush encryption/VAPID construction with HTTP mocked; **5 Chromium checks passed**, including desktop/390px/320px rendering, safe tap/read navigation, persistent display deduplication and authenticated subscription renewal. These overlap the broad run and must not be summed as unique tests.
 - Final registration API recheck, Python/JavaScript syntax and whitespace checks passed. No real push endpoint, customer WhatsApp transport, production database or environment variable was used/changed. Real Android background/lock-screen behavior remains the deployment acceptance checklist above.
+
+### PixiePinks app logo
+
+The installed app uses the supplied `static/pixiepinks-logo.svg`, rendered into 192px and 512px PNG icons. A separate opaque-white, maskable 512px icon includes padding so the fairy and lettering remain within Android's safe circle. The original artwork and app identity (`/crm/whatsapp`) are preserved. `python scripts/build_pwa_icons.py` rebuilds these assets with development-only Inkscape; Railway does not need Inkscape. Icon URLs are versioned to avoid reusing the old “P” images.
+
+After deploying the icon update, open the installed CRM while online. Android/Chrome may update the launcher icon later. If it remains unchanged, reinstall the PWA from the same CRM URL and check that this device's notifications are still enabled. No VAPID key or Railway variable changes are required for this branding update.

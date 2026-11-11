@@ -31,7 +31,7 @@ self.addEventListener('push', event => {
     const windows = await self.clients.matchAll({type: 'window', includeUncontrolled: true});
     windows.forEach(client => client.postMessage({type: 'STAFF_NOTIFICATION', id}));
     await self.registration.showNotification(item.title, {body: item.body, tag: `staff-alert-${id}`,
-      icon: '/static/pwa-icon-192.png', badge: '/static/pwa-icon-192.png',
+      icon: '/static/pwa-icon-192.png?v=pixiepinks-logo-1', badge: '/static/pwa-icon-192.png',
       silent: !item.sound || windows.some(c => c.focused), ...(item.sound && !windows.some(c => c.focused) ? {vibrate: [180, 80, 180]} : {}),
       data: {id}, renotify: false});
   })());
