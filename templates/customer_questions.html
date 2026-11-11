@@ -1,7 +1,7 @@
 {% extends 'base.html' %}{% block content %}
 <section class="card" id="question-builder" data-csrf="{{ csrf_token }}">
 <h2>Customer Question Automation</h2>
-<p>Ask predefined questions, one at a time. Choose Buttons (up to 3 options) or List (up to 10 options), or Send selected products (up to 20 cards) for each step. Global AI remains separate. Answers are preferences, not marketing consent.</p>
+<p>Ask predefined questions, one at a time. Choose Buttons (up to 3 options) or List (up to 10 options), Send selected products (up to 20 cards), Saved Voice, Product details, Typed question or Checkout for each step. Global AI remains separate. Answers are preferences, not marketing consent.</p>
 <p>Staff start a sequence from an open customer chat. Questions run on the server while your browser is closed. WhatsApp’s 24-hour reply window applies.</p>
 <section class="question-library" aria-label="Flow library"><h3>Flow library</h3>
 <label>Saved flow<select id="question-flow-select"></select></label>
@@ -13,12 +13,12 @@
 <fieldset id="question-edit-fields"><legend>Edit selected flow</legend>
 <label>Sequence title<input id="questions-title" maxlength="100" required></label>
 <div id="question-steps"></div>
-<button type="button" id="question-add" class="btn btn-secondary">Add question</button>
-<p>The first question starts the flow. For each answer, choose the next question or Finish. Every question must be reachable, with no loops. Existing customer sequences keep their original flow.</p><h3>Flow preview</h3><div id="question-flow-preview" aria-live="polite"></div>
+<button type="button" id="question-add" class="btn btn-secondary">Add step</button>
+<p>The first step starts the flow. Add products, saved voices, product details or checkout, and use Move up / Move down to arrange them. For each answer, choose the next question or Finish. Every question must be reachable, with no loops. Existing customer sequences keep their original flow.</p><h3>Flow preview</h3><div id="question-flow-preview" aria-live="polite"></div>
 <button class="btn btn-primary" type="submit">Save settings</button>
 </fieldset><a class="btn btn-secondary" href="/crm/quick-messages">Back to Quick Messages</a>
 </form><p id="question-feedback" role="status" aria-live="polite"></p>
 </section>
 <link rel="stylesheet" href="/static/customer_questions.css?v=verification-10">
-<script src="/static/question_payment_picker.js?v=payment-1"></script><script src="/static/question_greasing_picker.js?v=city-4"></script><script src="/static/question_product_picker.js?v=greasing-4"></script><script src="/static/customer_question_builder.js?v=payment-10"></script>
+<script src="/static/question_payment_picker.js?v=payment-1"></script><script src="/static/question_greasing_picker.js?v=city-4"></script><script src="/static/question_product_picker.js?v=reusable-5"></script><script src="/static/question_flow_actions.js?v=1"></script><script src="/static/customer_question_builder.js?v=reusable-11"></script>
 {% endblock %}

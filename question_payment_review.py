@@ -10,6 +10,7 @@ from sqlalchemy import select
 from models import CustomerQuestionRun as Run, CustomerQuestionProductSend as Item
 from models import SalesOrder, SalesPayment, WhatsAppConversationMessage as Message, WhatsAppMessageAttachment as Attachment
 import customer_questions as questions
+from question_flow_actions import quote
 import conversation_access
 import staff_access
 from sales_order_service import create_draft, transition_order, SalesOrderValidationError
@@ -53,7 +54,7 @@ def normalize(value):
 
 
 def matching(order,conversation,answer):
-    details=answer['delivery_details'];service=answer['greasing_service']
+    details=answer['delivery_details'];service=quote(answer)
     return (order.crm_conversation_id==conversation.id and re.sub(r'\D','',order.whatsapp_phone)==conversation.phone_number and
         order.currency=='LKR' and order.order_status not in {'CANCELLED','RETURNED'} and
         Decimal(order.grand_total)==Decimal(service['quoted_total']) and Decimal(order.service_total or 0)==Decimal(service['charge']) and
@@ -97,7 +98,7 @@ def prepare(db,conversation,run,key,answer,user):
     payload={'crm_conversation_id':conversation.id,'customer_name':d['name'],'whatsapp_phone':conversation.phone_number,
         'alternative_phone':d['phone1'],'delivery_contact_person':d['name'],'delivery_address':d['address'],'city':d.get('city') or '',
         'customer_notes':f"Delivery phone 1: {d['phone1']}\nDelivery phone 2: {d.get('phone2') or 'Not provided'}\nQuestion run: {run.id}",
-        'service_total':answer['greasing_service']['charge'],'shipping_total':'0','tax_total':'0',
+        'service_total':quote(answer)['charge'],'shipping_total':'0','tax_total':'0',
         'lines':[{'shopify_product_id':product['id'],'shopify_variant_id':product['variant_id'],'sku':product.get('sku'),
             'product_name':product['title'],'variant_name':product.get('variant_title'),'quantity':'1','unit_price':str(product['price']),
             'product_image_url':product.get('image'),'product_url':product.get('url')}]}
@@ -164,7 +165,7 @@ def snapshot(db,conversation,run,answer,user):
         'payment_status':order.payment_status,'order_status':order.order_status,'url':f'/crm/sales-orders/{order.id}'}
     permissions=staff_access.sales_permissions(user,main.SALES_ORDER_PERMISSIONS)
     return {'run_id':run.id,'version':run.version,'payment':state,'order':public(bound) if bound else None,
-        'orders':[public(row) for row in rows if matching(row,conversation,answer)],'quoted_total':answer['greasing_service']['quoted_total'],
+        'orders':[public(row) for row in rows if matching(row,conversation,answer)],'quoted_total':quote(answer)['quoted_total'],
         'can_prepare':{'create','transition'}<=permissions,'can_verify':{'record_payment_claim','verify_payment','transition'}<=permissions,
         'automation_enabled':questions.config(db).enabled,'today':datetime.now(ZoneInfo('Asia/Colombo')).date().isoformat()}
 

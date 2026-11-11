@@ -177,7 +177,7 @@ def test_tick_any_range_products_reorder_save_and_reload(questions,monkeypatch):
         browser=p.chromium.launch(executable_path=chromium,args=['--no-sandbox']);page=browser.new_page(viewport={'width':1366,'height':1000});errors=[]
         page.on('pageerror',lambda e:errors.append(str(e)));page.route('**/*',serve)
         page.goto('https://question.test/crm/quick-messages/customer-questions');page.locator('#question-steps > fieldset').nth(1).wait_for()
-        page.get_by_role('button',name='Add question',exact=True).click();step=page.locator('#question-steps > fieldset').nth(2)
+        page.get_by_role('button',name='Add step',exact=True).click();step=page.locator('#question-steps > fieldset').nth(2)
         step.locator('[data-field=key]').fill('recommendations');step.locator('[data-field=type]').select_option('products')
         step.get_by_role('button',name='Search catalogue',exact=True).click()
         step.get_by_role('checkbox',name='Bicycles example',exact=True).check()

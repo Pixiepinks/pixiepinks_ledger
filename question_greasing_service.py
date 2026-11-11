@@ -41,6 +41,8 @@ def recording(db,config,lock=False):
 
 def verify_recordings(db,definition):
     for step in definition['steps']:
+        if step.get('type')=='voice':
+            voice=recording(db,step);step['voice_title']=voice.title
         if step.get('service'):
             voice=recording(db,step['service']);step['service']['voice_title']=voice.title
     from question_payment_followup import verify
@@ -143,7 +145,7 @@ def receive(db,run,incoming,choice):
 
 def playback(db,conversation_id,provider):
     from models import CustomerQuestionRun as Run
-    item=db.query(Item).join(Run,Run.id==Item.run_id).filter(Run.conversation_id==conversation_id,Item.position.in_([-2,-200]),Item.provider_id==provider,Item.status=='SENT').one_or_none()
+    item=db.query(Item).join(Run,Run.id==Item.run_id).filter(Run.conversation_id==conversation_id,Item.position.in_([-2,-200,-300]),Item.provider_id==provider,Item.status=='SENT').one_or_none()
     if item is None or not item.audio_snapshot:raise HTTPException(404,'Service voice snapshot is unavailable')
     snap=item.audio_snapshot;raw=library._read_file(snap['storage_name'])
     if len(raw)!=snap['size_bytes'] or hashlib.sha256(raw).hexdigest()!=snap['sha256']:raise HTTPException(409,'Sent audio snapshot failed integrity validation')

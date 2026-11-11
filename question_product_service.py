@@ -96,7 +96,18 @@ def send_claimed(db,run,conversation):
     run.updated_at=datetime.utcnow();run.version+=1
     if item.status in {'SENT','SKIPPED'}:
         if item.position+1==len(run.definition['steps'][run.step]['products']) and not step.get('choose'):
-            run.step=len(run.definition['steps']);run.status='COMPLETE';audit(db,run,'COMPLETE','System',note='Selected products processed. Staff can continue; review any skipped cards.')
+            if step.get('continue_flow'):
+                if item.status=='SKIPPED':
+                    run.status='UNCERTAIN';audit(db,run,'CHECKOUT_BLOCKED','System',reason='The product was unavailable and was not sent.');return
+                if len(step['products'])==1 and item.status=='SENT':
+                    from question_flow_actions import selected_card
+                    try:run.answers={**run.answers,step['key']:selected_card(db,run,step,item)}
+                    except HTTPException:
+                        run.status='UNCERTAIN';audit(db,run,'CHECKOUT_BLOCKED','System',reason='Sent card has no valid LKR quote.');return
+                from question_flow_actions import advance
+                advance(run)
+            else:
+                run.step=len(run.definition['steps']);run.status='COMPLETE';audit(db,run,'COMPLETE','System',note='Selected products processed. Staff can continue; review any skipped cards.')
         else:run.status='QUEUED'
     else:run.status='UNCERTAIN'  # Fail closed: never automatically replay any card.
 
@@ -133,7 +144,7 @@ def receive_choice(db,run,incoming,position,phone):
     if sent.shopify_product_reference!=product['product_id'] or sent.shopify_variant_reference!=product['variant_id']:return
     selected={'product_id':product['product_id'],'variant_id':product['variant_id'],'number':position+1,
               'title':sent.product_title,'variant_title':sent.variant_title}
-    if step.get('service'):
+    if step.get('service') or step.get('continue_flow'):
         from decimal import Decimal
         if sent.product_price is None or not Decimal(sent.product_price).is_finite() or sent.product_price<0 or sent.product_currency!='LKR':
             run.answers={**run.answers,step['key']:selected};run.status='UNCERTAIN';run.version+=1
@@ -143,6 +154,9 @@ def receive_choice(db,run,incoming,position,phone):
     if step.get('service'):
         import secrets
         run.status='QUEUED';run.provider_id=None;run.token=secrets.token_urlsafe(24)
+    elif step.get('continue_flow'):
+        from question_flow_actions import advance
+        advance(run)
     else:run.step=len(run.definition['steps']);run.status='COMPLETE'
     run.updated_at=datetime.utcnow();run.version+=1
     audit(db,run,'PRODUCT_SELECTED','Customer',**selected,inbound_id=incoming.id)

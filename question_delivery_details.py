@@ -9,6 +9,7 @@ import re
 import secrets
 from models import CustomerQuestionProductSend as Item, WhatsAppConversationMessage as Message
 from whatsapp_service import send_whatsapp_text
+from question_flow_actions import checkout_config, quote
 
 LEGACY_FIELDS = ('name', 'address', 'phone1', 'phone2')
 FIELDS = ('name', 'address', 'city', 'phone1', 'phone2')
@@ -33,7 +34,7 @@ def selected(run):
         return None
     step = run.definition['steps'][run.step]
     answer = run.answers.get(step['key'])
-    return answer if step.get('service', {}).get('collect_delivery') and isinstance(answer, dict) and answer.get('greasing_service') else None
+    return answer if isinstance(answer,dict) and ((step.get('type')=='checkout' and answer.get('order_quote')) or (step.get('service',{}).get('collect_delivery') and answer.get('greasing_service'))) else None
 
 
 def pending(run):
@@ -72,7 +73,7 @@ def claim(db, run):
 
 def summary(answer):
     details = answer['delivery_details']
-    service = answer['greasing_service']
+    service = quote(answer)
     title=answer['title'];variant=answer.get('variant_title','')
     title=title if len(title)<=80 else title[:79]+'…'
     variant=variant if len(variant)<=40 else variant[:39]+'…'
@@ -81,8 +82,8 @@ def summary(answer):
         'ඔබගේ ඇණවුමේ විස්තර පරීක්ෂා කරන්න 💖\n'
         f"භාණ්ඩය: {title} · {variant}\n"
         'ප්‍රමාණය: 1\n'
-        f"බයිසිකලයේ මිල: Rs. {Decimal(answer['price']):,.2f}\n"
-        f"ග්‍රීස් සේවාව: {'ඔව්' if service['accepted'] else 'නැහැ'} · Rs. {Decimal(service['charge']):,.2f}\n"
+        f"භාණ්ඩයේ මිල: Rs. {Decimal(answer['price']):,.2f}\n" +
+        (f"ග්‍රීස් සේවාව: {'ඔව්' if service['accepted'] else 'නැහැ'} · Rs. {Decimal(service['charge']):,.2f}\n" if 'greasing_service' in answer else '') +
         'Delivery: FREE\n'
         f"මුළු මුදල: Rs. {Decimal(service['quoted_total']):,.2f}\n\n"
         f"නම: {details['name']}\nලිපිනය: {details['address']}\n"
@@ -96,7 +97,7 @@ def send_claimed(db, run, conversation, item):
     answer = selected(run)
     details = answer['delivery_details']
     stage = details['stage']
-    body = summary(answer) if stage == 'review' else ((ERRORS[stage] + '\n\n') if details.get('invalid') else '') + PROMPTS[stage]
+    body = summary(answer) if stage == 'review' else ((ERRORS[stage] + '\n\n') if details.get('invalid') else '') + (run.definition['steps'][run.step].get('address_prompt',PROMPTS[stage]) if stage=='address' else PROMPTS[stage])
     labels = ['Confirm order', 'Edit details'] if stage == 'review' else ['Skip'] if stage in {'city','phone2'} else []
     options = [{'id': f'ppq:{run.token}:{run.step}:{i}', 'title': label} for i, label in enumerate(labels)]
     try:
@@ -157,7 +158,7 @@ def advance(db, run, incoming, value=None, choice=None):
         if choice == 0:
             details.update(status='CONFIRMED', confirmed_at=datetime.utcnow().isoformat() + 'Z', confirmation_message_id=incoming.id)
             save(run, details)
-            if run.definition['steps'][run.step]['service'].get('payment'):
+            if checkout_config(run.definition['steps'][run.step]).get('payment'):
                 from question_payment_followup import begin as begin_payment
                 begin_payment(run)
             else:
@@ -202,6 +203,9 @@ def receive_text(db, conversation, incoming, *, verified=True):
     if control is None:
         return False
     run = latest(db, conversation.id, True)
+    if run and run.status not in {'STOPPED','COMPLETE'}:
+        from question_flow_actions import receive_text as receive_typed
+        if receive_typed(db,run,incoming,verified,control.enabled):return True
     if not run or run.status in {'STOPPED', 'COMPLETE'} or not pending(run):
         return False
     if not verified or not control.enabled or run.status != 'WAITING' or not sent_prompt(db, run, incoming):

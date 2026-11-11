@@ -29,10 +29,16 @@ def validate(value):
         key=step.get('key')
         if not isinstance(key,str) or not re.fullmatch('[a-z][a-z0-9_]{0,29}',key) or key in keys:raise HTTPException(422,'Question keys must be unique lowercase names')
         keys.add(key)
+        if 'type' in step and not isinstance(step['type'],str):raise HTTPException(422,'Choose a supported flow step type')
+        from question_flow_actions import TYPES, validate as validate_action
+        if step.get('type') in TYPES:
+            validate_action(step);continue
         if step.get('type')=='products':
             from question_product_service import validate_selection
-            if not {'key','type','products'}<=set(step) or set(step)-{'key','type','products','choose','choice_body','choice_button','service'}:raise HTTPException(422,'Product steps need a key and selected products only; they finish for staff')
+            if not {'key','type','products'}<=set(step) or set(step)-{'key','type','products','choose','choice_body','choice_button','service','continue_flow'}:raise HTTPException(422,'Product steps need a key and selected products only; they finish for staff')
             validate_selection(step['products'])
+            if type(step.get('continue_flow',False)) is not bool:raise HTTPException(422,'Choose whether to continue after products')
+            if step.get('continue_flow') and step.get('service'):raise HTTPException(422,'Use a separate checkout step for reusable product flows')
             if type(step.get('choose',False)) is not bool:raise HTTPException(422,'Choose whether to ask for a product selection')
             if step.get('choose'):
                 if len(step['products'])>10:raise HTTPException(422,'A product selection list supports at most 10 selected products')
@@ -58,7 +64,14 @@ def validate(value):
         if len(set(options))!=len(options):raise HTTPException(422,'Button labels must be different')
     graph={}
     for index,step in enumerate(steps):
-        if step.get('type')=='products':graph[step['key']]=[];continue
+        kind=step.get('type')
+        if kind in TYPES or kind=='products':
+            if kind=='checkout':
+                source=next((item for item in steps[:index] if item['key']==step['product_key']),None)
+                if index!=len(steps)-1 or not source or source.get('type')!='products' or not source.get('continue_flow') or (not source.get('choose') and len(source['products'])!=1):
+                    raise HTTPException(422,'Checkout must be last and use an earlier continuing product step with one product or customer choice')
+            graph[step['key']]=[steps[index+1]['key']] if index+1<len(steps) and (kind in TYPES or step.get('continue_flow')) else []
+            continue
         targets=step.get('next',[steps[index+1]['key'] if index+1<len(steps) else None]*len(step['options']))
         if not isinstance(targets,list) or len(targets)!=len(step['options']):raise HTTPException(422,'Choose one next step for every answer')
         if any(target is not None and (not isinstance(target,str) or target not in keys) for target in targets):raise HTTPException(422,'A next step refers to a missing question. Review the answer routes.')
@@ -103,8 +116,12 @@ def snapshot(run,db=None):
     if db is not None:
         import ad_flow_service
         result['ad_automation']=ad_flow_service.inbox(db,db.get(Conversation,run.conversation_id))
+        result['actions']=[{'step':row.step+1,'status':row.status,'reason':row.reason} for row in db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.position==-300).order_by(ProductSend.step).all()]
+        checkout_stages=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.step==run.step,ProductSend.position.in_([-200,-201,-202])).order_by(ProductSend.position.desc()).all()
+        if checkout_stages:result['payment_progress']=[{'stage':{-200:'Voice',-201:'Bank image',-202:'Confirmation'}[row.position],'status':row.status,'reason':row.reason} for row in checkout_stages]
         items=db.query(ProductSend).filter(ProductSend.run_id==run.id,ProductSend.position>=0).order_by(ProductSend.position).all()
-        index=items[0].step if items else run.step
+        index=run.step if run.step<len(run.definition['steps']) and run.definition['steps'][run.step].get('type')=='products' else max((item.step for item in items),default=run.step)
+        items=[item for item in items if item.step==index]
         if index<len(run.definition['steps']) and run.definition['steps'][index].get('type')=='products':
             result['products']={'total':len(run.definition['steps'][index]['products']),
                 'sent':sum(item.status=='SENT' for item in items),'skipped':sum(item.status=='SKIPPED' for item in items),
@@ -132,7 +149,7 @@ def start(db,c,user,flow_id=1,flow_version=None):
     if flow is None or flow.archived:raise HTTPException(409,'This flow is unavailable or archived. Choose another flow.')
     if flow_version is not None and (type(flow_version) is not int or flow_version!=flow.version):raise HTTPException(409,'The flow changed since preview. Refresh and review before starting.')
     from question_greasing_service import verify_recordings
-    if any(step.get('service') for step in flow.definition['steps']):
+    if any(step.get('service') or step.get('type')=='voice' or step.get('payment') for step in flow.definition['steps']):
         from staff_access import allowed
         from quick_message_service import authorize
         authorize(user)
@@ -178,8 +195,9 @@ def inbound(db,c,message,button_id):
     if not control.enabled or run.status!='WAITING' or step!=run.step:return
     if message.reply_to_whatsapp_message_id!=run.provider_id:return
     question=run.definition['steps'][step]
+    if question.get('type')=='text':return
     earliest=run.updated_at
-    if question.get('type')=='products':
+    if question.get('type') in {'products','checkout'}:
         from question_payment_followup import pending as payment_pending
         if payment_pending(run):return
         from question_delivery_details import pending as delivery_pending,receive_button
@@ -189,7 +207,7 @@ def inbound(db,c,message,button_id):
         invitation=db.query(ProductSend).filter_by(run_id=run.id,step=step,position=-3 if service_pending(run) else -1,status='SENT').one_or_none()
         if invitation is not None:earliest=invitation.created_at
     if message.created_at < earliest.replace(microsecond=0) or message.created_at>datetime.utcnow()+timedelta(minutes=5):return
-    if question.get('type')=='products':
+    if question.get('type') in {'products','checkout'}:
         from question_greasing_service import pending as service_pending,receive as receive_service
         if service_pending(run):receive_service(db,run,message,choice);return
         from question_product_service import receive_choice
@@ -251,8 +269,11 @@ def dispatch_one(sessions):
         if not ad_flow_service.guard_run(db,run,db.get(Conversation,run.conversation_id)):
             db.commit();return True
         rid=run.id
-        if run.definition['steps'][run.step].get('type')=='products':
-            from question_product_service import claim
+        if run.definition['steps'][run.step].get('type') in {'products','voice','details','checkout','text'}:
+            if run.definition['steps'][run.step].get('type')=='products':
+                from question_product_service import claim
+            else:
+                from question_flow_actions import claim
             if not claim(db,run):db.commit();return True
         claimed=db.execute(update(Run).where(Run.id==rid,Run.status=='QUEUED').values(status='SENDING',updated_at=datetime.utcnow(),version=Run.version+1)).rowcount
         if not claimed:db.rollback();return False
@@ -276,8 +297,11 @@ def dispatch_one(sessions):
             window_closed(db,run)
             run.status='WINDOW_CLOSED';run.version+=1;audit(db,run,'WINDOW_CLOSED','System');db.commit();return True
         step=run.definition['steps'][run.step]
-        if step.get('type')=='products':
-            from question_product_service import send_claimed
+        if step.get('type') in {'products','voice','details','checkout','text'}:
+            if step.get('type')=='products':
+                from question_product_service import send_claimed
+            else:
+                from question_flow_actions import send_claimed
             send_claimed(db,run,c);db.commit();return True
         buttons=[{'id':f'ppq:{run.token}:{run.step}:{i}','title':label} for i,label in enumerate(step['options'])]
         provider=(send_buttons(c.phone_number,step['body'],buttons,list_button=step.get('list_button','Choose option'))
