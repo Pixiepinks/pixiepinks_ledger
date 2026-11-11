@@ -417,7 +417,7 @@ def test_validator_preserves_only_native_runtime_environment(monkeypatch):
 
 def test_missing_validator_runtime_is_not_reported_as_corrupt(inbox,monkeypatch,caplog):
     client,sessions,_,post,uploads,sends=inbox
-    assert 'whatsapp_outbound_media.js?v=whatsapp-outbound-optimize-2' in client.get('/crm/whatsapp').text
+    assert 'whatsapp_outbound_media.js?v=whatsapp-record-video-3' in client.get('/crm/whatsapp').text
     original=service.subprocess.run
     monkeypatch.setattr(service.subprocess,'run',Mock(side_effect=service.subprocess.CalledProcessError(
         70,['private-runtime-path'],stderr=b'private-diagnostic-token')))
