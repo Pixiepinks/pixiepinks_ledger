@@ -27,9 +27,9 @@
     if (data.status === "SENT") {
       remember(null); operation = null; file = null;
       if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; media.replaceChildren();
-      message("Attachment sent. Delivery updates appear in the conversation."); check.hidden = true; remove.textContent = "Close";
+      message(`Attachment sent.${data.optimization && data.optimization.sent_bytes < data.optimization.original_bytes ? ` Optimized from ${(data.optimization.original_bytes / 1048576).toFixed(1)} MB to ${(data.optimization.sent_bytes / 1048576).toFixed(1)} MB.` : ""} Delivery updates appear in the conversation.`); check.hidden = true; remove.textContent = "Close";
     } else if (["UPLOAD_FAILED", "SEND_FAILED"].includes(data.status)) {
-      message(data.status === "UPLOAD_FAILED" ? "Upload failed. No customer message was sent. Remove and select the file to start a new attempt." : "Meta rejected this attachment message. Remove and review the file or reply window before trying again.");
+      message(data.status === "UPLOAD_FAILED" ? `Upload failed${data.upload_failure?.meta_code ? ` (Meta code ${data.upload_failure.meta_code})` : ""}. No customer message was sent. Remove and select the file to start a new attempt.` : "Meta rejected this attachment message. Remove and review the file or reply window before trying again.");
       remember(null); check.hidden = true; remove.textContent = "Close";
     } else {
       message("Send outcome is not confirmed. Check the conversation and send status before starting another attempt. This attachment will not be sent again automatically.");
@@ -59,7 +59,11 @@
       document.getElementById("attachment-filename").textContent = "Previous attachment send";
       document.getElementById("attachment-info").textContent = "File contents are not retained in your browser.";
       active(false); await checkStatus();
-    } catch (_) { attach.disabled = true; }
+    } catch (_) {
+      attach.disabled = true;
+      attach.title = "Attachment settings unavailable. Reload and sign in again; check your Inbox access.";
+      document.getElementById("send-error").textContent = "Attachment settings could not load. Reload and sign in again. Your administrator should check Inbox access if this continues.";
+    }
   }
   attach.disabled = true;
   attach.onclick = () => { menu.hidden = !menu.hidden; attach.setAttribute("aria-expanded", String(!menu.hidden)); };
@@ -74,10 +78,10 @@
     if (operation && !confirm("Check the conversation before starting another send. Continue with a new attachment?")) { picker.value = ""; return; }
     const info = policy?.formats[`.${chosen.name.split(".").pop().toLowerCase()}`];
     clear(); preview.hidden = false;
-    if (!info || !chosen.size || chosen.size > info.max_bytes) { message("Unsupported file or configured size limit exceeded."); return; }
+    if (!info || !chosen.size || chosen.size > (info.max_upload_bytes || info.max_bytes)) { message("Unsupported format or source file too large. Choose a supported photo/video within the upload limit."); return; }
     file = chosen; remove.textContent = "Remove"; caption.value = "";
     document.getElementById("attachment-filename").textContent = file.name;
-    document.getElementById("attachment-info").textContent = `${info.mime} · ${(file.size / 1048576).toFixed(2)} MB`;
+    document.getElementById("attachment-info").textContent = `${info.mime} · ${(file.size / 1048576).toFixed(2)} MB${["image", "video"].includes(info.type) ? " · Automatically converted/compressed if needed before sending." : ""}`;
     if (["image", "video"].includes(info.type)) {
       objectUrl = URL.createObjectURL(file);
       const element = document.createElement(info.type === "image" ? "img" : "video");
@@ -97,9 +101,9 @@
     const target = current(), key = crypto.randomUUID(), form = new FormData();
     form.append("file", file, file.name); form.append("caption", caption.value);
     operation = {key}; remember(operation); active(true); progress.hidden = false; progress.value = 0; message("Uploading attachment…");
-    const xhr = new XMLHttpRequest(); xhr.open("POST", `/crm/whatsapp/api/conversations/${target}/send-media`); xhr.timeout = 150000;
+    const xhr = new XMLHttpRequest(); xhr.open("POST", `/crm/whatsapp/api/conversations/${target}/send-media`); xhr.timeout = 420000;
     xhr.setRequestHeader("X-CSRF-Token", policy.csrf_token); xhr.setRequestHeader("Idempotency-Key", key);
-    xhr.upload.onprogress = event => { if (event.lengthComputable) { progress.value = event.loaded / event.total * 100; message(progress.value >= 100 ? "Validating and sending attachment…" : `Uploading ${Math.round(progress.value)}%…`); } };
+    xhr.upload.onprogress = event => { if (event.lengthComputable) { progress.value = event.loaded / event.total * 100; message(progress.value >= 100 ? "Optimizing, validating and sending attachment… Please wait." : `Uploading ${Math.round(progress.value)}%…`); } };
     xhr.onload = () => {
       let data; try { data = JSON.parse(xhr.responseText); } catch (_) { data = {}; }
       if (xhr.status >= 200 && xhr.status < 300 || data.status === "OUTCOME_UNCERTAIN") renderOutcome(data);

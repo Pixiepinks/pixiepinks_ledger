@@ -118,6 +118,7 @@ def test_invalid_content_never_reaches_meta(inbox,name,raw):
 def test_size_caption_filename_and_processing_limits(inbox,monkeypatch):
     _,_,_,post,uploads,_ = inbox
     monkeypatch.setattr(service.settings,'WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES',1024)
+    monkeypatch.setattr(service.settings,'WHATSAPP_OUTBOUND_MEDIA_SOURCE_MAX_BYTES',1024)
     assert post(raw=png()+bytes(1024)).status_code == 413
     assert post(caption='x'*1025).status_code == 422
     assert post('../folder/photo.png').status_code == 200
@@ -214,7 +215,9 @@ def test_multipart_limit_and_busy(inbox,monkeypatch):
     client,_,ids,_,uploads,_=inbox
     policy=client.get('/crm/whatsapp/api/media-policy').json()
     headers={'X-CSRF-Token':policy['csrf_token'],'Idempotency-Key':'oversized-safe-key-1234','content-type':'multipart/form-data; boundary=test'}
-    response=client.post(f'/crm/whatsapp/api/conversations/{ids[0]}/send-media',headers=headers,content=b'x'*(8*1024*1024+65537))
+    for field in ('WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES','WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES','WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES','WHATSAPP_OUTBOUND_MEDIA_SOURCE_MAX_BYTES'):
+        monkeypatch.setattr(service.settings,field,1024)
+    response=client.post(f'/crm/whatsapp/api/conversations/{ids[0]}/send-media',headers=headers,content=b'x'*(1024+65537))
     assert response.status_code==413 and not uploads
     monkeypatch.setattr(main,'_outbound_media_slots',Mock(acquire=Mock(return_value=False)))
     assert client.post(f'/crm/whatsapp/api/conversations/{ids[0]}/send-media',headers=headers,content=b'').status_code==429
@@ -414,7 +417,7 @@ def test_validator_preserves_only_native_runtime_environment(monkeypatch):
 
 def test_missing_validator_runtime_is_not_reported_as_corrupt(inbox,monkeypatch,caplog):
     client,sessions,_,post,uploads,sends=inbox
-    assert 'whatsapp_outbound_media.js?v=whatsapp-outbound-runtime-fix' in client.get('/crm/whatsapp').text
+    assert 'whatsapp_outbound_media.js?v=whatsapp-outbound-optimize-2' in client.get('/crm/whatsapp').text
     original=service.subprocess.run
     monkeypatch.setattr(service.subprocess,'run',Mock(side_effect=service.subprocess.CalledProcessError(
         70,['private-runtime-path'],stderr=b'private-diagnostic-token')))

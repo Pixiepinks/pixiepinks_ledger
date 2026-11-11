@@ -163,10 +163,11 @@ def validate(raw, extension):
 
 if __name__ == '__main__':
     try:
-        resource.setrlimit(resource.RLIMIT_CPU, (5, 5))
+        extension = sys.stdin.buffer.readline(16).decode('ascii').strip()
+        cpu = 45 if extension == '.mp4' else 5
+        resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
         resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
         resource.setrlimit(resource.RLIMIT_FSIZE, (0, 0))
-        extension = sys.stdin.buffer.readline(16).decode('ascii').strip()
         raw = sys.stdin.buffer.read(16_000_001)
         if len(raw) > 16_000_000:
             raise ValueError()

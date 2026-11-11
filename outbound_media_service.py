@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import subprocess
+import signal
 import sys
 import time
 import zlib
@@ -25,7 +26,8 @@ from settings import settings
 FORMATS = {
     '.jpg': ('image', 'image/jpeg'), '.jpeg': ('image', 'image/jpeg'),
     '.png': ('image', 'image/png'), '.pdf': ('document', 'application/pdf'),
-    '.mp4': ('video', 'video/mp4'),
+    '.mp4': ('video', 'video/mp4'), '.mov': ('video', 'video/quicktime'),
+    '.m4v': ('video', 'video/mp4'), '.webp': ('image', 'image/webp'),
     '.doc': ('document', 'application/msword'),
     '.docx': ('document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
     '.xls': ('document', 'application/vnd.ms-excel'),
@@ -67,13 +69,14 @@ def _validator_environment():
 
 
 def authorize(user):
-    if (user.role or 'STAFF') not in STAFF_ROLES:
+    from staff_access import allowed
+    if not user.is_active or (user.role or 'STAFF') not in STAFF_ROLES or not allowed(user, 'whatsapp'):
         raise HTTPException(403, 'You are not authorized to send attachments')
 
 
 def policy():
-    return {'formats': {extension: {'type': kind, 'mime': mime, 'max_bytes': size_limit(kind)}
-                        for extension, (kind, mime) in FORMATS.items()}, 'caption_max_length': 1024}
+    return {'formats': {extension: {'type': kind, 'mime': mime, 'max_bytes': size_limit(kind), 'max_upload_bytes': upload_limit(kind)}
+                        for extension, (kind, mime) in FORMATS.items()}, 'caption_max_length': 1024, 'automatic_optimization': True}
 
 
 def size_limit(kind):
@@ -82,6 +85,51 @@ def size_limit(kind):
     if kind == 'video':
         return min(settings.WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES, 16_000_000)
     return min(settings.WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES, 16_000_000)
+
+
+def upload_limit(kind):
+    return max(size_limit(kind), settings.WHATSAPP_OUTBOUND_MEDIA_SOURCE_MAX_BYTES) if kind in {'image','video'} else size_limit(kind)
+
+
+def prepare_file(raw, filename, caption):
+    """Preserve already-compatible files; normalize only files needing conversion/compression."""
+    filename = safe_filename(filename)
+    extension = Path(filename).suffix.lower()
+    if extension not in FORMATS: raise HTTPException(422, 'Unsupported attachment format')
+    kind, _ = FORMATS[extension]
+    if not raw or len(raw) > upload_limit(kind): raise HTTPException(413, 'File exceeds the upload limit. Choose a smaller source file.')
+    if not isinstance(caption, str) or len(caption) > 1024 or '\x00' in caption:
+        raise HTTPException(422, 'Caption must contain at most 1024 characters')
+    if kind == 'document': return raw, validate_file(raw, filename, caption)
+    try:
+        if len(raw) <= size_limit(kind) and extension not in {'.mov','.m4v','.webp'}:
+            return raw, validate_file(raw, filename, caption)
+    except HTTPException as error:
+        if error.status_code != 422: raise
+    try:
+        from voice_diagnostic_tools import verified_binary
+        binary = verified_binary()
+    except (ImportError, ValueError, OSError):
+        logger.warning('Attachment optimization unavailable: verified encoder missing')
+        raise ValidationUnavailable() from None
+    process = None
+    try:
+        process = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name('outbound_media_optimization.py')),
+            extension, str(size_limit(kind)), binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=_validator_environment(), start_new_session=True)
+        converted, _ = process.communicate(raw, timeout=115)
+        if process.returncode == 70: raise ValidationUnavailable()
+        if process.returncode or not 0 < len(converted) <= size_limit(kind): raise ValueError()
+    except ValidationUnavailable: raise
+    except (OSError, subprocess.SubprocessError, ValueError):
+        raise HTTPException(422, 'Cannot optimize this media. Use a valid photo or video up to 120 seconds (maximum 4K input), or choose a smaller file.') from None
+    finally:
+        if process is not None and process.poll() is None:
+            try: os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError: pass
+            process.communicate()
+    output_name = Path(filename).stem + ('.jpg' if kind == 'image' else '.mp4')
+    return converted, validate_file(converted, output_name, caption)
 
 
 def safe_filename(filename):
@@ -105,7 +153,7 @@ def validate_file(raw, filename, caption):
     try:
         result = subprocess.run([sys.executable, '-I', str(Path(__file__).with_name('outbound_media_validation.py'))],
             input=extension.encode('ascii') + b'\n' + raw, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, timeout=10, check=True, env=_validator_environment())
+            stderr=subprocess.DEVNULL, timeout=60 if kind == 'video' else 10, check=True, env=_validator_environment())
         metadata = json.loads(result.stdout)
         if not isinstance(metadata, dict) or set(metadata) - {"duration_seconds"}:
             raise ValueError()
@@ -224,6 +272,8 @@ def perform_send(db, conversation, user, key, raw, data):
         if existing.fingerprint != fingerprint:
             raise HTTPException(409, 'Idempotency key cannot be reused for different attachment contents')
         return public_attempt(existing)
+    db.refresh(conversation)
+    db.refresh(user); authorize(user)
     if not conversation.last_customer_message_at or datetime.utcnow() - conversation.last_customer_message_at >= timedelta(hours=24):
         raise HTTPException(409, 'The WhatsApp 24-hour reply window has closed. Ask the customer to message again.')
     attempt = WhatsAppMediaSend(idempotency_key=key, conversation_id=conversation.id,
@@ -253,6 +303,16 @@ def perform_send(db, conversation, user, key, raw, data):
         if diagnostic:
             result['upload_failure'] = diagnostic
         return result
+    # Uploading media is not a customer send. Recheck current access/window before
+    # the irreversible message request, including after a slow upload/conversion.
+    try:
+        db.refresh(user); authorize(user)
+        from conversation_access import require_owned
+        conversation = require_owned(db, user, conversation.id)
+        if not conversation.last_customer_message_at or datetime.utcnow() - conversation.last_customer_message_at >= timedelta(hours=24):
+            raise HTTPException(409, 'The WhatsApp reply window closed before sending. Ask the customer to message again.')
+    except HTTPException:
+        attempt.status = 'SEND_FAILED'; db.commit(); raise
     attempt.media_id = media_id
     attempt.status = 'SENDING'
     db.commit()  # Must succeed before a customer message can be sent.
