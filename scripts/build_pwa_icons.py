@@ -23,9 +23,9 @@ def main():
     outer = ET.Element(f'{{{SVG}}}svg', {'width': '1024', 'height': '1024', 'viewBox': '0 0 1024 1024'})
     ET.SubElement(outer, f'{{{SVG}}}rect', {'width': '1024', 'height': '1024', 'fill': '#fff'})
     logo = ET.parse(original).getroot()
-    # This supplied artwork fits inside the central safe circle at 70% scale
+    # This supplied artwork fits inside the central safe circle at 92% scale
     # (verified against the rendered non-white pixels; retain its original layout).
-    logo.set('x', '154'); logo.set('y', '154'); logo.set('width', '716'); logo.set('height', '716')
+    logo.set('x', '41'); logo.set('y', '41'); logo.set('width', '942'); logo.set('height', '942')
     outer.append(logo)
     with tempfile.TemporaryDirectory(prefix='pixiepinks-icons-') as folder:
         padded = Path(folder) / 'maskable.svg'
