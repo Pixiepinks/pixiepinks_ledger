@@ -1208,3 +1208,5 @@ from ad_flow_models import AdFlowControl, AdFlowRule, AdFlowExecution, AdFlowAud
 
 from staff_notification_models import (StaffNotificationPreference, StaffNotificationControl,
     StaffPushDevice, StaffNotification, StaffPushDelivery, StaffNotificationInbound)
+
+from collection_send_queue import CollectionSendJob

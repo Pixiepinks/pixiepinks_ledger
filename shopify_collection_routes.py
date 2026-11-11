@@ -2,6 +2,7 @@
 import asyncio
 import json
 import re
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
@@ -11,6 +12,8 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from starlette.concurrency import run_in_threadpool
 
 import shopify_collection_service as service
+import collection_send_queue as queue
+from collection_send_queue import CollectionSendJob as Job
 from models import WhatsAppConversation, WhatsAppManualSend
 from quick_message_service import STAFF_ROLES, require_reply_window
 from settings import settings
@@ -111,7 +114,8 @@ def state(db, batch, data):
         items.append({"product_id": expected["id"], "title": expected["title"],
             "variant_title": expected["variant_title"], "status": row.status,
             "reason": detail.get("reason", "")})
-    return {"batch_id": batch.id, "conversation_id": batch.conversation_id, "status": batch.status,
+    job = db.get(Job, batch.id)
+    return {"background": {"status": job.status, "reason": job.reason} if job else None, "batch_id": batch.id, "conversation_id": batch.conversation_id, "status": batch.status,
             "collection": data["collection"], "items": items,
             "counts": {status: sum(item["status"] == status for item in items)
                        for status in ["QUEUED", "VERIFYING", "PROCESSING", "SENT", "FAILED", "SKIPPED", "UNKNOWN"]}}
@@ -193,11 +197,11 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
                 raise HTTPException(409, "Request key belongs to another selection")
             return state(db, batch, data)
         active = db.query(WhatsAppManualSend).filter(
-            WhatsAppManualSend.conversation_id == cid, WhatsAppManualSend.sent_by == user.username,
+            WhatsAppManualSend.conversation_id == cid,
             WhatsAppManualSend.idempotency_key.like("scb\\_%", escape="\\"),
-            WhatsAppManualSend.status.in_(["READY", "PROCESSING", "UPDATING", "BLOCKED"])).first()
-        if active:
-            raise HTTPException(409, "An unfinished collection batch exists. Reopen the collection picker and check or resume it.")
+            WhatsAppManualSend.status.in_(["READY", "PROCESSING", "UPDATING", "BLOCKED"])).all()
+        if any(db.get(Job, old.id) is None for old in active):
+            raise HTTPException(409, "An unfinished collection batch exists. Reopen the collection picker and queue or review it first.")
         allowed = {(product["id"], variant["variant_id"]): variant for product in current["products"] for variant in product["variants"]}
         selected = []
         for item in body["items"]:
@@ -212,6 +216,9 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
         for product in selected:
             db.add(WhatsAppManualSend(idempotency_key=item_key(batch, product["id"]), conversation_id=cid,
                 sent_by=user.username, status="QUEUED", message_text=encode({"reason": ""})))
+        if body.get('background') is True:
+            db.flush()
+            db.add(Job(batch_id=batch.id, conversation_id=cid, actor_id=user.id, status='QUEUED'))
         try:
             db.commit()
         except IntegrityError:
@@ -229,7 +236,8 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
     async def prepare(cid: int, request: Request, db=Depends(get_db), user=Depends(require_user)):
         authorize(user); require_csrf(request)
         key = request_key(request); body = await read_json(request)
-        if (set(body) != {"collection_id", "preview_token", "items"}
+        if (set(body) not in ({"collection_id", "preview_token", "items"}, {"collection_id", "preview_token", "items", "background"})
+                or ("background" in body and body["background"] is not True)
                 or not service.valid_id(body["collection_id"], "Collection")
                 or not isinstance(body["preview_token"], str) or not 0 < len(body["preview_token"]) <= 4096
                 or not isinstance(body["items"], list) or not 1 <= len(body["items"]) <= service.MAX_PRODUCTS
@@ -257,7 +265,15 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
         batch, data = get_batch(db, cid, batch_id, user)
         return state(db, batch, data)
 
-    def send_one(cid, batch_id, product_id, db, user):
+    def send_one(cid, batch_id, product_id, db, user, *, background_token=None):
+        job = db.get(Job, batch_id)
+        if job:
+            if not background_token or job.claim_token != background_token:
+                raise HTTPException(409, "This batch sends in the background. Use Pause/Resume controls.")
+            db.refresh(job)
+            if job.status != 'RUNNING' or queue.earlier(db, job):
+                return state(db, *get_batch(db, cid, batch_id, user))
+            user = queue.allowed(db, job)
         batch, data = get_batch(db, cid, batch_id, user)
         expected = next((item for item in data["items"] if item["id"] == product_id), None)
         if expected is None:
@@ -306,6 +322,16 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
             if len(caption(product)) > 1024:
                 row.status, row.message_text = "SKIPPED", encode({"reason": "Product caption exceeds WhatsApp's image-caption limit."})
                 return finish(db, batch, data)
+            if job:
+                db.refresh(job)
+                if job.status == 'PAUSING':
+                    row.status = 'QUEUED'; queue.pause(db, job, 'Paused by staff')
+                    return finish(db, batch, data)
+                try:
+                    user = queue.allowed(db, job)
+                except HTTPException:
+                    row.status = 'QUEUED'; job.status = 'CANCELED'; job.reason = 'Sending staff access was removed. Remaining products will not be sent.'
+                    return finish(db, batch, data)
             row.status = "PROCESSING"
             db.commit()
             try:
@@ -326,6 +352,55 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
         finally:
             service.SLOTS.release()
 
+    queue.SEND_ONE = send_one
+
+    @router.get('/collection-batches/active')
+    def active_jobs(request: Request, db=Depends(get_db), user=Depends(require_user)):
+        from conversation_access import scope
+        authorize(user)
+        visible = scope(db.query(WhatsAppConversation.id), user).subquery()
+        jobs = db.query(Job).filter(Job.actor_id == user.id, Job.conversation_id.in_(visible.select()),
+            Job.status.notin_(['COMPLETE','CANCELED'])).order_by(Job.batch_id).limit(50).all()
+        items = []
+        for job in jobs:
+            batch, data = get_batch(db, job.conversation_id, job.batch_id, user)
+            c = get_conversation(db, job.conversation_id)
+            items.append({**state(db, batch, data), 'customer': c.customer_name or 'Customer'})
+        return {'jobs': items, 'csrf_token': csrf_token(request)}
+
+    @router.post('/conversations/{cid}/collection-batches/{batch_id}/start')
+    def start_background(cid: int, batch_id: int, request: Request, db=Depends(get_db), user=Depends(require_user)):
+        authorize(user); require_csrf(request)
+        batch, data = get_batch(db, cid, batch_id, user)
+        c = get_conversation(db, cid); db.refresh(c, with_for_update=True)
+        from conversation_access import require_owned
+        from staff_access import allowed as section
+        if not user.is_active or not section(user, 'whatsapp'): raise HTTPException(403, 'Inbox access required')
+        require_owned(db, user, cid); require_reply_window(db, c)
+        job = db.get(Job, batch_id)
+        if job and job.status in {'QUEUED','RUNNING','PAUSING'}:
+            return state(db, batch, data)
+        statuses = {row.status for row in children(db, batch, data).values()}
+        if statuses & {'UNKNOWN','PROCESSING','VERIFYING'} or (job and job.status in {'BLOCKED','CANCELED'}):
+            raise HTTPException(409, 'Unconfirmed or interrupted delivery requires review, not a resend')
+        if 'QUEUED' not in statuses: raise HTTPException(409, 'No queued products remain')
+        if job is None:
+            job = Job(batch_id=batch_id, conversation_id=cid, actor_id=user.id); db.add(job)
+        job.status = 'QUEUED'; job.reason = None; job.next_at = datetime.utcnow()
+        db.commit()
+        return state(db, batch, data)
+
+    @router.post('/conversations/{cid}/collection-batches/{batch_id}/pause')
+    def pause_background(cid: int, batch_id: int, request: Request, db=Depends(get_db), user=Depends(require_user)):
+        authorize(user); require_csrf(request)
+        batch, data = get_batch(db, cid, batch_id, user)
+        job = db.query(Job).filter_by(batch_id=batch_id).with_for_update().one_or_none()
+        if not job: raise HTTPException(404, 'Background job not found')
+        if job.status not in {'COMPLETE','BLOCKED','CANCELED'}:
+            job.status = 'PAUSING' if job.lease_until is not None else 'PAUSED'
+            job.reason = 'Paused by staff'; db.commit()
+        return state(db, batch, data)
+
     @router.post("/conversations/{cid}/collection-batches/{batch_id}/send-item")
     async def item_send(cid: int, batch_id: int, request: Request, db=Depends(get_db), user=Depends(require_user)):
         authorize(user); require_csrf(request)
@@ -338,6 +413,8 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
     def retry_failed(cid: int, batch_id: int, request: Request, db=Depends(get_db), user=Depends(require_user)):
         authorize(user); require_csrf(request)
         batch, data = get_batch(db, cid, batch_id, user)
+        if db.query(Job.batch_id).filter(Job.conversation_id == cid, Job.batch_id > batch_id, Job.status.notin_(['COMPLETE','CANCELED'])).first():
+            raise HTTPException(409, 'Finish later queued collections before retrying this earlier batch')
         retry_key = "scr_" + service.fingerprint(request_key(request))
         scope = encode({"kind": "retry_failed_collection", "batch": batch.id, "actor": user.id})
         prior = db.query(WhatsAppManualSend).filter_by(idempotency_key=retry_key).one_or_none()
@@ -355,6 +432,8 @@ def build_router(get_db, require_user, require_csrf, csrf_token, resolve_product
             db.add(WhatsAppManualSend(idempotency_key=retry_key, conversation_id=cid, sent_by=user.username,
                 status="SENT", message_text=scope))
             db.refresh(batch)
+            job = db.get(Job, batch_id)
+            if job: queue.pause(db, job, 'Failed items reset. Resume explicitly to send.')
             return finish(db, batch, data)
         except IntegrityError:
             db.rollback()

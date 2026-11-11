@@ -1936,6 +1936,7 @@ def startup():
 
     _start_customer_question_worker()
     _start_staff_notification_worker()
+    _start_collection_queue_worker()
 
 
 def ensure_item_sku_column():
@@ -4690,3 +4691,25 @@ def _stop_staff_notification_worker():
         _notification_stop.set()
     if _notification_thread is not None:
         _notification_thread.join(timeout=12)
+
+
+_collection_queue_stop = None
+_collection_queue_thread = None
+
+
+def _start_collection_queue_worker():
+    global _collection_queue_stop, _collection_queue_thread
+    import threading
+    import collection_send_queue
+    if _collection_queue_thread is not None and _collection_queue_thread.is_alive():
+        return
+    _collection_queue_stop = threading.Event()
+    _collection_queue_thread = threading.Thread(target=collection_send_queue.worker,
+        args=(SessionLocal, _collection_queue_stop), daemon=True, name='collection-sends')
+    _collection_queue_thread.start()
+
+
+@app.on_event('shutdown')
+def _stop_collection_queue_worker():
+    if _collection_queue_stop is not None: _collection_queue_stop.set()
+    if _collection_queue_thread is not None: _collection_queue_thread.join(timeout=12)

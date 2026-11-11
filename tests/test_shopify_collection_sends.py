@@ -362,10 +362,14 @@ def test_shared_image_transport_reports_safe_retry_classification(monkeypatch, s
     assert whatsapp_service.send_whatsapp_image("94770000001", "https://cdn.shopify.com/a.png", "Product") is False
 
 
-def test_chromium_mobile_preview_stop_resume_and_edit_selection_without_auto_send(inbox, catalog):
+def test_chromium_mobile_background_queue_pause_resume_and_retry(inbox, catalog):
     playwright = pytest.importorskip("playwright.sync_api"); chromium = shutil.which("chromium")
     if not chromium: pytest.skip("Chromium unavailable")
-    client, _, ids, _, _, _ = inbox
+    client, sessions, ids, _, _, _ = inbox
+    import collection_send_queue as queue
+    def tick():
+        with sessions() as db: db.query(queue.CollectionSendJob).update({"next_at": datetime.utcnow() - timedelta(seconds=1)}); db.commit()
+        assert queue.dispatch_one(sessions)
     with playwright.sync_playwright() as api:
         browser = api.chromium.launch(executable_path=chromium, headless=True, args=["--no-sandbox"])
         try:
@@ -390,10 +394,18 @@ def test_chromium_mobile_preview_stop_resume_and_edit_selection_without_auto_sen
             assert page.locator("#collection-send").inner_text() == "Send selected products (2)" and not catalog[2]
             page.locator("#collection-send").click()
             page.wait_for_function('document.querySelectorAll(".collection-result").length===2')
+            page.locator("#collection-status").filter(has_text="Background: QUEUED").wait_for()
+            page.locator("#collection-minimize").click()
+            assert not page.locator("#collection-dialog").evaluate('el => el.open')
+            tick()  # Server sends while the dialog is closed; no browser send-item loop.
+            page.locator("#mobile-chat-plus").click(); page.locator("#catalog-button").click(); page.locator("#collection-open").click()
+            page.locator("#collection-status").filter(has_text="1/2 sent").wait_for()
             page.locator("#collection-stop").click()
-            page.locator("#collection-status").filter(has_text="Paused.").wait_for()
+            page.locator("#collection-status").filter(has_text="PAUSED").wait_for()
             assert len(catalog[2]) == 1
             page.locator("#collection-send").click()
+            page.locator("#collection-status").filter(has_text="Background: QUEUED").wait_for()
+            tick(); page.locator("#collection-check").click()
             page.locator("#collection-status").filter(has_text="2/2 sent").wait_for()
             assert len(catalog[2]) == 2
             page.locator("#collection-close").click(); page.locator("#mobile-chat-plus").click(); page.locator("#catalog-button").click(); page.locator("#collection-open").click()
@@ -406,6 +418,8 @@ def test_chromium_mobile_preview_stop_resume_and_edit_selection_without_auto_sen
             page.locator("#collection-preview").click(); page.locator(".collection-card").first.wait_for()
             page.locator(".collection-card input").last.uncheck(); catalog[3]["outcome"] = "FAILED"
             page.locator("#collection-send").click()
+            page.locator("#collection-status").filter(has_text="Background: QUEUED").wait_for()
+            tick(); tick(); page.locator("#collection-check").click()
             page.locator("#collection-status").filter(has_text="2 failed").wait_for()
             lose_retry_ack.append(True); page.locator("#collection-retry").click()
             page.locator("#collection-retry").filter(has_text="Check failed reset").wait_for()
@@ -415,6 +429,8 @@ def test_chromium_mobile_preview_stop_resume_and_edit_selection_without_auto_sen
             page.locator("#collection-retry").click()
             page.wait_for_function('!document.getElementById("collection-send").disabled')
             catalog[3]["outcome"] = "SENT"; page.locator("#collection-send").click()
+            page.locator("#collection-status").filter(has_text="Background: QUEUED").wait_for()
+            tick(); tick(); page.locator("#collection-check").click()
             page.locator("#collection-status").filter(has_text="2/2 sent").wait_for()
             assert len(catalog[2]) == 6 and not errors
         finally:
@@ -479,6 +495,32 @@ def test_postgresql_concurrent_creation_send_and_failed_retry_with_production_se
         assert len(catalog[2]) == 4
         with sessions() as db:
             assert db.query(WhatsAppConversationMessage).count() == 3
+        import collection_send_queue as queue
+        import database
+        from alembic import command
+        from alembic.config import Config
+        from pathlib import Path
+        queue.CollectionSendJob.__table__.drop(engine)
+        monkeypatch.setattr(database, 'engine', engine)
+        config = Config(str(Path(__file__).resolve().parents[1] / 'alembic.ini'))
+        command.stamp(config, '20261111_39'); command.upgrade(config, 'head'); command.upgrade(config, 'head')
+        with sessions() as db:
+            assert db.query(queue.CollectionSendJob).count() == 0
+            assert db.query(WhatsAppConversationMessage).count() == 3
+        # Background claims and FIFO use the actual PostgreSQL session/lock semantics.
+        queued = prepare(client, ids[0], csrf, preview(client, ids[0])).json()['batch_id']
+        path = f'{BASE}/conversations/{ids[0]}/collection-batches'
+        assert client.post(f'{path}/{queued}/start', json={}, headers={'X-CSRF-Token': csrf}).status_code == 200
+        later = prepare(client, ids[0], csrf, preview(client, ids[0])).json()['batch_id']
+        assert client.post(f'{path}/{later}/start', json={}, headers={'X-CSRF-Token': csrf}).status_code == 200
+        with ThreadPoolExecutor(max_workers=2) as pool: list(pool.map(lambda _: queue.dispatch_one(sessions), range(2)))
+        assert len(catalog[2]) == 5  # Only one new product, despite two workers.
+        for _ in range(5):
+            with sessions() as db: db.query(queue.CollectionSendJob).update({'next_at': datetime.utcnow() - timedelta(seconds=1)}); db.commit()
+            assert queue.dispatch_one(sessions)
+        with sessions() as db:
+            assert db.get(queue.CollectionSendJob, queued).status == db.get(queue.CollectionSendJob, later).status == 'COMPLETE'
+        assert len(catalog[2]) == 10
     finally:
         main.app.dependency_overrides[main.get_db] = previous
         engine.dispose()
