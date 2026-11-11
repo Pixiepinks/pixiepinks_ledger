@@ -72,9 +72,8 @@
     picker.accept = Object.entries(policy.formats).filter(([, info]) => info.type === button.dataset.mediaCategory).map(([ext]) => ext).join(",");
     menu.hidden = true; attach.setAttribute("aria-expanded", "false"); picker.click();
   }; });
-  picker.onchange = () => {
-    if (busy) return;
-    const chosen = picker.files[0]; if (!chosen) return;
+  function selectFile(chosen) {
+    if (busy || !chosen) return false;
     if (operation && !confirm("Check the conversation before starting another send. Continue with a new attachment?")) { picker.value = ""; return; }
     const info = policy?.formats[`.${chosen.name.split(".").pop().toLowerCase()}`];
     clear(); preview.hidden = false;
@@ -89,7 +88,12 @@
       element.src = objectUrl; media.append(element);
     }
     active(false);
-  };
+    return true;
+  }
+  picker.onchange = () => selectFile(picker.files[0]);
+  root.addEventListener("inbox-recorded-video", event => {
+    if (event.detail.conversation === current()) event.detail.accepted = selectFile(event.detail.file);
+  });
   remove.onclick = () => {
     if (operation && !check.hidden && !confirm("The send may already have reached the customer. Dismiss this notice? The saved receipt remains available after refresh.")) return;
     clear();

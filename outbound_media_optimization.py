@@ -18,7 +18,9 @@ def probe(raw, extension):
         raise ValueError('Invalid or animated PNG')
     if extension == '.webp' and (not (raw.startswith(b'RIFF') and raw[8:12] == b'WEBP') or b'ANIM' in raw):
         raise ValueError('Invalid WebP')
-    if not image and (len(raw) < 12 or raw[4:8] != b'ftyp'):
+    if extension == '.webm' and not raw.startswith(b'\x1aE\xdf\xa3'):
+        raise ValueError('Invalid WebM')
+    if not image and extension != '.webm' and (len(raw) < 12 or raw[4:8] != b'ftyp'):
         raise ValueError('Use MP4/MOV video')
     with av.open(io.BytesIO(raw), options={'protocol_whitelist':'pipe','enable_drefs':'0'}) as source:
         if len(source.streams.video) != 1 or len(source.streams.audio) > 1:
@@ -27,6 +29,24 @@ def probe(raw, extension):
         if not 0 < video.width * video.height <= (40_000_000 if image else 3840 * 2160):
             raise ValueError('Image/video resolution exceeds processing limit')
         seconds = source.duration / av.time_base if source.duration else float(video.duration * video.time_base) if video.duration and video.time_base else 0
+        if not image and not seconds:
+            # Browser MediaRecorder can write live WebM/MP4 without duration metadata.
+            # Decode this bounded source to derive duration; never trust browser claims.
+            frames = 0
+            for stream in source.streams:
+                stream.thread_count = 1; stream.codec_context.options = {'err_detect':'explode'}
+            for packet in source.demux():
+                if packet.is_corrupt: raise ValueError('Corrupt recording')
+                for frame in packet.decode():
+                    if isinstance(frame, av.VideoFrame):
+                        frames += 1
+                        if frames > 14400 or frame.width * frame.height > 3840*2160: raise ValueError('Recording bounds')
+                        step = 1 / float(video.average_rate or 30)
+                    else: step = frame.samples / frame.sample_rate
+                    at = float(frame.pts * frame.time_base) if frame.pts is not None and frame.time_base else frames / float(video.average_rate or 30)
+                    seconds = max(seconds, at + step)
+                    if seconds > 120.1: raise ValueError('Recording too long')
+            if not frames: raise ValueError('Empty recording')
         if not image and not 0 < seconds <= 120:
             raise ValueError('Video must be at most 120 seconds')
         return image, seconds

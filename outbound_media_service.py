@@ -27,7 +27,7 @@ FORMATS = {
     '.jpg': ('image', 'image/jpeg'), '.jpeg': ('image', 'image/jpeg'),
     '.png': ('image', 'image/png'), '.pdf': ('document', 'application/pdf'),
     '.mp4': ('video', 'video/mp4'), '.mov': ('video', 'video/quicktime'),
-    '.m4v': ('video', 'video/mp4'), '.webp': ('image', 'image/webp'),
+    '.m4v': ('video', 'video/mp4'), '.webm': ('video', 'video/webm'), '.webp': ('image', 'image/webp'),
     '.doc': ('document', 'application/msword'),
     '.docx': ('document', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
     '.xls': ('document', 'application/vnd.ms-excel'),
@@ -76,7 +76,9 @@ def authorize(user):
 
 def policy():
     return {'formats': {extension: {'type': kind, 'mime': mime, 'max_bytes': size_limit(kind), 'max_upload_bytes': upload_limit(kind)}
-                        for extension, (kind, mime) in FORMATS.items()}, 'caption_max_length': 1024, 'automatic_optimization': True}
+                        for extension, (kind, mime) in FORMATS.items()}, 'caption_max_length': 1024, 'automatic_optimization': True,
+            'video_recording': {'max_seconds': 30, 'max_bytes': min(4 * 1024 * 1024, upload_limit('video')),
+                'video_bps': 750000, 'audio_bps': 64000}}
 
 
 def size_limit(kind):
@@ -102,7 +104,7 @@ def prepare_file(raw, filename, caption):
         raise HTTPException(422, 'Caption must contain at most 1024 characters')
     if kind == 'document': return raw, validate_file(raw, filename, caption)
     try:
-        if len(raw) <= size_limit(kind) and extension not in {'.mov','.m4v','.webp'}:
+        if len(raw) <= size_limit(kind) and extension not in {'.mov','.m4v','.webp','.webm'}:
             return raw, validate_file(raw, filename, caption)
     except HTTPException as error:
         if error.status_code != 422: raise
