@@ -1,7 +1,7 @@
 (() => {
   "use strict";
   const root = document.getElementById("inbox"), picker = document.getElementById("attachment-file"), preview = document.getElementById("attachment-preview"), menu = document.getElementById("attachment-menu"), attach = document.getElementById("attachment-button"), send = document.getElementById("attachment-send"), remove = document.getElementById("attachment-remove"), check = document.getElementById("attachment-check"), caption = document.getElementById("attachment-caption"), status = document.getElementById("attachment-status"), progress = document.getElementById("attachment-progress"), media = document.getElementById("attachment-preview-media");
-  let policy, file, objectUrl, operation, busy = false, generation = 0, ownsComposer = false;
+  let policy, file, objectUrl, operation, busy = false, generation = 0, ownsComposer = false, deliveryWatch = null;
   const current = () => Number(root.dataset.activeConversation || root.dataset.initial) || null;
   const storageKey = () => `whatsapp-media:${policy.staff_id}:${current()}`;
   const remember = value => { try { if (value) sessionStorage.setItem(storageKey(), JSON.stringify(value)); else sessionStorage.removeItem(storageKey()); } catch (_) { /* status remains available on server */ } };
@@ -20,20 +20,28 @@
   function clear() {
     if (busy) return;
     if (objectUrl) URL.revokeObjectURL(objectUrl);
-    objectUrl = null; file = null; operation = null; picker.value = ""; caption.value = "";
+    objectUrl = null; file = null; operation = null; deliveryWatch = null; picker.value = ""; caption.value = "";
     media.replaceChildren(); preview.hidden = true; check.hidden = true; progress.hidden = true; message(""); active(false);
   }
   function renderOutcome(data) {
     if (data.status === "SENT") {
+      if (operation) deliveryWatch = {key: operation.key, conversation: current()};
       remember(null); operation = null; file = null;
       if (objectUrl) URL.revokeObjectURL(objectUrl); objectUrl = null; media.replaceChildren();
-      message(`Attachment sent.${data.optimization && data.optimization.sent_bytes < data.optimization.original_bytes ? ` Optimized from ${(data.optimization.original_bytes / 1048576).toFixed(1)} MB to ${(data.optimization.sent_bytes / 1048576).toFixed(1)} MB.` : ""} Delivery updates appear in the conversation.`); check.hidden = true; remove.textContent = "Close";
+      message(`Attachment sent to WhatsApp; delivery is not yet confirmed.${data.optimization && data.optimization.sent_bytes < data.optimization.original_bytes ? ` Optimized from ${(data.optimization.original_bytes / 1048576).toFixed(1)} MB to ${(data.optimization.sent_bytes / 1048576).toFixed(1)} MB.` : ""} Delivery updates appear in the conversation.`); check.hidden = true; remove.textContent = "Close";
     } else if (["UPLOAD_FAILED", "SEND_FAILED"].includes(data.status)) {
       message(data.status === "UPLOAD_FAILED" ? `Upload failed${data.upload_failure?.meta_code ? ` (Meta code ${data.upload_failure.meta_code})` : ""}. No customer message was sent. Remove and select the file to start a new attempt.` : "Meta rejected this attachment message. Remove and review the file or reply window before trying again.");
       remember(null); check.hidden = true; remove.textContent = "Close";
     } else {
       message("Send outcome is not confirmed. Check the conversation and send status before starting another attempt. This attachment will not be sent again automatically.");
       check.hidden = false; remove.textContent = "Dismiss";
+    }
+    if (data.delivery_status === "failed") {
+      const failure = data.delivery_failure;
+      message(`WhatsApp delivery failed${failure?.code ? ` (Meta ${failure.code})` : ""}. ${failure?.message || "Check the failed message in the conversation."} Nothing will be resent automatically.`);
+      deliveryWatch = null;
+    } else if (["delivered", "read"].includes(data.delivery_status)) {
+      message(`Attachment ${data.delivery_status}.`); deliveryWatch = null;
     }
   }
   async function checkStatus() {
@@ -124,5 +132,13 @@
   };
   window.addEventListener("beforeunload", event => { if (busy) { event.preventDefault(); event.returnValue = ""; } });
   root.addEventListener("inbox-conversation", restore);
+  setInterval(async () => {
+    const watched = deliveryWatch;
+    if (!watched || watched.conversation !== current() || busy || preview.hidden) return;
+    try {
+      const response = await fetch(`/crm/whatsapp/api/conversations/${watched.conversation}/media-sends/${watched.key}`, {credentials: "same-origin", cache: "no-store"});
+      if (response.ok && deliveryWatch === watched && watched.conversation === current()) renderOutcome(await response.json());
+    } catch (_) { /* Never resend a message to obtain its delivery status. */ }
+  }, 4000);
   restore();
 })();

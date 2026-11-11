@@ -255,9 +255,16 @@ def send_media(phone, media_id, data):
     return ('SEND_FAILED' if status and 400 <= status < 500 else 'OUTCOME_UNCERTAIN'), None
 
 
-def public_attempt(attempt):
-    return {'ok': attempt.status == 'SENT', 'status': attempt.status, 'message_id': attempt.message_id,
+def public_attempt(attempt, db=None):
+    result = {'ok': attempt.status == 'SENT', 'status': attempt.status, 'message_id': attempt.message_id,
             'retry_safe': attempt.status in {'UPLOAD_FAILED', 'SEND_FAILED'}}
+    if db is not None and attempt.message_id:
+        from media_delivery_status import MediaDeliveryStatus, failure
+        message = db.get(WhatsAppConversationMessage, attempt.message_id)
+        row = db.get(MediaDeliveryStatus, attempt.message_id)
+        result['delivery_status'] = message.send_status if message else None
+        result['delivery_failure'] = failure(row)
+    return result
 
 
 def scoped_attempt(db, key, conversation_id, staff_id):
@@ -273,7 +280,7 @@ def perform_send(db, conversation, user, key, raw, data):
     if existing:
         if existing.fingerprint != fingerprint:
             raise HTTPException(409, 'Idempotency key cannot be reused for different attachment contents')
-        return public_attempt(existing)
+        return public_attempt(existing, db)
     db.refresh(conversation)
     db.refresh(user); authorize(user)
     if not conversation.last_customer_message_at or datetime.utcnow() - conversation.last_customer_message_at >= timedelta(hours=24):
@@ -288,7 +295,7 @@ def perform_send(db, conversation, user, key, raw, data):
         existing = scoped_attempt(db, key, conversation.id, user.id)
         if not existing or existing.fingerprint != fingerprint:
             raise HTTPException(409, 'Idempotency key cannot be reused for another request')
-        return public_attempt(existing)
+        return public_attempt(existing, db)
     # This committed unique claim is the only code path allowed to call Meta.
     diagnostic = None
     try:
@@ -332,4 +339,4 @@ def perform_send(db, conversation, user, key, raw, data):
         attempt.message_id = message.id
         conversation.last_message_at = datetime.utcnow()
     db.commit()  # Atomically persist history, attachment and success receipt.
-    return public_attempt(attempt)
+    return public_attempt(attempt, db)

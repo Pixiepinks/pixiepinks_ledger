@@ -1210,3 +1210,5 @@ from staff_notification_models import (StaffNotificationPreference, StaffNotific
     StaffPushDevice, StaffNotification, StaffPushDelivery, StaffNotificationInbound)
 
 from collection_send_queue import CollectionSendJob
+
+from media_delivery_status import MediaDeliveryStatus

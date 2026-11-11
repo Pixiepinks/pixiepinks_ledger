@@ -1578,6 +1578,10 @@ async def receive_meta_webhook(request: Request, background_tasks: BackgroundTas
                     try:delivery_time=datetime.utcfromtimestamp(int(delivery.get('timestamp')))
                     except (TypeError,ValueError,OSError,OverflowError):delivery_time=datetime.utcnow()
                     crm_analytics_tracking.delivery(db,outbound_id,delivery_status,delivery_time)
+                    import media_delivery_status
+                    media_delivery = media_delivery_status.record(db, outbound_id, delivery_status, delivery.get('errors'), delivery_time)
+                    if media_delivery and media_delivery.status == 'failed':
+                        logger.warning('Staff media delivery failed meta_code=%s meta_subcode=%s', media_delivery.error_code, media_delivery.error_subcode)
                     from models import SavedVoiceSend
                     errors = delivery.get("errors")
                     code = errors[0].get("code") if isinstance(errors,list) and errors and isinstance(errors[0],dict) else None
@@ -2448,11 +2452,15 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
         ).first()
     replies_by_message = reply_previews(db, conversation, messages)
     buttons_by_provider = interactive_previews(db, conversation, messages)
+    from media_delivery_status import MediaDeliveryStatus, failure as media_failure
+    media_failures = {r.message_id: media_failure(r) for r in db.query(MediaDeliveryStatus).filter(
+        MediaDeliveryStatus.message_id.in_([m.id for m in messages]), MediaDeliveryStatus.status == 'failed').all()}
     message_data = [{
         "id": item.id,
         "direction": item.direction, "text": item.message_text,
         "source": item.response_kind or ("customer" if item.direction == "inbound" else "ai"),
         "status": item.send_status or ("received" if item.direction == "inbound" else "sent"),
+        "delivery_failure": media_failures.get(item.id) if item.send_status == "failed" else None,
         "timestamp": _inbox_utc_timestamp(item.created_at),
         "message_type": "audio" if item.media_id else "text",
         "duration_seconds": item.media_duration_seconds,
@@ -2692,7 +2700,7 @@ def whatsapp_media_send_status(conversation_id: int, key: str, response: Respons
     if not row:
         raise HTTPException(404, "Attachment send not found")
     response.headers["Cache-Control"] = "private, no-store"
-    return outbound_media.public_attempt(row)
+    return outbound_media.public_attempt(row, db)
 
 
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/send-media")

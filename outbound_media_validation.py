@@ -54,6 +54,19 @@ def validate(raw, extension):
         return {}
     if extension == '.mp4':
         import av
+        # Fragmented browser MP4 may decode locally yet fail remote media processing.
+        # Require conversion to a conventional fast-start container before upload.
+        offset = 0
+        while offset < len(raw):
+            if offset + 8 > len(raw): raise ValueError()
+            length = struct.unpack('>I',raw[offset:offset+4])[0]
+            kind = raw[offset+4:offset+8]; header = 8
+            if length == 1:
+                if offset + 16 > len(raw): raise ValueError()
+                length = struct.unpack('>Q',raw[offset+8:offset+16])[0]; header = 16
+            elif length == 0: length = len(raw)-offset
+            if length < header or offset+length > len(raw) or kind == b'moof': raise ValueError()
+            offset += length
         if raw[4:8] != b'ftyp' or raw[8:12] not in {b'isom', b'iso2', b'mp41', b'mp42', b'avc1', b'M4V '}:
             raise ValueError()
         with av.open(io.BytesIO(raw), options={'protocol_whitelist': 'pipe'}) as source:
@@ -76,6 +89,7 @@ def validate(raw, extension):
                     raise ValueError()
                 for frame in packet.decode():
                     if isinstance(frame, av.VideoFrame):
+                        if frame.format.name != 'yuv420p': raise ValueError()
                         frames += 1
                         if frames > 7200 or frame.width * frame.height > 1920 * 1080 or frame.pts is not None and frame.time_base and frame.pts * frame.time_base > 120:
                             raise ValueError()
