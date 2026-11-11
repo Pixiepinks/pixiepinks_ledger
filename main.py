@@ -2710,17 +2710,21 @@ async def whatsapp_send_media(conversation_id: int, request: Request,
         raise HTTPException(429, "Attachment service is busy. Try again shortly.")
     form = None
     try:
-        maximum = max(outbound_media.size_limit(kind) for kind in ("image", "video", "document")) + 65536
+        maximum = max(outbound_media.upload_limit(kind) for kind in ("image", "video", "document")) + 65536
         body = bytearray()
         # Bound the entire multipart request, including uploads with no Content-Length.
-        async with asyncio.timeout(45):
+        async with asyncio.timeout(120):
             async for chunk in request.stream():
                 if len(body) + len(chunk) > maximum:
                     raise HTTPException(413, "Attachment request exceeds the size limit")
                 body.extend(chunk)
         request._body = bytes(body)
-        with private_image_processing():
-            form = await request.form(max_files=1, max_fields=1)
+        from multipart.exceptions import MultipartParseError
+        try:
+            with private_image_processing():
+                form = await request.form(max_files=1, max_fields=1)
+        except MultipartParseError:
+            raise HTTPException(400, 'Malformed attachment upload. Select the file again.') from None
         if len(form.multi_items()) > 2 or set(form) - {"file", "caption"}:
             raise HTTPException(422, "Send one file and an optional caption")
         upload = form.get("file")
@@ -2728,9 +2732,11 @@ async def whatsapp_send_media(conversation_id: int, request: Request,
         if not isinstance(upload, StarletteUploadFile) or not isinstance(caption, str):
             raise HTTPException(422, "Select one attachment")
         raw = await upload.read(maximum)
-        data = await run_in_threadpool(outbound_media.validate_file, raw, upload.filename, caption)
+        source_size = len(raw)
+        raw, data = await run_in_threadpool(outbound_media.prepare_file, raw, upload.filename, caption)
         with private_image_processing():
             result = await run_in_threadpool(outbound_media.perform_send, db, conversation, user, key, raw, data)
+        result['optimization'] = {'original_bytes': source_size, 'sent_bytes': len(raw), 'filename': data['filename']}
         if result.get('upload_failure'):
             failure = result['upload_failure']
             logger.warning('WhatsApp staff upload failed reason=%s http_status=%s meta_code=%s meta_subcode=%s',

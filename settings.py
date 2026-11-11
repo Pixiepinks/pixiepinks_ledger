@@ -23,8 +23,9 @@ class Settings(BaseSettings):
     META_WHATSAPP_ACCESS_TOKEN: Optional[str] = None
     META_WHATSAPP_PHONE_NUMBER_ID: Optional[str] = None
     META_GRAPH_API_VERSION: str = "v26.0"
-    WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES: int = Field(4 * 1024 * 1024, ge=1024, le=5_000_000)
-    WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
+    WHATSAPP_OUTBOUND_IMAGE_MAX_BYTES: int = Field(5_000_000, ge=1024, le=5_000_000)
+    WHATSAPP_OUTBOUND_VIDEO_MAX_BYTES: int = Field(16_000_000, ge=1024, le=16_000_000)
+    WHATSAPP_OUTBOUND_MEDIA_SOURCE_MAX_BYTES: int = Field(64 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
     WHATSAPP_OUTBOUND_DOCUMENT_MAX_BYTES: int = Field(8 * 1024 * 1024, ge=1024, le=16_000_000)
     META_APP_SECRET: Optional[str] = None
     SAVED_VOICES_DIR: str = "/data/saved-voices"

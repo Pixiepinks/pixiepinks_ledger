@@ -93,7 +93,6 @@ def test_additional_formats_send_and_render(inbox,name,content,kind,mime):
 
 @pytest.mark.parametrize('name,content',[
     ('fake.mp4',lambda:png()), ('bad.mp4',lambda:b'\0\0\0\x18ftypisom'+bytes(64)),
-    ('unsupported-codec.mp4',lambda:mp4('mpeg4')),
     ('wrong.docx',lambda:office_xml('xlsx')), ('wrong.xlsx',lambda:office_xml('docx')),
     ('macro.docx',lambda:office_xml('docx',{'word/vbaProject.bin':b'x'})),
     ('traversal.xlsx',lambda:office_xml('xlsx',{'../private.txt':b'x'})),
@@ -163,3 +162,10 @@ def test_chromium_video_preview_document_download_and_polling(inbox,monkeypatch)
             assert download.value.suggested_filename=='quote.docx'
             assert len(sends)==2 and not errors
         finally:browser.close()
+
+
+def test_non_whatsapp_codec_is_converted_instead_of_rejected(inbox):
+    response=inbox[3](name='phone.mp4',raw=mp4('mpeg4'))
+    assert response.status_code==200 and response.json()['status']=='SENT',response.text
+    with av.open(io.BytesIO(inbox[4][0][0])) as source:
+        assert source.streams.video[0].codec_context.name=='h264'
