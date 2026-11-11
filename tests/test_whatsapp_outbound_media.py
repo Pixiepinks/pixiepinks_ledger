@@ -200,7 +200,7 @@ def test_modes_reply_window_and_delivery_status(inbox,monkeypatch):
     assert post(cid=ids[1]).json()['ok']
     with sessions() as db: assert db.get(WhatsAppConversation,ids[1]).mode=='AI'
     monkeypatch.setattr(main.settings,'META_APP_SECRET','isolated-test-secret')
-    for status in ['delivered','read','failed']:
+    for status in ['failed','delivered','read']:
         body=json.dumps({'entry':[{'changes':[{'field':'messages','value':{'statuses':[{'id':'wamid.actual-media','status':status}]}}]}]}).encode()
         signature='sha256='+hmac.new(b'isolated-test-secret',body,hashlib.sha256).hexdigest()
         assert client.post('/webhook',content=body,headers={'X-Hub-Signature-256':signature}).status_code==200
@@ -281,6 +281,12 @@ def test_chromium_selection_send_refresh_and_customer_switch(inbox,monkeypatch):
             page.locator('#attachment-send').click()
             page.wait_for_function('document.getElementById("attachment-status").textContent.startsWith("Attachment sent")')
             assert len(uploads)==len(sends)==1
+            assert 'delivery is not yet confirmed' in page.locator('#attachment-status').inner_text()
+            from test_media_delivery_status import callback
+            assert callback(inbox,monkeypatch).status_code==200
+            page.wait_for_function('document.getElementById("attachment-status").textContent.includes("Meta 131053")')
+            assert 'Nothing will be resent automatically' in page.locator('#attachment-status').inner_text()
+            assert len(sends)==1
             page.reload();page.wait_for_function('!document.getElementById("attachment-button").disabled')
             page.locator('.message-attachment').wait_for()
             assert 'Staff photo' in page.locator('.message-attachment').inner_text()
@@ -417,7 +423,7 @@ def test_validator_preserves_only_native_runtime_environment(monkeypatch):
 
 def test_missing_validator_runtime_is_not_reported_as_corrupt(inbox,monkeypatch,caplog):
     client,sessions,_,post,uploads,sends=inbox
-    assert 'whatsapp_outbound_media.js?v=whatsapp-record-video-3' in client.get('/crm/whatsapp').text
+    assert 'whatsapp_outbound_media.js?v=whatsapp-media-delivery-4' in client.get('/crm/whatsapp').text
     original=service.subprocess.run
     monkeypatch.setattr(service.subprocess,'run',Mock(side_effect=service.subprocess.CalledProcessError(
         70,['private-runtime-path'],stderr=b'private-diagnostic-token')))

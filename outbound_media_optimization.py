@@ -71,10 +71,10 @@ def main():
         else:
             budget = min(2_500_000, int(maximum*.86*8/seconds)-96_000)
             if budget < 100_000: raise ValueError('Configured video size is too small')
-            args += ['-map','0:a:0?','-t','120','-vf',"scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30",
-                '-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-threads','1',
+            args += ['-map','0:a:0?','-t','120','-vf',"scale='min(1280,iw)':'min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,fps=30,setsar=1",
+                '-c:v','libx264','-preset','veryfast','-pix_fmt','yuv420p','-profile:v','baseline','-level:v','3.1','-bf','0','-refs','1','-tag:v','avc1','-threads','1',
                 '-b:v',str(budget),'-maxrate',str(budget),'-bufsize',str(budget*2),
-                '-c:a','aac','-b:a','96k','-ac','2','-ar','48000','-movflags','+faststart']
+                '-c:a','aac','-profile:a','aac_low','-b:a','96k','-ac','2','-ar','48000','-movflags','+faststart']
         args += ['-fs',str(maximum+1),'-y',str(output)]
         subprocess.run(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             check=True, timeout=100, env={'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})

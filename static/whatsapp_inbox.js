@@ -358,8 +358,8 @@
     }
     return wrapper;
   }
-  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context, message.can_reply, message.interactive_buttons]);
-  const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : ["customer_question","question_product","question_voice","payment_voice","payment_image"].includes(message.source) ? "Customer questions" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${inboxTime(message.timestamp)} · ${message.status}`;
+  const messageContentKey = message => JSON.stringify([message.direction, message.text, message.source, message.timestamp, message.message_type, message.duration_seconds, message.media_url, message.product, message.attachments, message.referral, message.reply_context, message.can_reply, message.interactive_buttons, message.delivery_failure]);
+  const messageMetadata = message => `${message.direction === "inbound" ? "Customer" : ["customer_question","question_product","question_voice","payment_voice","payment_image"].includes(message.source) ? "Customer questions" : message.source.startsWith("staff") ? "Staff" : "AI"} · ${inboxTime(message.timestamp)} · ${message.status}${message.delivery_failure ? ` · ${message.delivery_failure.code ? `Meta ${message.delivery_failure.code}: ` : ""}${message.delivery_failure.message}` : ""}`;
   function reconcileMessages(incoming) {
     const wasNearBottom = messages.scrollHeight - messages.scrollTop - messages.clientHeight < 80;
     const containerTop = messages.getBoundingClientRect().top;
