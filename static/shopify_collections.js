@@ -6,8 +6,9 @@
     send = document.getElementById("collection-send"), refresh = document.getElementById("collection-preview"),
     stop = document.getElementById("collection-stop"), retry = document.getElementById("collection-retry"),
     check = document.getElementById("collection-check"), reset = document.getElementById("collection-new");
-  let target, csrf, preview, batch, generation = 0, controller, working = false, stopRequested = false,
+  let target, csrf, preview, batch, generation = 0, controller, working = false,
     prepareAttempt = null, retryAttempt = null, recipient;
+  const attempts = new Map();
   const report = value => { status.textContent = value; };
   const path = suffix => `/conversations/${target}/collection-batches${suffix || ""}`;
   async function api(url, options = {}) {
@@ -21,17 +22,18 @@
     ...(key ? {"Idempotency-Key": key} : {})}, body: JSON.stringify(body)});
   function controls() {
     const count = results.querySelectorAll(".collection-card input:checked").length;
-    const blocked = batch && ["PROCESSING", "BLOCKED", "UPDATING"].includes(batch.status);
+    const job = batch?.background?.status;
+    const active = ["QUEUED", "RUNNING", "PAUSING"].includes(job);
+    const blocked = batch && (["PROCESSING", "BLOCKED", "UPDATING"].includes(batch.status) || ["BLOCKED", "CANCELED"].includes(job));
     query.disabled = working || Boolean(batch) || Boolean(prepareAttempt);
-    select.disabled = query.disabled;
-    refresh.disabled = query.disabled || !select.value;
+    select.disabled = query.disabled; refresh.disabled = query.disabled || !select.value;
     send.textContent = prepareAttempt ? "Check prepared batch" : batch ? "Resume remaining products" : `Send selected products (${count})`;
-    send.disabled = working || Boolean(retryAttempt) || Boolean(blocked) || (batch ? !batch.counts.QUEUED : !prepareAttempt && (!preview || count < 1 || count > 20));
-    stop.hidden = !working; stop.disabled = stopRequested;
-    retry.hidden = !batch || (!batch.counts.FAILED && !retryAttempt); retry.disabled = working || Boolean(blocked);
+    send.disabled = working || active || Boolean(retryAttempt) || Boolean(blocked) || (batch ? !batch.counts.QUEUED : !prepareAttempt && (!preview || count < 1 || count > 20));
+    stop.hidden = !active; stop.disabled = working || job === "PAUSING";
+    retry.hidden = !batch || (!batch.counts.FAILED && !retryAttempt); retry.disabled = working || active || Boolean(blocked);
     retry.textContent = retryAttempt ? "Check failed reset" : "Reset failed products for retry";
     check.hidden = !batch; check.disabled = working;
-    reset.disabled = working || Boolean(prepareAttempt) || Boolean(retryAttempt) || Boolean(batch && (blocked || batch.counts.QUEUED));
+    reset.disabled = working || Boolean(prepareAttempt) || Boolean(retryAttempt);
     for (const input of results.querySelectorAll("input,select")) input.disabled = working || Boolean(prepareAttempt);
   }
   function renderBatch() {
@@ -43,7 +45,8 @@
       results.append(row);
     }
     const c = batch.counts;
-    report(`To ${recipient}: ${c.SENT}/${batch.items.length} sent · ${c.QUEUED} remaining · ${c.FAILED} failed · ${c.SKIPPED} skipped · ${c.UNKNOWN} unconfirmed.${["PROCESSING", "BLOCKED"].includes(batch.status) ? " Work is active or unconfirmed. Check progress; do not create another batch." : ""}`);
+    report(`To ${recipient}: ${c.SENT}/${batch.items.length} sent · ${c.QUEUED} remaining · ${c.FAILED} failed · ${c.SKIPPED} skipped · ${c.UNKNOWN} unconfirmed.${["PROCESSING", "BLOCKED"].includes(batch.status) ? " A product is active or unconfirmed. Check progress before retrying." : ""}`);
+    if (batch.background) report(status.textContent + ` Background: ${batch.background.status}. ${batch.background.reason || "You can close this window; sending continues on the server."}`);
     controls();
   }
   async function search() {
@@ -85,77 +88,107 @@
     finally { working = false; controls(); }
   }
   async function refreshBatch() {
-    if (batch) { batch = await api(path(`/${batch.batch_id}`)); renderBatch(); }
+    const cid = target, id = batch?.batch_id, current = generation;
+    if (!id) return;
+    const value = await api(`/conversations/${cid}/collection-batches/${id}`);
+    if (current === generation && target === cid && dialog.open) { batch = value; renderBatch(); }
   }
   async function run() {
     if (working || !batch) return;
-    working = true; stopRequested = false; controls();
-    const cid = target, batchId = batch.batch_id;
+    const cid = target, id = batch.batch_id, current = generation;
+    working = true; controls();
     try {
-      batch = await api(`/conversations/${cid}/collection-batches/${batchId}`); renderBatch();
-      while (!stopRequested && batch.status === "READY") {
-        const next = batch.items.find(item => item.status === "QUEUED"); if (!next) break;
-        report(`Sending to ${recipient}: ${next.title}… ${batch.counts.SENT}/${batch.items.length} sent. Stop pauses after the current product.`);
-        batch = await post(`/conversations/${cid}/collection-batches/${batchId}/send-item`, {product_id: next.product_id});
-        renderBatch();
-        if (batch.status !== "READY" || stopRequested) break;
-        await new Promise(resolve => setTimeout(resolve, 1100));
-      }
-      renderBatch();
-      if (stopRequested && batch.counts.QUEUED) report(`Paused. ${batch.counts.SENT} sent; ${batch.counts.QUEUED} remaining. Resume will not repeat sent products.`);
-    } catch (error) { report(`${error.message} Use Check progress before resuming; confirmed products are not re-sent.`); }
-    finally { working = false; controls(); }
+      const value = await post(`/conversations/${cid}/collection-batches/${id}/start`, {});
+      if (current === generation && dialog.open) { batch = value; renderBatch(); }
+      await activity();
+    } catch (error) { if (current === generation) report(error.message); }
+    finally { if (current === generation) { working = false; controls(); } }
   }
-  document.getElementById("collection-open").onclick = async () => {
-    if (working) return;
-    const cid = Number(root.dataset.activeConversation); if (!cid) return;
-    if ((prepareAttempt || retryAttempt) && target !== cid) { document.getElementById("send-error").textContent = "Check the previous collection action before starting another."; return; }
-    target = cid; recipient = document.getElementById("chat-name").textContent;
-    document.getElementById("product-modal").hidden = true; dialog.showModal();
+  async function openFor(cid, name, batchId) {
+    target = cid; recipient = name; prepareAttempt = attempts.get(cid) || null; retryAttempt = null;
+    document.getElementById("product-modal").hidden = true;
+    if (!dialog.open) dialog.showModal();
     document.getElementById("collection-recipient").textContent = `Customer: ${recipient}`;
-    if (prepareAttempt) { controls(); return; }
     const current = ++generation; batch = null; preview = null; results.replaceChildren(); working = true; controls();
     try {
-      const data = await api(path("/recent"));
+      const data = await api(`/conversations/${cid}/collection-batches/recent`);
       if (current !== generation || !dialog.open) return;
-      csrf = data.csrf_token; batch = data.batch;
-      if (batch) renderBatch();
-    } catch (error) { report(error.message); }
-    finally { working = false; controls(); }
-    if (current === generation && dialog.open && !batch) { query.value = ""; await search(); query.focus(); }
+      csrf = data.csrf_token; batch = batchId ? await api(`/conversations/${cid}/collection-batches/${batchId}`) : data.batch;
+      if (current !== generation || !dialog.open) return;
+      if (batch?.background && prepareAttempt) { attempts.delete(cid); prepareAttempt = null; }
+      if (batch && !prepareAttempt) renderBatch();
+    } catch (error) { if (current === generation) report(error.message); }
+    finally { if (current === generation) { working = false; controls(); } }
+    if (current === generation && dialog.open && !batch && !prepareAttempt) { query.value = ""; await search(); query.focus(); }
+  }
+  document.getElementById("collection-open").onclick = () => {
+    const cid = Number(root.dataset.activeConversation); if (!cid) return;
+    openFor(cid, document.getElementById("chat-name").textContent);
   };
   document.getElementById("collection-close").onclick = () => dialog.close();
-  dialog.addEventListener("close", () => { stopRequested = true; generation++; controller?.abort(); document.getElementById("catalog-button").focus(); });
+  dialog.addEventListener("close", () => { generation++; controller?.abort(); working = false; document.getElementById("catalog-button").focus(); });
+  document.getElementById("collection-minimize").onclick = () => dialog.close();
   root.addEventListener("inbox-conversation", () => { if (dialog.open) dialog.close(); });
   query.oninput = () => { clearTimeout(query._timer); query._timer = setTimeout(search, 300); };
   select.onchange = () => { generation++; controller?.abort(); preview = null; results.replaceChildren(); controls(); report("Preview this collection before sending."); };
   refresh.onclick = loadPreview;
-  stop.onclick = () => { stopRequested = true; controls(); };
+  stop.onclick = async () => {
+    if (working || !batch) return;
+    const current = generation, cid = target, id = batch.batch_id;
+    working = true; controls();
+    try { const value = await post(`/conversations/${cid}/collection-batches/${id}/pause`, {});
+      if (current === generation && dialog.open) { batch = value; renderBatch(); } await activity();
+    } catch (error) { if (current === generation) report(error.message); }
+    finally { if (current === generation) { working = false; controls(); } }
+  };
   reset.onclick = () => { if (!reset.disabled) { batch = null; preview = null; results.replaceChildren(); query.value = ""; search(); } };
   check.onclick = async () => { if (working) return; working = true; controls(); try { await refreshBatch(); } catch (error) { report(error.message); } finally { working = false; controls(); } };
   send.onclick = async () => {
     if (working || send.disabled) return;
-    if (batch) { await run(); return; }
-    stopRequested = false;
-    const checking = Boolean(prepareAttempt);
-    if (!prepareAttempt) prepareAttempt = {key: crypto.randomUUID(), body: {collection_id: preview.collection.id,
+    if (batch && !prepareAttempt) { await run(); return; }
+    const cid = target, current = generation;
+    if (!prepareAttempt) prepareAttempt = {key: crypto.randomUUID(), body: {background: true, collection_id: preview.collection.id,
       preview_token: preview.preview_token, items: [...results.querySelectorAll(".collection-card")]
         .filter(card => card.querySelector("input").checked).map(card => ({product_id: card.dataset.productId, variant_id: card.querySelector("select").value}))}};
-    working = true; controls(); report("Preparing the reviewed selection. No products have been sent yet…");
+    const attempt = prepareAttempt; attempts.set(cid, attempt);
+    working = true; controls(); report("Queuing your reviewed selection for background sending…");
     try {
-      batch = await post(path(), prepareAttempt.body, prepareAttempt.key); prepareAttempt = null; renderBatch();
+      const created = await post(`/conversations/${cid}/collection-batches`, attempt.body, attempt.key);
+      // Selection and send intent commit atomically on the server, even if this page closes.
+      const value = created;
+      attempts.delete(cid);
+      if (current === generation && dialog.open) { batch = value; prepareAttempt = null; renderBatch(); }
+      await activity();
     } catch (error) {
-      if (error.status && error.status < 500) { prepareAttempt = null; preview = null; results.replaceChildren(); }
-      report(`${error.message}${prepareAttempt ? " Use Check prepared batch with this same request." : " Refresh the preview before sending."}`);
-    } finally { working = false; controls(); }
-    if (batch && !checking && !stopRequested && dialog.open) await run();
+      if (error.status && error.status < 500) attempts.delete(cid);
+      if (current === generation) {
+        prepareAttempt = attempts.get(cid) || null;
+        report(`${error.message} Check the saved batch before retrying.`);
+      }
+    } finally { if (current === generation) { working = false; controls(); } }
   };
   retry.onclick = async () => {
     if (working || retry.disabled) return;
+    const current = generation, cid = target, id = batch.batch_id;
     retryAttempt ||= crypto.randomUUID(); working = true; controls();
-    try { batch = await post(path(`/${batch.batch_id}/retry-failed`), {}, retryAttempt); retryAttempt = null; renderBatch(); }
+    try { const value = await post(`/conversations/${cid}/collection-batches/${id}/retry-failed`, {}, retryAttempt); if (current === generation) { batch = value; retryAttempt = null; renderBatch(); } }
     catch (error) { report(`${error.message} Retry this same action; sent products will not be reset.`); }
-    finally { working = false; controls(); }
+    finally { if (current === generation) { working = false; controls(); } }
     // Explicit Resume starts sending; resetting failed items alone sends nothing.
   };
+  async function activity() {
+    try {
+      const data = await api('/collection-batches/active');
+      const box = document.getElementById('collection-activity'), list = document.getElementById('collection-active-list');
+      csrf = data.csrf_token; box.hidden = !data.jobs.length; list.replaceChildren();
+      document.getElementById('collection-activity-label').textContent = `Product sends (${data.jobs.length})`;
+      for (const item of data.jobs) {
+        const button = document.createElement('button'); button.type = 'button';
+        button.textContent = `${item.customer} — ${item.counts.SENT}/${item.items.length} sent · ${item.background.status}`;
+        button.onclick = () => openFor(item.conversation_id, item.customer, item.batch_id); list.append(button);
+      }
+    } catch (_) { /* Existing queued sends continue even while this browser is offline. */ }
+  }
+  setInterval(() => { if (dialog.open && batch && !working && !prepareAttempt) refreshBatch().catch(error => report(error.message)); }, 2000);
+  setInterval(activity, 4000); activity();
 })();

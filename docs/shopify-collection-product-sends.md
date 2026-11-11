@@ -16,12 +16,11 @@ include `codex/whatsapp-collection-messages` or its Meta catalog configuration.
 4. Click **Send selected products**. Each product is sent as an ordinary image
    message with the current reviewed name, variant, price and Shopify link.
    Customers receive separate messages, not a native catalog or carousel.
-5. Watch the per-product progress. **Stop after current product** pauses before
-   the next message; an already-started send is not interrupted. **Resume
-   remaining products** processes only queued items, never confirmed sends.
-6. Reopening the picker restores the staff user's latest batch for that
+5. The server sends the queued products in the background. **Close — continue sending**, the close icon, changing chats and closing/locking the browser do not pause an accepted queue. The compact **Product sends** indicator above the conversation list restores progress.
+6. **Pause after current product** is a separate server action. An already-started send may finish; remaining products wait for **Resume remaining products**. Sent products are never reset. **New selection** lets staff queue another collection; collections for one customer run in order, while a paused customer does not block other customers.
+7. Reopening the picker restores the staff user's latest batch for that
    conversation. **Check progress** reads the existing batch; it sends nothing.
-7. **Reset failed products for retry** resets only definitely rejected or
+8. **Reset failed products for retry** resets only definitely rejected or
    verification-failed items. It sends nothing until staff explicitly resume.
    Its own idempotency receipt prevents duplicate reset actions.
 
@@ -51,8 +50,8 @@ reserve stock, create an order or deduct inventory.
 ## Reuse, security and persistence
 
 - No Meta product catalog, Business Account/catalog IDs, retailer product
-  mappings, carousel templates, extra Shopify integration, migration or new
-  dependency is required. Existing Shopify and WhatsApp Cloud API credentials
+  mappings, carousel templates, extra Shopify integration or new
+  dependency is required. Background sending adds migration `20261111_40`. Existing Shopify and WhatsApp Cloud API credentials
   are still needed. No existing catalog connection is changed.
 - Single-product sending and collection sending share the existing image
   transport, caption formatter, message metadata and Shopify reply-reference
@@ -75,8 +74,7 @@ reserve stock, create an order or deduct inventory.
   outbound product mapping. Existing delivery-status webhooks update read,
   delivered and failed states by that ID.
 - Batch status summarizes processing, completion, partial results or blocked
-  work. New request keys cannot abandon an unfinished batch for the same staff
-  user/customer. Different staff users retain separate authenticated actions.
+  work. Background jobs permit additional reviewed collections to queue behind the same customer. Legacy unfinished batches must first be queued or reviewed. Different staff users retain separate authenticated actions; queue ordering is per customer.
 
 ## Ambiguous outcomes and recovery
 
@@ -89,10 +87,17 @@ delete receipts, create another batch to resend those products or blindly reset
 the database state. A database failure before a durable claim sends nothing and
 the original action can be retried safely.
 
-The send loop runs while the staff page is open; there is no background bulk
-sending worker. Closing the dialog or switching conversation pauses after any
-in-flight product finishes. Closing/reloading the browser can leave a current
-request uncertain; reopen the original customer's picker and check progress.
+The browser no longer drives product delivery. A background selection and its send intent commit atomically; receipt retries return the same queued job. A dedicated server thread uses the existing verified image-send workflow and durable per-product receipts. Pause is an explicit authenticated server action, not a side effect of closing the dialog. Polling progress never sends a product.
+
+### Deployment and restart
+
+Apply additive Alembic revision **20261111_40** (after 20261111_39), then deploy the updated application. It creates `collection_send_jobs`; no existing batch is automatically activated. No new environment variable, paid service or separate Railway worker service is needed. Normal startup starts the collection worker independently of Saved Flows and Global AI.
+
+Unique batch jobs, conditional five-minute claims and the existing item claim prevent concurrent workers from sending the same product. The worker spaces products by at least 1.1 seconds and processes FIFO per conversation. After restart, queued products continue; a confirmed child committed before a parent-summary failure is retained and only the summary is recovered. Interrupted VERIFYING/PROCESSING or UNKNOWN outcomes block for operator review, including later collections for that customer, rather than risking duplicate sends. Paused queues also preserve order. Do not delete receipts or reset uncertain products.
+
+Current actor activity, Inbox grants, reply permissions and the WhatsApp customer-service window are checked before work and before transport. Losing staff access cancels remaining background work without granting access or blocking a new owner's future queue. Closing the reply window pauses remaining work for review. Permission to view/manage a batch stays with its original staff actor and current conversation visibility; the activity list is private/no-store. Failed-only retry remains explicit and is blocked while a later collection is queued, preventing reordering.
+
+Rollback: pause queues and stop collection workers before restoring previous code; retain the additive table and existing send receipts. The older browser-driven UI must not operate alongside background workers on the same batches. No Global AI, consent, orders, stock, ownership or customer-send configuration is altered by this migration.
 
 ## Bounds and operational limits
 
@@ -127,7 +132,7 @@ Changed files: `main.py`, `whatsapp_service.py`,
 this guide. The previous native-catalog feature branch remains separate.
 
 
-### Validation results
+### Original implementation validation (historical)
 
 - Final complete suite with the isolated PostgreSQL integration URL enabled:
   **1,041 passed, 2 failed, 2 skipped**. Both failures are the existing
@@ -155,3 +160,11 @@ previous native-catalog PR could not be confirmed/closed through the API. A Git
 PR-head-ref lookup found no PR pointing to its last pushed commit. The old
 branch is excluded from this feature, unmerged in the verified main baseline,
 and was not deleted. No merge or deployment was performed.
+
+### Background queue verification (11 November 2026)
+
+- Relevant collection, product-question, mobile layout, assignment and question-engine regressions: **130 passed, 1 skipped**.
+- Final collection/background suite after recovery and atomic-enqueue checks: **50 passed, 1 skipped** (overlaps the regression run).
+- The skipped PostgreSQL test was run separately against disposable PostgreSQL 16: **1 passed**, including repeatable additive migration, preserved existing messages, concurrent job claims and FIFO collections using production session settings.
+- Chromium verifies mobile close/reopen without pausing, restored progress, explicit Pause/Resume and lost retry-reset acknowledgement recovery. Fault tests cover confirmed-child/parent-summary restart recovery, uncertain claims, current permissions/window checks, cross-customer independence and in-flight pause. Syntax and whitespace checks passed.
+- Provider calls are mocked; no real customer sends, production setting changes, merge or deployment were performed. No new credential or environment variable is required.
