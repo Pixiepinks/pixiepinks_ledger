@@ -164,7 +164,9 @@ def test_all_mapped_section_routes_include_the_shared_access_dependency():
     assert not missing,missing
 
 
-@pytest.mark.parametrize('key,label,path',access.SECTIONS)
+# Retail adds action-level grants that intentionally require companion view permissions.
+# Their combinations are exercised separately in test_retail_phase1.py.
+@pytest.mark.parametrize('key,label,path',[row for row in access.SECTIONS if not row[0].startswith('retail.')])
 def test_each_section_can_be_granted_without_granting_others(staff,monkeypatch,key,label,path):
     s=staff;monkeypatch.setattr(main.settings,'SALES_ORDERS_ENABLED',True)
     monkeypatch.setattr(main.settings,'SALES_FULFILLMENT_ENABLED',True)

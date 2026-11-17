@@ -1212,3 +1212,6 @@ from staff_notification_models import (StaffNotificationPreference, StaffNotific
 from collection_send_queue import CollectionSendJob
 
 from media_delivery_status import MediaDeliveryStatus
+
+from retail_models import (RetailShop, RetailVariant, RetailSyncJob, RetailImportRow, RetailCounter,
+    RetailIdentifier, RetailPreview, RetailAudit, RetailException, RetailLabelTemplate, RetailPrintJob)

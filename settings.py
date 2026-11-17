@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+    RETAIL_ENABLED: bool = False
+    SHOPIFY_PRODUCT_WRITE_ENABLED: bool = False  # Reserved; Phase 1 has no product mutation endpoint.
+    RETAIL_LABEL_DIR: str = "/data/retail-labels"
+    RETAIL_MAX_LABELS: int = Field(5000, ge=1, le=10000)
+    RETAIL_MAX_VARIANTS: int = Field(50000, ge=1500, le=100000)
     CURRENCY: str = "LKR"
     SECRET_KEY: str = os.getenv("SECRET_KEY", "change-this-in-railway")
     # Local fallback only. Set META_VERIFY_TOKEN in Railway for production.

@@ -2,6 +2,14 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('retail.products.view','Retail: View products','/crm/retail/products'),
+    ('retail.products.audit','Retail: Audit products','/crm/retail/audit'),
+    ('retail.products.manage','Retail: Manage categories / exceptions','/crm/retail/barcodes'),
+    ('retail.barcodes.assign','Retail: Assign local identifiers','/crm/retail/barcodes'),
+    ('retail.barcodes.print','Retail: Print labels','/crm/retail/labels'),
+    ('retail.sync.run','Retail: Run read-only sync','/crm/retail/sync'),
+    ('retail.sync.view','Retail: View sync history','/crm/retail/sync'),
+    ('retail.settings.manage','Retail: Manage label settings','/crm/retail/labels'),
     ('ad_analytics','Ad Analytics','/crm/ad-analytics'),
     ('marketing','Consent Management','/crm/marketing-consent'),
     ('crm','CRM Dashboard','/crm'),('finance','Finance Overview','/dashboard'),
@@ -20,6 +28,9 @@ KEYS={key for key,_,_ in SECTIONS}
 def allowed(user, section):
     if user is None or getattr(user,'is_active',True) is False:return False
     if user.role=='ADMIN':return True
+    if isinstance(section,str) and section.startswith('retail.'):
+        from settings import settings
+        return settings.RETAIL_ENABLED and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     if section=='ad_analytics':return isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     grants=getattr(user,'section_access',None)
     if grants is None and section=='quick_messages':return user.role in {'ADMIN','SALES_MANAGER'}
@@ -31,6 +42,9 @@ def managed_grant(user,section):
 
 
 def section_for(path):
+    if path.startswith('/crm/retail/'):
+        page=path.split('/')[3]
+        return {'products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print','audit':'retail.products.audit','sync':'retail.sync.view'}.get(page,'retail.products.view')
     if path=='/crm/notifications' or path.startswith('/crm/notifications/'):return 'whatsapp'
     if path=='/crm/ad-flows' or path.startswith('/crm/ad-flows/'):return 'quick_messages'
     if path=='/crm/ad-assignments' or path.startswith('/crm/ad-assignments/'):return 'ad_analytics'
@@ -48,6 +62,9 @@ def section_for(path):
 def enforce(user,path):
     if getattr(user,'section_access',None) is None or user.role=='ADMIN':return
     if path in {'/','/staff-home','/logout'}:return
+    if path.startswith('/crm/retail/'):
+        if not any(allowed(user,key) for key in KEYS if key.startswith('retail.')):raise HTTPException(403,'Retail access has not been granted')
+        return  # Every retail endpoint enforces its granular permission.
     section=section_for(path)
     if section is None or not allowed(user,section):raise HTTPException(403,'Your administrator has not granted access to this section')
     extra=('quick_messages' if path=='/crm/whatsapp/api/quick-messages' else
@@ -59,7 +76,8 @@ def enforce(user,path):
 def landing(user):
     if user.role=='ADMIN' or getattr(user,'section_access',None) is None:return '/dashboard'
     from settings import settings
-    for key,_,path in SECTIONS:
+    for key,_,path in sorted(SECTIONS,key=lambda row:row[0].startswith('retail.')):
+        if key.startswith('retail.') and key not in {'retail.products.view','retail.products.audit','retail.barcodes.print','retail.sync.view'}:continue
         if key=='sales_orders' and not settings.SALES_ORDERS_ENABLED:continue
         if key=='fulfillments' and not settings.SALES_FULFILLMENT_ENABLED:continue
         if allowed(user,key):return path
@@ -69,7 +87,7 @@ def landing(user):
 def login_destination(user,next_url):
     if user.role=='ADMIN' or getattr(user,'section_access',None) is None:return next_url
     section=section_for(next_url.split('?',1)[0])
-    for key,_,path in SECTIONS:
+    for key,_,path in sorted(SECTIONS,key=lambda row:row[0].startswith('retail.')):
         if key==section and allowed(user,key):return path
     return landing(user)
 
