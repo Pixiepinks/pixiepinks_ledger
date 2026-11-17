@@ -1,0 +1,3 @@
+# Offline rasterization and independent scanner verification; not runtime requirements.
+zxing-cpp==2.3.0
+pypdfium2==4.30.0

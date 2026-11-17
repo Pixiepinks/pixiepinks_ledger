@@ -4727,3 +4727,24 @@ def _start_collection_queue_worker():
 def _stop_collection_queue_worker():
     if _collection_queue_stop is not None: _collection_queue_stop.set()
     if _collection_queue_thread is not None: _collection_queue_thread.join(timeout=12)
+
+
+# Default-off retail worker: only queued read-only imports and local PDF generation.
+from retail_routes import build_router as build_retail_router
+app.include_router(build_retail_router(get_db,require_user,_require_csrf,_csrf_token,templates))
+_retail_stop=threading.Event()
+_retail_thread=None
+
+@app.on_event('startup')
+def _start_retail_worker():
+    global _retail_thread
+    if not settings.RETAIL_ENABLED:return
+    import retail_worker
+    _retail_stop.clear()
+    _retail_thread=threading.Thread(target=retail_worker.worker,args=(SessionLocal,_retail_stop),daemon=True,name='retail-jobs')
+    _retail_thread.start()
+
+@app.on_event('shutdown')
+def _stop_retail_worker():
+    _retail_stop.set()
+    if _retail_thread:_retail_thread.join(timeout=2)

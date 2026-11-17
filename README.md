@@ -1207,3 +1207,13 @@ false. See [the operator guide](docs/learning-center.md) for the inspected basel
 additive migration `20261025_14`, API/permissions, privacy limitations, Railway cron
 setup, budgets, manual acceptance checklist and rollback. Scheduling has not been
 deployed or verified active; no production activation is part of this change.
+
+### Retail Management Phase 1 (default off)
+
+A read-only Shopify variant master, local SKU/Code 128 allocation ledger, product
+audits and PDF label jobs are available behind `RETAIL_ENABLED=false` by default.
+See [retail setup, permissions and rollout](docs/retail-management-phase1.md),
+[DBL 365B Windows/Chrome hardware setup](docs/dbl365b-setup.md) and the
+[non-production sample PDFs](docs/samples/README.md). Migration `20261117_42` is
+additive. No Shopify product mutations, raw USB printing, receipt printing or POS
+checkout are implemented. Keep product writing disabled.

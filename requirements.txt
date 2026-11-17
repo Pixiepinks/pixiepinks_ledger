@@ -26,3 +26,7 @@ Babel==2.18.0
 # Standards-based encrypted Web Push; subscription encryption uses cryptography.
 pywebpush==2.0.3
 cryptography>=44.0.1,<47
+# Retail labels: standards-based Code 128, vector PDF and Sinhala text shaping.
+python-barcode==0.16.1
+fpdf2==2.8.5
+uharfbuzz==0.52.0
