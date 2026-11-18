@@ -50,3 +50,7 @@ Check any scanner-added symbology prefix or Enter/Tab suffix in its configuratio
 - **PDF generation failed:** inspect job history and persistent storage/profile settings, then request an explicit reprint. This never sends to hardware automatically.
 
 No hardware acceptance result is claimed by the software tests. Keep the signed-off matrix with your deployment record before staff use bulk labels. Receipt printing, automatic raw USB access and TSPL direct printing are not implemented in Phase 1.
+
+## Compact SKU and price profile
+
+Select **30x15 Compact — SKU & Price** for product name → barcode → barcode/SKU on the same line → price. Its 0.625 mm default margin can be calibrated within 0.5–0.75 mm. Confirm that the purchased driver can print this close to the label edges at 100% scaling. Inspect the 4.5 pt identifier line, full SKU and 5 pt price as well as scanner decoding. Use a larger existing profile when required fields cannot fit; never shorten assigned identifiers. The original 30×15 preset remains available separately.
