@@ -21,8 +21,8 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         except (ValueError,TypeError):raise HTTPException(422,'Provide a JSON object') from None
         if not isinstance(value,dict) or set(value)-set(allowed) or not set(required or [])<=set(value):raise HTTPException(422,'Invalid retail request fields')
         return value
-    def filters(q='',category='',issue='',active=''):
-        return dict(q=q,category=category,issue=issue,active=active)
+    def filters(q='',category='',issue='',active='',product_type='',vendor='',collection=''):
+        return dict(q=q,category=category,issue=issue,active=active,product_type=product_type,vendor=vendor,collection=collection)
     def job_public(row):
         return {'id':row.id,'status':row.status,'total':row.total,'error':row.error,'parent_id':row.parent_id,
             'created_at':row.created_at.isoformat()+'Z','download_available':bool(row.file_ref),'downloaded':bool(row.downloaded_at),'user_confirmed_printed':bool(row.printed_at)}
@@ -52,16 +52,20 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
             'screen':screen,'csrf':csrf_token(request),'retail_permissions':[p for p in service.PERMISSIONS if user.role=='ADMIN' or isinstance(user.section_access,list) and p in user.section_access]},headers={'Cache-Control':'private, no-store'})
 
     @router.get('/api/products')
-    def products(q:str=Query('',max_length=100),category:str='',issue:str='',active:str='',offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=100),db=Depends(get_db),user=Depends(require_user)):
-        service.require(user,'retail.products.view');return service.page(db,filters(q,category,issue,active),offset,limit)
+    def products(q:str=Query('',max_length=100),category:str='',issue:str='',active:str='',product_type:str=Query('',max_length=200),vendor:str=Query('',max_length=200),collection:str=Query('',max_length=100),offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=100),db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.products.view');return service.page(db,filters(q,category,issue,active,product_type,vendor,collection),offset,limit)
+
+    @router.get('/api/filter-options')
+    def filter_options(db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.products.view');return service.filter_options(db)
 
     @router.get('/api/audit')
     def audit_summary(db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.products.audit');return service.summary(db)
 
     @router.get('/api/export.csv')
-    def export(q:str=Query('',max_length=100),category:str='',issue:str='',active:str='',db=Depends(get_db),user=Depends(require_user)):
-        service.require(user,'retail.products.audit');f=filters(q,category,issue,active)
+    def export(q:str=Query('',max_length=100),category:str='',issue:str='',active:str='',product_type:str=Query('',max_length=200),vendor:str=Query('',max_length=200),collection:str=Query('',max_length=100),db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.products.audit');f=filters(q,category,issue,active,product_type,vendor,collection)
         service.filtered(db,f)  # Validate before beginning a streaming response.
         return StreamingResponse(service.csv_export(db,f),media_type='text/csv; charset=utf-8',headers={'Content-Disposition':'attachment; filename="retail-audit.csv"','Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff'})
 
