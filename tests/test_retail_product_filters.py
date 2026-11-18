@@ -106,6 +106,39 @@ def test_browser_filters_apply_automatically_reset_and_freeze_correct_selection(
         search.fill('bicycle');page.get_by_role('button',name='Search',exact=True).click();search.fill('torch')
         page.locator('#product-rows').get_by_text('Kids Projector Torch Green',exact=True).wait_for()
         assert 'Bicycle' not in page.locator('#product-rows').inner_text()
+        # A shared supplier code bypasses filters and requires an explicit choice.
+        with r.sessions() as db:
+            db.get(RetailVariant,1).barcode='00123456789012'
+            db.get(RetailVariant,2).barcode='00123456789012'
+            db.commit()
+        page.locator('#scan-code').fill('00123456789012')
+        page.locator('#scan-code').press('Enter')
+        page.locator('#scan-summary').get_by_text('2 exact barcode matches.',exact=False).wait_for()
+        assert '0 variants checked' in page.locator('#selection-count').inner_text()
+        assert page.locator('#scan-options button').count()==2
+        page.get_by_role('button',name='Choose 20 inches',exact=True).click()
+        assert '1 variants checked' in page.locator('#selection-count').inner_text()
+        assert not page.locator('#scan-picker').is_visible()
+        assert '20 inches' in page.locator('#retail-status').inner_text()
         assert not errors
         page.screenshot(path='/tmp/retail-product-filters.png',full_page=True)
         browser.close()
+
+
+def test_supplier_scan_exact_duplicates_pagination_and_scope(retail):
+    r=retail;catalog(r)
+    code='00123456789012'
+    with r.sessions() as db:
+        db.get(RetailVariant,1).barcode=code
+        db.get(RetailVariant,2).barcode=code
+        db.get(RetailVariant,3).barcode=code+'3'
+        db.get(RetailVariant,4).barcode=code
+        db.get(RetailVariant,4).shop='another-shop'
+        db.commit()
+    data=r.client.get('/crm/retail/api/scan',params={'code':code}).json()
+    assert data['total']==2 and [v['id'] for v in data['rows']]==[1,2]
+    assert data['code']==code
+    assert r.client.get('/crm/retail/api/scan',params={'code':code,'offset':1}).json()['rows'][0]['id']==2
+    assert r.client.get('/crm/retail/api/scan?code=123456789012').json()['total']==0
+    assert r.client.get('/crm/retail/api/scan?code=').status_code==422
+    r.login('quick-staff');assert r.client.get('/crm/retail/api/scan',params={'code':code}).status_code==403
