@@ -55,6 +55,15 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     def products(q:str=Query('',max_length=100),category:str='',issue:str='',active:str='',product_type:str=Query('',max_length=200),vendor:str=Query('',max_length=200),collection:str=Query('',max_length=100),offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=100),db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.products.view');return service.page(db,filters(q,category,issue,active,product_type,vendor,collection),offset,limit)
 
+    @router.get('/api/scan')
+    def scan(code:str=Query(...,min_length=1,max_length=100),offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.products.view')
+        if not service.code_valid(code):raise HTTPException(422,'Scan a valid barcode without control characters')
+        q=db.query(RetailVariant).filter(RetailVariant.shop==service.shop(),
+            service.or_(RetailVariant.barcode==code,RetailVariant.local_barcode==code))
+        ctx=service.audit_context(db)
+        return {'code':code,'total':q.count(),'rows':[service.public(row,ctx) for row in q.order_by(RetailVariant.id).offset(offset).limit(50)]}
+
     @router.get('/api/filter-options')
     def filter_options(db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.products.view');return service.filter_options(db)
