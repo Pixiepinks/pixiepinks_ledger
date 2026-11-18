@@ -66,6 +66,16 @@ Compact 15 mm labels combine product/variant text and hide brand/SKU/price by de
 
 **Gap, sensor calibration and density are stored operator settings.** The PDF/Chrome/driver path cannot set the printer's firmware density or calibrate its sensor. Apply the settings manually in the DBL Windows driver where supported. Density uses a stored generic 0–15 value; verify the actual driver scale. Confirm usable print width, minimum label width and roll support against the purchased unit; no maximum DBL printhead width is assumed by this implementation.
 
+### 30x15 Compact — SKU & Price
+
+Choose **30x15 Compact — SKU & Price** in the Label profile dropdown (API preset ID `30x15-compact-sku-price`). This is a separate preset; existing 30×15 and other saved profiles retain their layouts.
+
+It prints exactly: one product-name line (5 pt), a Code 128 graphic (5 mm high), `barcode | SKU: value` together on one line (4.5 pt), then the variant selling price in `Rs. 1,500.00` format on a separate bottom line (5 pt). Brand and variant lines are hidden. The default margin is 0.625 mm, adjustable between 0.5 and 0.75 mm subject to physical printing validation. Modules remain at least two 203-dpi dots with ten-module quiet zones.
+
+Product names may be shortened with an ellipsis without splitting combining marks/conjuncts. Barcode values, SKUs and prices are never shortened or scaled down. An SKU and a valid LKR variant selling price are required. SKU priority remains the existing Shopify SKU, then an assigned local SKU if Shopify has none. The price comes from the selected variant's selling price, not compare-at price or another variant; missing/non-LKR currency is rejected rather than assumed. All selected rows are checked for fit before preview/queueing, including rows beyond the five-label preview.
+
+This layout's size, font sizes, barcode height and field visibility are fixed; use another preset if the required identifiers cannot fit. Margins, copy/layout settings and calibration can be saved as a custom profile while retaining this layout. No migration, allocation or Shopify edit is required. Test PDF: [compact SKU/price sample](samples/dbl365b-30x15-compact-sku-price-test.pdf). No physical printer certification is implied.
+
 See [DBL 365B setup and hardware acceptance](dbl365b-setup.md).
 
 ## Print operations

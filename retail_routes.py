@@ -38,8 +38,9 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         return row.config
     async def print_payload(request,db,user):
         p=await body(request,{'selection','profile','default_copies','copies','confirm','preview_token'}, {'selection','profile'})
-        rows,total=labels.print_rows(db,user,p['selection'],p.get('default_copies',1),p.get('copies'))
-        return p,rows,total,profile(db,p['profile'])
+        c=profile(db,p['profile'])
+        rows,total=labels.print_rows(db,user,p['selection'],p.get('default_copies',1),p.get('copies'),require_lkr=labels.is_compact(c))
+        return p,rows,total,c
 
     @router.get('/{screen}',include_in_schema=False)
     def screen(screen:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
@@ -163,7 +164,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.get('/api/profiles')
     def profiles(db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.barcodes.print')
-        return {'rows':[{'id':name,'title':name+' mm — 203 dpi','config':c,'version':0} for name,c in labels.PRESETS.items()]+[
+        return {'rows':[{'id':name,'title':labels.PRESET_TITLES.get(name,name+' mm — 203 dpi'),'config':c,'version':0} for name,c in labels.PRESETS.items()]+[
             {'id':r.id,'title':r.title,'config':r.config,'version':r.version} for r in db.query(RetailLabelTemplate).filter_by(shop=service.shop()).order_by(RetailLabelTemplate.id)],
             'max_labels':__import__('settings').settings.RETAIL_MAX_LABELS}
 
@@ -177,6 +178,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.post('/api/labels/preview')
     async def preview_labels(request:Request,db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.barcodes.print');p,rows,total,c=await print_payload(request,db,user)
+        if labels.is_compact(c):labels.validate_rows(rows,c)
         raw=labels.backend.render(labels.labels(rows,limit=5),c)
         preview=RetailPreview(token=secrets.token_hex(16),shop=service.shop(),actor_id=user.id,kind='PRINT',payload={'rows':rows,'total':total,'config':c},expires_at=datetime.utcnow()+timedelta(minutes=10))
         db.add(preview);db.commit()
