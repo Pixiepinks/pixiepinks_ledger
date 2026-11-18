@@ -220,8 +220,8 @@ def test_real_adapter_legacy_and_multiple_schemas_never_authorize_writes(monkeyp
     calls=[]
     def handle(request):
         body=json.loads(request.content);calls.append(body)
-        assert 'mutation' not in body['query']
-        data={'currentAppInstallation':{'accessScopes':[{'handle':'write_products'}]},'variant':{'fields':[{'name':'barcode'},{'name':'barcodes'}]},'input':{'inputFields':[{'name':'barcode'},{'name':'barcodes'}]}}
+        assert body['query'].lstrip().startswith('query ')  # Introspection may name mutation types.
+        data={'shop':{'myshopifyDomain':'fixture.myshopify.com'},'currentAppInstallation':{'accessScopes':[{'handle':'write_products'}]},'variant':{'fields':[{'name':'barcode'},{'name':'barcodes'}]},'input':{'inputFields':[{'name':'barcode'},{'name':'barcodes'}]}}
         return httpx.Response(200,json={'data':data},headers={'X-Shopify-API-Version':'2026-10'})
     with httpx.Client(transport=httpx.MockTransport(handle)) as http:
         remote=BarcodeClient(http_client=http);remote._token='fixture';remote._expires_at=10**12

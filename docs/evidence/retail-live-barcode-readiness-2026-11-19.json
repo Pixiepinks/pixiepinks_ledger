@@ -1,0 +1,62 @@
+{
+  "client_date": "2026-11-19",
+  "client_timezone": "Asia/Colombo",
+  "base_commit": "48c691d",
+  "branch": "feature/retail-phase1b-live-readiness",
+  "authorization": "Read-only existing live connection only; no mutations, deployment, scope changes or production configuration changes",
+  "readiness": {
+    "adapter_api_requested": "2026-10",
+    "catalog_collision_coverage_verified": false,
+    "complete_barcode_state_verified": false,
+    "global_api_version": "2026-07",
+    "missing_configuration": [
+      "SHOPIFY_SHOP",
+      "SHOPIFY_CLIENT_ID",
+      "SHOPIFY_CLIENT_SECRET"
+    ],
+    "pilot_variant": null,
+    "read_only": true,
+    "read_products_scope_observed": false,
+    "reason": "LIVE_CONNECTION_NOT_CONFIGURED",
+    "served_api_version": null,
+    "shop_identity_verified": false,
+    "shop_source": "existing_application_configuration",
+    "status": "BLOCKED",
+    "variant_identity_matches_verified": false,
+    "verified_shop_domain": null,
+    "write_products_scope_observed": false
+  },
+  "official_documentation": [
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/objects/ProductVariant",
+      "status": 403,
+      "result": "PROXY_DENIED"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/ProductVariantsBulkInput",
+      "status": 403,
+      "result": "PROXY_DENIED"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/productVariantsBulkUpdate",
+      "status": 403,
+      "result": "PROXY_DENIED"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/BarcodeInput",
+      "status": 403,
+      "result": "PROXY_DENIED"
+    }
+  ],
+  "live_shop_requests_performed": false,
+  "live_mutations_performed": false,
+  "lab_connection_used": false,
+  "pilot_variant": null,
+  "decision": "RETAIN_FAIL_CLOSED",
+  "readiness_command_exit_code": 2,
+  "environment_connection_evidence": {
+    "configured_secret_bindings": 0,
+    "configured_outbound_identities": 0,
+    "shopify_or_railway_connector_available": false
+  }
+}
