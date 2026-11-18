@@ -1,5 +1,9 @@
 # Phase 1B: controlled Shopify barcode synchronization
 
+## Latest live-readiness authorization (2026-11-19)
+
+Read-only inspection may use the existing authorized **live** PixiePinks application connection; do not substitute Barcode Lab. Live mutations remain prohibited until a separate exact-variant authorization. Barcode-only diagnostics are pinned to 2026-10 without changing the global version. Use `python -m scripts.verify_live_barcode_connection`; it cannot enable writes. See the [current live readiness report](retail-live-barcode-readiness-report.md), [evidence](evidence/retail-live-barcode-readiness-2026-11-19.json) and [blocked pilot plan](retail-live-barcode-pilot-plan.md). The current workspace has no authorized live connection; complete state and mutation semantics remain unverified. Historical development-store validation instructions below are not authorization to substitute a development store for this task.
+
 ## Release status and hard blocker
 
 The reviewed batch UI, durable approval/queue/history, locking, reconciliation and tests are implemented. **The production Shopify write adapter is intentionally unsupported and cannot mutate products. This release is not ready for a live synchronization pilot.** No production migration, configuration, scope change or live product write was performed.
