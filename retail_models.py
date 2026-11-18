@@ -143,3 +143,62 @@ class RetailPrintJob(Base):
     downloaded_at=Column(DateTime)
     printed_at=Column(DateTime)
     claimed_at=Column(DateTime)
+
+
+class RetailBarcodeJob(Base):
+    __tablename__='retail_barcode_jobs'
+    id=Column(Integer,primary_key=True)
+    shop=Column(String(100),nullable=False,index=True)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    actor=Column(String(100),nullable=False)
+    token=Column(String(40),nullable=False,unique=True)
+    status=Column(String(30),nullable=False,default='PREVIEW',index=True)
+    api_version=Column(String(20),nullable=False)
+    digest=Column(String(64),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    expires_at=Column(DateTime,nullable=False)
+    approved_at=Column(DateTime)
+    completed_at=Column(DateTime)
+    canceled_at=Column(DateTime)
+
+
+class RetailBarcodeItem(Base):
+    __tablename__='retail_barcode_items'
+    id=Column(Integer,primary_key=True)
+    job_id=Column(Integer,ForeignKey('retail_barcode_jobs.id'),nullable=False,index=True)
+    variant_id=Column(Integer,ForeignKey('retail_variants.id'),nullable=False)
+    idempotency_key=Column(String(64),nullable=False,unique=True)
+    snapshot=Column(JSON,nullable=False)
+    before=Column(JSON,nullable=False,default=dict)
+    after=Column(JSON)
+    status=Column(String(30),nullable=False)
+    reason=Column(String(100),nullable=False)
+    attempts=Column(Integer,nullable=False,default=0)
+    next_attempt_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    checked_at=Column(DateTime)
+    sent_at=Column(DateTime)
+    verified_at=Column(DateTime)
+    lease_until=Column(DateTime)
+    claim_token=Column(String(40))
+    __table_args__=(UniqueConstraint('job_id','variant_id',name='uq_retail_barcode_job_variant'),)
+
+
+class RetailBarcodeReservation(Base):
+    __tablename__='retail_barcode_reservations'
+    shop=Column(String(100),primary_key=True)
+    variant_id=Column(Integer,ForeignKey('retail_variants.id'),primary_key=True)
+    value=Column(String(100),nullable=False)
+    item_id=Column(Integer,ForeignKey('retail_barcode_items.id'),nullable=False,unique=True)
+    __table_args__=(UniqueConstraint('shop','value',name='uq_retail_barcode_reserved_value'),)
+
+
+class RetailBarcodeEvent(Base):
+    __tablename__='retail_barcode_events'
+    id=Column(Integer,primary_key=True)
+    shop=Column(String(100),nullable=False,index=True)
+    job_id=Column(Integer,ForeignKey('retail_barcode_jobs.id'),nullable=False,index=True)
+    item_id=Column(Integer,ForeignKey('retail_barcode_items.id'),index=True)
+    actor=Column(String(100),nullable=False)
+    action=Column(String(40),nullable=False)
+    detail=Column(JSON,nullable=False,default=dict)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)

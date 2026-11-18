@@ -43,6 +43,7 @@
 {% if can_access_section(nav_user,'retail.barcodes.print') %}<a href="/crm/retail/labels">Barcode Label Printing</a>{% endif %}
 {% if can_access_section(nav_user,'retail.products.audit') %}<a href="/crm/retail/audit">Product Audit</a>{% endif %}
 {% if can_access_section(nav_user,'retail.sync.view') %}<a href="/crm/retail/sync">Import &amp; Sync History</a>{% endif %}
+{% if can_access_section(nav_user,'retail.barcodes.shopify_sync') %}<a href="/crm/retail/barcode-sync">Shopify Barcode Sync</a>{% endif %}
 {% endif %}
       <p class="nav-label">Inventory / business</p>
 {% if can_access_section(nav_user,"items") %}      <a href="/items" class="{{ 'active' if request.url.path == '/items' else '' }}"><span>□</span> Items</a>{% endif %}

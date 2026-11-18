@@ -2,6 +2,7 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('retail.barcodes.shopify_sync','Retail: Approve Shopify barcode sync','/crm/retail/barcode-sync'),
     ('retail.products.view','Retail: View products','/crm/retail/products'),
     ('retail.products.audit','Retail: Audit products','/crm/retail/audit'),
     ('retail.products.manage','Retail: Manage categories / exceptions','/crm/retail/barcodes'),
@@ -44,7 +45,7 @@ def managed_grant(user,section):
 def section_for(path):
     if path.startswith('/crm/retail/'):
         page=path.split('/')[3]
-        return {'products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print','audit':'retail.products.audit','sync':'retail.sync.view'}.get(page,'retail.products.view')
+        return {'products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print','audit':'retail.products.audit','sync':'retail.sync.view','barcode-sync':'retail.barcodes.shopify_sync'}.get(page,'retail.products.view')
     if path=='/crm/notifications' or path.startswith('/crm/notifications/'):return 'whatsapp'
     if path=='/crm/ad-flows' or path.startswith('/crm/ad-flows/'):return 'quick_messages'
     if path=='/crm/ad-assignments' or path.startswith('/crm/ad-assignments/'):return 'ad_analytics'

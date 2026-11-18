@@ -3,12 +3,13 @@ import json
 import secrets
 from datetime import datetime,timedelta
 from fastapi import APIRouter,Depends,HTTPException,Request,Query
-from fastapi.responses import Response,StreamingResponse
+from fastapi.responses import Response,StreamingResponse,JSONResponse
 from sqlalchemy.exc import IntegrityError
 from retail_models import *
 import retail_service as service
 import retail_labels as labels
 import retail_sync as sync
+import retail_barcode_sync as barcode_sync
 
 
 def build_router(get_db,require_user,csrf,csrf_token,templates):
@@ -45,11 +46,48 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.get('/{screen}',include_in_schema=False)
     def screen(screen:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
         permission={'products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print',
-                    'audit':'retail.products.audit','sync':'retail.sync.view'}.get(screen)
+                    'audit':'retail.products.audit','sync':'retail.sync.view','barcode-sync':barcode_sync.PERMISSION}.get(screen)
         if not permission:raise HTTPException(404,'Retail screen not found')
         service.require(user,permission)
-        return templates.TemplateResponse('retail.html',{'request':request,'user':user,'page_title':{'products':'Product Master','barcodes':'Barcode Management','labels':'Barcode Label Printing','audit':'Product Audit','sync':'Import & Sync History'}[screen],
+        return templates.TemplateResponse('retail.html',{'request':request,'user':user,'page_title':{'products':'Product Master','barcodes':'Barcode Management','labels':'Barcode Label Printing','audit':'Product Audit','sync':'Import & Sync History','barcode-sync':'Shopify Barcode Sync'}[screen],
             'screen':screen,'csrf':csrf_token(request),'retail_permissions':[p for p in service.PERMISSIONS if user.role=='ADMIN' or isinstance(user.section_access,list) and p in user.section_access]},headers={'Cache-Control':'private, no-store'})
+
+    def barcode_response(value):
+        return JSONResponse(value,headers={'Cache-Control':'private, no-store'})
+
+    @router.get('/api/barcode-sync')
+    def barcode_overview(offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
+        return barcode_response(barcode_sync.overview(db,user,offset))
+
+    @router.post('/api/barcode-sync/preview')
+    async def barcode_preview(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        barcode_sync.authorize(user);p=await body(request,{'selection'},{'selection'})
+        result=barcode_sync.preview(db,user,p['selection']);db.commit();return barcode_response(result)
+
+    @router.post('/api/barcode-sync/{rid}/approve')
+    async def barcode_approve(rid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        barcode_sync.authorize(user);p=await body(request,{'token','confirmation'},{'token','confirmation'})
+        result=barcode_sync.approve(db,user,rid,p['token'],p['confirmation']);db.commit();return barcode_response(result)
+
+    @router.post('/api/barcode-sync/{rid}/cancel')
+    async def barcode_cancel(rid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        barcode_sync.authorize(user);await body(request,set())
+        result=barcode_sync.cancel(db,user,rid);db.commit();return barcode_response(result)
+
+    @router.post('/api/barcode-sync/{rid}/reconcile')
+    async def barcode_reconcile(rid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        barcode_sync.authorize(user);await body(request,set())
+        result=barcode_sync.reconcile(db,user,rid);db.commit();return barcode_response(result)
+
+    @router.get('/api/barcode-sync/{rid}/events')
+    def barcode_events(rid:int,offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
+        job=barcode_sync.get_job(db,user,rid)
+        q=db.query(RetailBarcodeEvent).filter_by(job_id=job.id,shop=service.shop())
+        return {'total':q.count(),'rows':[{'action':e.action,'item_id':e.item_id,'actor':e.actor,'detail':e.detail,'at':e.created_at.isoformat()+'Z'} for e in q.order_by(RetailBarcodeEvent.id).offset(offset).limit(50)]}
+
+    @router.get('/api/barcode-sync/{rid}/export.csv')
+    def barcode_csv(rid:int,db=Depends(get_db),user=Depends(require_user)):
+        return Response(barcode_sync.csv_report(db,user,rid),media_type='text/csv',headers={'Content-Disposition':'attachment; filename="barcode-sync.csv"','Cache-Control':'private, no-store'})
 
     @router.get('/api/products')
     def products(q:str=Query('',max_length=100),category:str='',issue:str='',active:str='',product_type:str=Query('',max_length=200),vendor:str=Query('',max_length=200),collection:str=Query('',max_length=100),offset:int=Query(0,ge=0),limit:int=Query(50,ge=1,le=100),db=Depends(get_db),user=Depends(require_user)):

@@ -1217,3 +1217,13 @@ See [retail setup, permissions and rollout](docs/retail-management-phase1.md),
 [non-production sample PDFs](docs/samples/README.md). Migration `20261117_42` is
 additive. No Shopify product mutations, raw USB printing, receipt printing or POS
 checkout are implemented. Keep product writing disabled.
+
+### Retail Management Phase 1B (write adapter blocked)
+
+A reviewed barcode synchronization queue, durable history, recovery and default-off
+write gates are available on the Phase 1B branch. The production adapter deliberately
+fails closed until Shopify's complete multiple-barcode contract is verified; this is
+**not ready for live product synchronization**. See [Phase 1B deployment, scope,
+staging and recovery guide](docs/retail-management-phase1b.md). Additive migration
+`20261118_43` retains all evidence on rollback. No automatic deployment, scope
+change, environment edit or live product update is performed.
