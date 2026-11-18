@@ -15,7 +15,9 @@ class Settings(BaseSettings):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
     RETAIL_ENABLED: bool = False
-    SHOPIFY_PRODUCT_WRITE_ENABLED: bool = False  # Reserved; Phase 1 has no product mutation endpoint.
+    SHOPIFY_PRODUCT_WRITE_ENABLED: bool = False
+    RETAIL_BARCODE_SYNC_ENABLED: bool = False
+    RETAIL_BARCODE_SYNC_BATCH_LIMIT: int = Field(5, ge=1, le=25)
     RETAIL_LABEL_DIR: str = "/data/retail-labels"
     RETAIL_MAX_LABELS: int = Field(5000, ge=1, le=10000)
     RETAIL_MAX_VARIANTS: int = Field(50000, ge=1500, le=100000)

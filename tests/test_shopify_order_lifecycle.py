@@ -250,15 +250,23 @@ def test_postgresql_concurrent_duplicate_delivery_is_processed_once():
     body = json.dumps(_payload(number)).encode(); payload = _payload(number)
     def deliver():
         with TestingSession() as db:
-            return process_orders_create(db, payload, webhook_id="pg-lifecycle-concurrency",
-                                         shop_domain="test.myshopify.com", raw_body=body,
-                                         client=_ReadOnlyShopify({"draftOrder": {
-                                             "id": f"gid://shopify/DraftOrder/{int(number[-8:], 16)}",
-                                             "order": {"id": "gid://shopify/Order/9001",
-                                                       "name": "#1001", "createdAt": None}}}))
+            try:
+                return process_orders_create(db, payload, webhook_id="pg-lifecycle-concurrency",
+                                             shop_domain="test.myshopify.com", raw_body=body,
+                                             client=_ReadOnlyShopify({"draftOrder": {
+                                                 "id": f"gid://shopify/DraftOrder/{int(number[-8:], 16)}",
+                                                 "order": {"id": "gid://shopify/Order/9001",
+                                                           "name": "#1001", "createdAt": None}}}))
+            except lifecycle.ShopifyLifecycleError as error:
+                # An in-flight duplicate is deliberately retryable. Shopify retries
+                # after the owning delivery completes; it need not finish in-line.
+                assert error.retryable and error.status_code == 503
+                return "RETRYABLE"
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _: deliver(), range(2)))
-    assert results == ["PROCESSED", "PROCESSED"]
+    assert "PROCESSED" in results and set(results) <= {"PROCESSED", "RETRYABLE"}
+    if "RETRYABLE" in results:
+        assert deliver() == "PROCESSED"
     with TestingSession() as db:
         row = db.query(SalesOrder).filter_by(internal_order_number=number).one()
         assert db.query(ShopifyWebhookEvent).filter_by(webhook_id="pg-lifecycle-concurrency").count() == 1

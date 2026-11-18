@@ -10,7 +10,7 @@ from sqlalchemy import select,or_,func,case
 from retail_models import *
 from settings import settings
 
-PERMISSIONS=('retail.products.view','retail.products.audit','retail.products.manage','retail.barcodes.assign',
+PERMISSIONS=('retail.barcodes.shopify_sync','retail.products.view','retail.products.audit','retail.products.manage','retail.barcodes.assign',
              'retail.barcodes.print','retail.sync.run','retail.sync.view','retail.settings.manage')
 CATEGORIES={'BIC':'Bicycle','GFT':'Gift Pack','TOY':'Toy','BAG':'School Bag','BOT':'Water Bottle',
             'PLT':'Plate Set','RID':'Ride-on Vehicle','STA':'Stationery','OTH':'Other'}
@@ -63,7 +63,10 @@ def audit_context(db):
         for kind,value in [('sku',row.sku),('barcode',row.barcode),('effective',row.local_barcode or row.barcode)]:
             if value:groups.setdefault((kind,value),set()).add(row.id)
     shared={key for key,ids in groups.items() if ids==exceptions.get(key) and len(ids)>1}
-    return {'sku':skus,'barcode':barcodes,'effective':effective,'products':products,'shared':shared,'total':len(rows)}
+    checks={}
+    for item in db.query(RetailBarcodeItem).join(RetailBarcodeJob).filter(RetailBarcodeJob.shop==shop(),RetailBarcodeItem.checked_at!=None).order_by(RetailBarcodeItem.checked_at.desc(),RetailBarcodeItem.id.desc()):
+        checks.setdefault(item.variant_id,{'status':item.status,'code':item.snapshot['code'],'checked_at':item.checked_at.isoformat()+'Z','verified_at':item.verified_at.isoformat()+'Z' if item.verified_at else None})
+    return {'barcode_checks':checks,'sku':skus,'barcode':barcodes,'effective':effective,'products':products,'shared':shared,'total':len(rows)}
 
 
 def issues(row,ctx):
@@ -78,7 +81,10 @@ def issues(row,ctx):
     if value and not code_valid(value):result.append('INVALID_BARCODE')
     if row.barcode and code_valid(row.barcode) and not row.local_barcode:result.append('EXISTING_MANUFACTURER_OR_EXTERNAL')
     if value and ctx['effective'][value]>1 and ('effective',value) not in ctx['shared']:result.append('SCAN_CONFLICT')
-    if row.local_barcode or row.local_sku:result.append('LOCAL_PENDING_SYNC')
+    check=ctx.get('barcode_checks',{}).get(row.id,{})
+    verified=check.get('status')=='VERIFIED' and check.get('code')==row.local_barcode and (not row.barcode or row.barcode==row.local_barcode)
+    if row.local_sku or row.local_barcode and not verified:result.append('LOCAL_PENDING_SYNC')
+    if verified:result.append('VERIFIED_ON_SHOPIFY')
     if row.local_barcode and row.barcode and row.local_barcode==row.barcode:result.append('LOCAL_MATCHES_SHOPIFY')  # Observation, never a confirmed write.
     if row.local_barcode and row.barcode and row.local_barcode!=row.barcode and row.barcode_source!='LOCAL_ALTERNATIVE':result.append('BARCODE_RECONCILIATION')
     if row.local_sku and row.sku and row.local_sku!=row.sku:result.append('SKU_RECONCILIATION')
@@ -94,13 +100,14 @@ def issues(row,ctx):
 def public(row,ctx):
     return {'id':row.id,'version':row.version,'product_id':row.product_id,'variant_id':row.variant_id,'title':row.title,'variant_title':row.variant_title,
         'sku':row.sku or '', 'local_sku':row.local_sku or '', 'barcode':row.barcode or '', 'local_barcode':row.local_barcode or '',
+        'shopify_verification':ctx.get('barcode_checks',{}).get(row.id),
         'effective_barcode':scan_value(row),'category':row.category or '', 'product_type':row.product_type,'vendor':row.vendor,
         'price':str(row.price) if row.price is not None else '', 'currency':row.currency,'image':row.image,
         'compare_at_price':str(row.compare_at_price) if row.compare_at_price is not None else '', 'inventory_item_id':row.inventory_item_id,'inventory_tracked':row.tracked,
         'shopify_updated_at':row.shopify_updated_at.isoformat()+'Z' if row.shopify_updated_at else None,'barcode_source':row.barcode_source,'alternative_reason':row.barcode_alternative_reason,'print_symbology':'CODE128','external_symbology':'UNKNOWN',
         'status':row.product_status,'missing':row.missing,'options':row.options,'collections':row.collections,
         'collections_complete':row.collections_complete,'synced_at':row.synced_at.isoformat()+'Z','issues':issues(row,ctx),
-        'identifier_source':'LOCAL_PENDING_SYNC' if row.local_barcode else 'SHOPIFY_EXISTING' if row.barcode else 'MISSING',
+        'identifier_source':'LOCAL_VERIFIED_SHOPIFY' if 'VERIFIED_ON_SHOPIFY' in issues(row,ctx) else 'LOCAL_PENDING_SYNC' if row.local_barcode else 'SHOPIFY_EXISTING' if row.barcode else 'MISSING',
         'admin_url':f"https://{row.shop}.myshopify.com/admin/products/{row.product_id.rsplit('/',1)[-1]}"}
 
 
