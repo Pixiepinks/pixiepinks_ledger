@@ -1,0 +1,25 @@
+{
+  "checked_on": "2026-11-18",
+  "base_commit": "48c691d",
+  "branch": "feature/retail-phase1b-barcode-adapter",
+  "official_documentation": [
+    {"url": "https://shopify.dev/docs/api/admin-graphql/2026-10/objects/ProductVariant", "result": "PROXY_DENIED", "http_status": 403},
+    {"url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/ProductVariantsBulkInput", "result": "PROXY_DENIED", "http_status": 403},
+    {"url": "https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/productVariantsBulkUpdate", "result": "PROXY_DENIED", "http_status": 403},
+    {"url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/BarcodeInput", "result": "PROXY_DENIED", "http_status": 403}
+  ],
+  "authorized_shop_connection_configured": false,
+  "installed_scopes_verified": false,
+  "actual_shop_api_version_verified": false,
+  "official_barcode_collection_contract_verified": false,
+  "complete_remote_barcode_inspection_verified": false,
+  "complete_catalog_collision_check_verified": false,
+  "safe_untyped_mutation_semantics_verified": false,
+  "development_store_configured": false,
+  "development_store_validation_performed": false,
+  "live_pixiepinks_mutations_performed": false,
+  "explicit_diagnostic_api_version": "2026-10",
+  "global_api_version_changed": false,
+  "fixture_provenance": "Synthetic transport/introspection fixtures only; not an official supported Shopify schema",
+  "release_decision": "RETAIN_FAIL_CLOSED"
+}
