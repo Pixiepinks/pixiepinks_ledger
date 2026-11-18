@@ -6,7 +6,7 @@ import secrets
 from collections import Counter
 from datetime import datetime,timedelta
 from fastapi import HTTPException
-from sqlalchemy import select,or_,func
+from sqlalchemy import select,or_,func,case
 from retail_models import *
 from settings import settings
 
@@ -105,19 +105,30 @@ def public(row,ctx):
 
 
 def filtered(db,filters):
-    allowed={'q','category','issue','active'}
+    allowed={'q','category','issue','active','product_type','vendor','collection'}
     if not isinstance(filters,dict) or set(filters)-allowed:raise HTTPException(422,'Unknown product filter')
     q=db.query(RetailVariant).filter_by(shop=shop())
     term=filters.get('q','')
     if not isinstance(term,str) or len(term)>100:raise HTTPException(422,'Search must be at most 100 characters')
-    if term:
-        escaped=term.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
-        q=q.filter(or_(*[getattr(RetailVariant,key).ilike('%'+escaped+'%',escape='\\') for key in ['title','variant_title','sku','local_sku','barcode','local_barcode']]))
+    for word in term.split():
+        escaped=word.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
+        q=q.filter(or_(*[getattr(RetailVariant,key).ilike('%'+escaped+'%',escape='\\') for key in ['title','variant_title','sku','local_sku','barcode','local_barcode','product_type','vendor']]))
     category=filters.get('category','')
     if not isinstance(category,str):raise HTTPException(422,'Invalid category')
     if category:
-        if category not in CATEGORIES:raise HTTPException(422,'Choose an explicit category')
-        q=q.filter_by(category=category)
+        if category=='__unmapped__':q=q.filter(or_(RetailVariant.category==None,RetailVariant.category==''))
+        else:
+            if category not in CATEGORIES:raise HTTPException(422,'Choose an explicit category')
+            q=q.filter_by(category=category)
+    for key in ['product_type','vendor']:
+        value=filters.get(key,'')
+        if not isinstance(value,str) or len(value)>200:raise HTTPException(422,'Invalid Shopify '+key.replace('_',' '))
+        if value:q=q.filter(getattr(RetailVariant,key)==value)
+    collection=filters.get('collection','')
+    if not isinstance(collection,str) or (collection and not re.fullmatch(r'gid://shopify/Collection/[0-9]{1,30}',collection)):raise HTTPException(422,'Choose an imported Shopify collection')
+    if collection:
+        ids=[row.id for row in q.yield_per(250) if any(item.get('id')==collection for item in row.collections)]
+        q=q.filter(RetailVariant.id.in_(ids))
     active=filters.get('active','')
     if not isinstance(active,str) or active not in {'','active','inactive'}:raise HTTPException(422,'Invalid product status filter')
     if active=='active':q=q.filter_by(product_status='ACTIVE',missing=False)
@@ -135,7 +146,30 @@ def filtered(db,filters):
 
 def page(db,filters,offset=0,limit=50):
     query=filtered(db,filters);ctx=audit_context(db)
+    term=filters.get('q','').strip()
+    if term:
+        exact=or_(*[getattr(RetailVariant,key)==term for key in ['sku','local_sku','barcode','local_barcode']])
+        query=query.order_by(case((exact,0),else_=1))
     return {'total':query.count(),'rows':[public(row,ctx) for row in query.order_by(RetailVariant.id).offset(offset).limit(limit)],'categories':CATEGORIES}
+
+
+def filter_options(db):
+    query=db.query(RetailVariant).filter_by(shop=shop())
+    result={'total':query.count(),'categories':[], 'product_types':[], 'vendors':[], 'collections':[],'collections_incomplete':False}
+    counts=dict(db.query(RetailVariant.category,func.count()).filter(RetailVariant.shop==shop()).group_by(RetailVariant.category))
+    result['categories']=[{'value':'__unmapped__','label':'Unmapped','count':counts.get(None,0)+counts.get('',0)}]+[{'value':key,'label':name,'count':counts.get(key,0)} for key,name in CATEGORIES.items()]
+    for key,out in [('product_type','product_types'),('vendor','vendors')]:
+        values=db.query(getattr(RetailVariant,key),func.count()).filter(RetailVariant.shop==shop(),getattr(RetailVariant,key)!=None,getattr(RetailVariant,key)!='').group_by(getattr(RetailVariant,key)).order_by(getattr(RetailVariant,key)).all()
+        result[out]=[{'value':value,'label':value,'count':count} for value,count in values]
+    collections={}
+    for values,complete in query.with_entities(RetailVariant.collections,RetailVariant.collections_complete).yield_per(250):
+        if not complete:result['collections_incomplete']=True
+        for entry in {item['id']:item for item in values if isinstance(item,dict) and isinstance(item.get('id'),str) and re.fullmatch(r'gid://shopify/Collection/[0-9]{1,30}',item['id'])}.values():
+            key=entry['id']
+            if key not in collections:collections[key]={'value':key,'label':entry.get('title') or key,'count':0}
+            collections[key]['count']+=1
+    result['collections']=sorted(collections.values(),key=lambda item:(item['label'].casefold(),item['value']))
+    return result
 
 
 def summary(db):

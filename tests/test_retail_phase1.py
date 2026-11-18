@@ -310,6 +310,7 @@ def test_browser_allocation_label_profile_preview_and_job_history(retail):
         page.locator('#product-rows tr').nth(1).wait_for()
         page.get_by_role('button',name='Select all filtered results',exact=True).click()
         page.locator('#selection-count').get_by_text('2 variants in a frozen selection.',exact=False).wait_for()
+        page.locator('#allocation > summary').click()
         page.get_by_role('button',name='Preview allocation',exact=True).click();page.locator('#allocation-confirm').wait_for()
         assert 'P1' in page.locator('#allocation-result').inner_text()
         page.get_by_role('button',name='Confirm local assignments',exact=True).click()

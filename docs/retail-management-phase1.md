@@ -24,6 +24,16 @@ Under **Retail Management**:
 
 Use the product Details action to inspect inventory item/tracking, options, collections, vendor, type, price/compare-at price and Shopify update time. No cost or credentials appear on labels.
 
+## Finding and selecting products
+
+Use **Shopify product type**, **Shopify collection** or **Vendor** to filter the imported catalog before any local retail categories have been assigned. **Retail category (manual)** is a separate field; an unmapped bicycle is not silently classified into the Bicycle category. The category selector shows counts, includes Unmapped, and disables unused categories unless retaining an already applied filter. Metadata counts describe the whole imported shop catalog, while result counts apply all selected filters together.
+
+Type a product name, size, colour, SKU or barcode. Whitespace is trimmed and every search word must match somewhere across product/variant names, identifiers, Shopify type or vendor; for example `bicycle 16` can match a bicycle title and a 16-inch variant. Literal `%`/`_` characters are escaped. Exact barcode/SKU matches sort before partial matches. Dropdown changes apply automatically; typed searches debounce briefly, and Enter/Search applies immediately. Newer searches replace stale requests rather than showing old results.
+
+**Clear filters** resets the search and dropdowns. It does not discard checked products or change a frozen selection. **Clear selection** is separate. You can check products across searches/pages, then Use selected variants, or Select all filtered results. Bulk selection and CSV export use the filters that produced the displayed results; selection waits while a newer search is pending. The identifier-allocation panel is collapsed by default so it does not obstruct the product list.
+
+Collection filtering uses only imported memberships (currently the first five per product); the UI warns when cached collection coverage is incomplete. Filters and dropdown metadata remain scoped to the configured shop. `GET /crm/retail/api/filter-options` returns only metadata/counts, not the full product list. Product listing, CSV and selection share `q`, `product_type`, `vendor`, `collection`, `category`, `issue` and `active` filter semantics. No categories, SKUs, barcodes or Shopify data are changed by searching.
+
 ## Identity and audit rules
 
 - Primary external identity is `(shop, Shopify variant ID)`, with an immutable local integer ID. Titles, SKU and barcode are never identity keys.
@@ -116,7 +126,7 @@ UI: `/crm/retail/products`, `/barcodes`, `/labels`, `/audit`, `/sync` under the 
 
 API prefix `/crm/retail/api`:
 
-- `GET products`, `GET products/{id}/history`, `GET audit`, `GET export.csv`
+- `GET products`, `GET filter-options`, `GET products/{id}/history`, `GET audit`, `GET export.csv`
 - `POST selection`, `GET selection/{token}` (paginated)
 - `POST allocations/preview`, `POST allocations/commit`
 - `GET allocations/{token}` (paginated preview), `POST products/{id}/category`, `POST products/{id}/approve-alternative`, `POST exceptions`, `POST exceptions/revoke`
