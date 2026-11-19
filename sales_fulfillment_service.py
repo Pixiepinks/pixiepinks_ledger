@@ -58,6 +58,7 @@ def create_full_fulfillment(db: Session, order_id: int, actor: str, idempotency_
         return retained
     order = db.query(SalesOrder).filter_by(id=order_id).with_for_update().one_or_none()
     if not order: raise FulfillmentError("Sales order not found",404)
+    if order.sales_channel=="POS":raise FulfillmentError("Use verified POS fulfillment and returns")
     if order.order_status not in {"CONFIRMED", "AWAITING_PAYMENT", "PROCESSING"}: raise FulfillmentError("Order is not eligible for fulfillment")
     existing = db.query(SalesFulfillment).filter_by(sales_order_id=order_id).all()
     allocated = {line.id: Decimal("0") for line in order.lines}

@@ -104,6 +104,7 @@ class StaffAccessAudit(Base):
 class SalesOrder(Base):
     __tablename__ = "sales_orders"
     id = Column(Integer, primary_key=True)
+    sales_channel = Column(String(20))  # NULL preserves existing commercial orders.
     internal_order_number = Column(String(40), unique=True, nullable=False, index=True)
     idempotency_key = Column(String(100), unique=True, nullable=False)
     crm_conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), index=True)
@@ -1219,3 +1220,6 @@ from retail_models import (RetailShop, RetailVariant, RetailSyncJob, RetailImpor
 # Inventory documents are operational/audit records, not a second stock ledger.
 from inventory_models import (InventoryDocument, InventoryEvent, InventoryObservation,
     InventoryPolicy, InventoryPolicyEvent)
+
+from pos_models import (POSConfig, POSRegister, POSSession, POSCart, POSCheckout,
+    POSOperation, POSRefund, POSCashMovement, POSAudit, POSPosting, POSCustomerBinding)

@@ -185,6 +185,7 @@ def _fixed_discount(discount: Decimal, title: str, reference: str) -> dict:
 
 
 def _validate_local_order(order: SalesOrder) -> None:
+    if order.sales_channel=='POS':raise ShopifyDraftSyncError('POS uses its own order orchestration')
     """Reject incomplete or internally inconsistent Ledger snapshots before any remote write."""
     required = {
         "customer name": order.customer_name,

@@ -1227,3 +1227,16 @@ fails closed until Shopify's complete multiple-barcode contract is verified; thi
 staging and recovery guide](docs/retail-management-phase1b.md). Additive migration
 `20261118_43` retains all evidence on rollback. No automatic deployment, scope
 change, environment edit or live product update is performed.
+
+### Retail Management Phase 4 — Point of Sale (default off)
+
+The dedicated `/crm/pos` cashier workspace reuses the retail scanner, location-aware
+Shopify stock reads and canonical sales/payment/journal records. It adds held carts,
+controlled discounts, cash/card/bank/split tenders, durable Shopify order/refund
+orchestration, 58/80/A4 PDF receipts, registers and reconciliation reports.
+Migration `20261119_47` is additive. `POS_ENABLED`, `POS_CHECKOUT_WRITE_ENABLED` and
+`POS_REFUND_WRITE_ENABLED` all default to false and are separate from inventory
+and barcode writing. See the [administrator/cashier and release guide](docs/retail-phase4-pos.md)
+and [implementation/test report](docs/retail-phase4-pos-report.md). Live API and
+printer acceptance, accounting-policy review and release approval remain required;
+no automatic deployment or production transaction is authorized by this change.

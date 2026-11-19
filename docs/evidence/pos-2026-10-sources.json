@@ -1,0 +1,86 @@
+{
+  "reviewed": "2026-11-19",
+  "kind": "Official documentation, not live shop acceptance or a captured introspection response",
+  "sources": [
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/orderCreate.md",
+      "sha256": "4cfe75d177a4205636168fe3cda70f513bdcded10628b407283fd920e854c402",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateOrderInput.md",
+      "sha256": "f935adaacc43a4e9ba87f639b991870699778cfe231141e2979b041707c7f0db",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateOptionsInput.md",
+      "sha256": "f0aff613930fda37c382704f939a88fbc0bbd0116e09f22306711063372e48be",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateLineItemInput.md",
+      "sha256": "9d1745b217d892b9a67f08045a6c4f942403c155f3e42377e22fba64222b92d3",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateFulfillmentInput.md",
+      "sha256": "9059f9871cb21a22edad4ee9c0f18400a757462db5da1e5c80851d8a4aaa21b3",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateOrderTransactionInput.md",
+      "sha256": "652fc8f72918d3113897a7bbe9f9b350d8519be29eb03b386e31036ece205f76",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/refundCreate.md",
+      "sha256": "193f2f653a264dee407ac9729afe07abe73720658fa23f24f7f3a124f9380f58",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/RefundInput.md",
+      "sha256": "1e2c41949ca40177a84328a81965ac0df0975c659a1d7205692aaba760877e3f",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/RefundLineItemInput.md",
+      "sha256": "1213f7b13c81b8540b70a36b9fe16382860c20412faf9b6e2406c271dda3eee9",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderTransactionInput.md",
+      "sha256": "90fe27a67f01835b7837dce56d7596b20c1d8a9cc3bb84826d8f79fd4e7d73b8",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateTaxLineInput.md",
+      "sha256": "5cc3c54792c4ca2f904c8a14cf78caba73bc987853928c1cf28baf90c36d8e30",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateLineItemPropertyInput.md",
+      "sha256": "df862ad0704edccae14ceca2f8ef1d999a6f7025e59a5025aa56a6bc04624827",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateCustomerInput.md",
+      "sha256": "6f3622b257e30e72cc6ce515a9f9601e512901f261aabd90ab0c2f7744fa55c2",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/OrderCreateAssociateCustomerAttributesInput.md",
+      "sha256": "7545cf88dbf80df593cf67cb781246fed120dfcf98d02c772f3c1219369225cc",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/objects/Refund.md",
+      "sha256": "2080565135d2304498622fde67fab603fe204be63d098cb60e09029aa1ffe613",
+      "api_version_header": "2026-10"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/objects/RefundLineItem.md",
+      "sha256": "5571fd1097e3aac0565da2df8bb00521a777bd4e1e19bc148087097fd503d192",
+      "api_version_header": "2026-10"
+    }
+  ]
+}

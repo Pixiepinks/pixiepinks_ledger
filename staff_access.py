@@ -2,6 +2,16 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('pos.view','POS: view','/crm/pos'),
+    ('pos.sell','POS: sell','/crm/pos'),
+    ('pos.discount','POS: discount','/crm/pos'),
+    ('pos.hold','POS: hold','/crm/pos'),
+    ('pos.refund','POS: refund','/crm/pos'),
+    ('pos.void','POS: void','/crm/pos'),
+    ('pos.register_open','POS: register open','/crm/pos'),
+    ('pos.register_close','POS: register close','/crm/pos'),
+    ('pos.reports','POS: reports','/crm/pos'),
+    ('pos.admin','POS: admin','/crm/pos'),
     ('retail.inventory.view','Inventory: View stock and reports','/crm/retail/inventory'),
     ('retail.inventory.prepare','Inventory: Prepare documents and counts','/crm/retail/inventory'),
     ('retail.inventory.manage','Inventory: Manage reorder policies','/crm/retail/inventory'),
@@ -32,6 +42,9 @@ KEYS={key for key,_,_ in SECTIONS}
 def allowed(user, section):
     if user is None or getattr(user,'is_active',True) is False:return False
     if user.role=='ADMIN':return True
+    if isinstance(section,str) and section.startswith('pos.'):
+        from settings import settings
+        return settings.POS_ENABLED and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     if isinstance(section,str) and section.startswith('retail.'):
         from settings import settings
         return settings.RETAIL_ENABLED and (not section.startswith('retail.inventory.') or settings.INVENTORY_ENABLED) and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
@@ -46,6 +59,7 @@ def managed_grant(user,section):
 
 
 def section_for(path):
+    if path=='/crm/pos' or path.startswith('/crm/pos/'):return 'pos.view'
     if path.startswith('/crm/retail/'):
         page=path.split('/')[3]
         return {'inventory':'retail.inventory.view','products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print','audit':'retail.products.audit','sync':'retail.sync.view','barcode-sync':'retail.barcodes.shopify_sync'}.get(page,'retail.products.view')
@@ -81,6 +95,7 @@ def landing(user):
     if user.role=='ADMIN' or getattr(user,'section_access',None) is None:return '/dashboard'
     from settings import settings
     for key,_,path in sorted(SECTIONS,key=lambda row:row[0].startswith('retail.')):
+        if key.startswith('pos.') and key!='pos.view':continue
         if key.startswith('retail.') and key not in {'retail.inventory.view','retail.products.view','retail.products.audit','retail.barcodes.print','retail.sync.view'}:continue
         if key=='sales_orders' and not settings.SALES_ORDERS_ENABLED:continue
         if key=='fulfillments' and not settings.SALES_FULFILLMENT_ENABLED:continue

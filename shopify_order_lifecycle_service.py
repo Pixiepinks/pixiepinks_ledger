@@ -174,6 +174,8 @@ def process_orders_create(db: Session, payload: dict, *, webhook_id: str,
         outcome = "IGNORED"; error = "Webhook has no valid Shopify Order reference"
     elif not candidates:
         outcome = "IGNORED"; error = "No Ledger Sales Order reference matched"
+    elif len(candidates)==1 and candidates[0].sales_channel=='POS':
+        outcome='IGNORED';error=None  # POS owns verified direct-order linkage; never create a second sale.
     elif len(candidates) != 1:
         outcome = "RECONCILIATION_REQUIRED"
         error = "Multiple Ledger Sales Orders matched the Shopify Order references"
@@ -235,6 +237,7 @@ def process_orders_create(db: Session, payload: dict, *, webhook_id: str,
 def reconcile_order(db: Session, order: SalesOrder, actor: str,
                     client: ShopifyCatalogClient | None = None) -> SalesOrder:
     """Read the linked Draft and recover its completed Shopify Order, if any."""
+    if order.sales_channel=="POS":raise ShopifyLifecycleError("Use the POS read-only reconciliation workflow")
     if not order.shopify_draft_order_id or not DRAFT_GID.fullmatch(order.shopify_draft_order_id):
         raise ShopifyLifecycleError("This Ledger order has no valid Shopify Draft reference")
     client = client or ShopifyCatalogClient()
