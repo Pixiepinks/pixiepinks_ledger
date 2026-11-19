@@ -108,3 +108,24 @@ def test_pg_import_waits_for_dispatch_boundary(pg,monkeypatch):
         assert db.query(RetailBarcodeItem).one().status=='VERIFIED'
         assert db.get(RetailVariant,1).barcode=='P1' and db.get(RetailVariant,1).local_barcode=='P1'
     assert len(remote.writes)==1
+
+
+def test_pg_approver_revocation_waits_for_authorized_dispatch_boundary(pg,monkeypatch):
+    from threading import Event
+    sessions,uid,remote,p=setup(pg,monkeypatch);approve(sessions,uid,remote,p)
+    entered=Event();release=Event();revoking=Event();revoked=Event();original=remote.write_empty
+    def write(snap):
+        entered.set();assert release.wait(10);original(snap)
+    remote.write_empty=write
+    def revoke():
+        with sessions() as db:
+            revoking.set();db.get(User,uid).is_active=False;db.commit();revoked.set()
+    with ThreadPoolExecutor(2) as pool:
+        dispatch=pool.submit(sync.dispatch_one,sessions,remote);assert entered.wait(10)
+        pending=pool.submit(revoke);assert revoking.wait(10)
+        assert not revoked.wait(.1)
+        release.set();assert dispatch.result(timeout=15);pending.result(timeout=15)
+    with sessions() as db:
+        assert not db.get(User,uid).is_active
+        assert db.query(RetailBarcodeItem).one().status=='VERIFIED'
+    assert len(remote.writes)==1

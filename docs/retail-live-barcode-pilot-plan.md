@@ -4,6 +4,10 @@ Client date: 2026-11-19 (Asia/Colombo).
 
 Read-only inspection of the existing authorized PixiePinks live connection is allowed. No live mutation is authorized by this plan. Do not use the Barcode Lab connection, alter Railway settings/scopes, enable flags or deploy automatically.
 
+## Latest schema status
+
+The owner-supplied 2026-10 definitions are implemented and mock-tested; see [the schema-backed adapter report](retail-barcode-schema-implementation.md). Live mutation replacement/custom-value semantics are not established by introspection. The source-level `MUTATION_SEMANTICS_VERIFIED=False` gate stays closed. A live read-only integration and an exact real candidate are still required. No test-only gate override authorizes a real pilot.
+
 ## Candidate: none identified
 
 The execution environment has no existing authorized live Shopify connection or production CRM catalog connection. No real variant can be nominated. Test fixture variants and example `P1`/`P2` codes are not pilot candidates.

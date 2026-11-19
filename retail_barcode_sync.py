@@ -68,8 +68,8 @@ def inspect(remote,snap):
     # Only bounded, typed fields can enter durable records; never persist API errors.
     if not isinstance(value,dict):raise RemoteError('INVALID_REMOTE_STATE')
     codes=value.get('codes')
-    if not isinstance(codes,list) or len(codes)>100 or any(not isinstance(c,str) or len(c)>500 for c in codes):raise RemoteError('INVALID_REMOTE_STATE')
-    return {key:value.get(key) for key in ['complete','collision_complete','collision_ids','version','variant_id','product_id','status','codes','legacy_barcode']}
+    if not isinstance(codes,list) or len(codes)>10000 or any(not isinstance(c,str) or len(c)>500 for c in codes):raise RemoteError('INVALID_REMOTE_STATE')
+    return {key:value.get(key) for key in ['complete','collision_complete','collision_ids','version','variant_id','product_id','status','codes','legacy_barcode','barcodes','readback_untyped_required','untyped_local_code']}
 
 
 def remote_reason(state,snap,cap,readback=False):
@@ -83,6 +83,7 @@ def remote_reason(state,snap,cap,readback=False):
     if not isinstance(collisions,list) or any(not isinstance(v,str) for v in collisions):return 'REMOTE_COLLISIONS_UNVERIFIED'
     if any(v!=snap['variant_id'] for v in collisions):return 'REMOTE_BARCODE_REUSED'
     if readback:
+        if state['codes']==[snap['code']] and state.get('readback_untyped_required') is True and state.get('untyped_local_code') is not True:return 'READBACK_TYPE_MISMATCH'
         return '' if state['codes']==[snap['code']] and state.get('legacy_barcode') in {None,'',snap['code']} else 'READBACK_MISMATCH'
     if state['codes'] or state.get('legacy_barcode') not in {None,''}:return 'REMOTE_BARCODE_NONEMPTY'
     return ''
@@ -259,7 +260,7 @@ def dispatch_one(sessions,remote=None):
             cap=capability(remote)
             if recovery:
                 verify(db,job,item,remote,cap);item.lease_until=None;finish(db,job);db.commit();return True
-            owner=db.get(User,job.actor_id)
+            owner=db.execute(select(User).where(User.id==job.actor_id).with_for_update()).scalar_one_or_none()
             try:authorize(owner)
             except HTTPException:owner=None
             reason=local_reason(db,db.get(RetailVariant,item.variant_id),item.snapshot)
@@ -282,7 +283,7 @@ def dispatch_one(sessions,remote=None):
             if item.claim_token!=claim or item.status!='SENT' or item.lease_until<datetime.utcnow():return True
             # Imports or allocations between transactions invalidate dispatch.
             reason=local_reason(db,db.get(RetailVariant,item.variant_id),item.snapshot)
-            owner=db.get(User,job.actor_id)
+            owner=db.execute(select(User).where(User.id==job.actor_id).with_for_update()).scalar_one_or_none()
             try:authorize(owner)
             except HTTPException:owner=None
             cap=capability(remote)
