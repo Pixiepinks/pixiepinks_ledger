@@ -104,3 +104,25 @@ def test_reversals_and_dates_are_netted_not_ignored(ledger):
     assert got["other_exp"] == Decimal("6.00")
     assert got["net_profit"] == Decimal("49.00")
     assert all(value == 0 for value in income_statement_totals(db, date(2026, 1, 1), date(2026, 1, 31)).values())
+
+
+@pytest.mark.parametrize('template,field',[
+    ('dashboard.html','profit'),
+    ('income_statement.html','net_profit'),
+])
+def test_report_templates_preserve_decimal_cents(template,field):
+    from pathlib import Path
+    from jinja2 import ChoiceLoader,DictLoader,Environment,FileSystemLoader,select_autoescape
+    env=Environment(loader=ChoiceLoader([
+        DictLoader({'base.html':'{% block content %}{% endblock %}'}),
+        FileSystemLoader(Path(__file__).parents[1]/'templates'),
+    ]),autoescape=select_autoescape(['html']))
+    context={key:Decimal('0.00') for key in [
+        'gross_sales','sales_discounts','sales_returns','net_sales','cogs','gross_profit',
+        'other_income','other_exp','net_profit','revenue','expenses','profit','cash_balance',
+    ]}
+    context.update(currency='LKR',start='2026-11-01',end='2026-11-19')
+    context[field]=Decimal('100999999999998.99')
+    rendered=env.get_template(template).render(**context)
+    assert 'LKR 100999999999998.99' in rendered
+    assert '100999999999998.98' not in rendered

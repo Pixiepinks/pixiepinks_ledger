@@ -7,15 +7,15 @@
   <button class="bg-black text-white px-4 py-2 rounded-lg">Run</button>
 </form>
 <div class="bg-white rounded-2xl shadow p-4 space-y-2">
-  <div class="flex justify-between"><span>Gross Sales</span><span>{{ currency }} {{ '%.2f'|format(gross_sales) }}</span></div>
-  <div class="flex justify-between"><span>Less: Sales Discounts (4010)</span><span>{{ currency }} {{ '%.2f'|format(sales_discounts) }}</span></div>
-  <div class="flex justify-between"><span>Less: Sales Returns (4020)</span><span>{{ currency }} {{ '%.2f'|format(sales_returns) }}</span></div>
-  <div class="flex justify-between font-semibold border-t pt-2"><span>Net Sales</span><span>{{ currency }} {{ '%.2f'|format(net_sales) }}</span></div>
-  <div class="flex justify-between"><span>Cost of Goods Sold (5000)</span><span>{{ currency }} {{ '%.2f'|format(cogs) }}</span></div>
-  <div class="flex justify-between font-semibold border-t pt-2"><span>Gross Profit</span><span>{{ currency }} {{ '%.2f'|format(gross_profit) }}</span></div>
-  <div class="flex justify-between"><span>Other Income (4100)</span><span>{{ currency }} {{ '%.2f'|format(other_income) }}</span></div>
-  <div class="flex justify-between"><span>Other Expenses</span><span>{{ currency }} {{ '%.2f'|format(other_exp) }}</span></div>
-  <div class="flex justify-between text-lg font-bold border-t pt-2"><span>Net Profit</span><span>{{ currency }} {{ '%.2f'|format(net_profit) }}</span></div>
+  <div class="flex justify-between"><span>Gross Sales</span><span>{{ currency }} {{ '{:.2f}'.format(gross_sales) }}</span></div>
+  <div class="flex justify-between"><span>Less: Sales Discounts (4010)</span><span>{{ currency }} {{ '{:.2f}'.format(sales_discounts) }}</span></div>
+  <div class="flex justify-between"><span>Less: Sales Returns (4020)</span><span>{{ currency }} {{ '{:.2f}'.format(sales_returns) }}</span></div>
+  <div class="flex justify-between font-semibold border-t pt-2"><span>Net Sales</span><span>{{ currency }} {{ '{:.2f}'.format(net_sales) }}</span></div>
+  <div class="flex justify-between"><span>Cost of Goods Sold (5000)</span><span>{{ currency }} {{ '{:.2f}'.format(cogs) }}</span></div>
+  <div class="flex justify-between font-semibold border-t pt-2"><span>Gross Profit</span><span>{{ currency }} {{ '{:.2f}'.format(gross_profit) }}</span></div>
+  <div class="flex justify-between"><span>Other Income (4100)</span><span>{{ currency }} {{ '{:.2f}'.format(other_income) }}</span></div>
+  <div class="flex justify-between"><span>Other Expenses</span><span>{{ currency }} {{ '{:.2f}'.format(other_exp) }}</span></div>
+  <div class="flex justify-between text-lg font-bold border-t pt-2"><span>Net Profit</span><span>{{ currency }} {{ '{:.2f}'.format(net_profit) }}</span></div>
 </div>
 <p class="mt-3 text-sm text-gray-500">Based on posted ledger movements in the selected dates. Discounts and returns are debit-balance contra-revenue; expense credits and other reversals are netted. COGS is reported only when journal entries exist; no inventory valuation is inferred.</p>
 {% endblock %}

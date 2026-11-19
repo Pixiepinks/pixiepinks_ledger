@@ -44,6 +44,7 @@ from sqlalchemy.orm import Session, selectinload
 from settings import settings
 from database import SessionLocal, engine
 from finance_reporting import income_statement_totals
+from zoneinfo import ZoneInfo
 from models import (
     Account,
     Base,
@@ -2067,7 +2068,7 @@ def root(request: Request,user: User=Depends(require_user)):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    today = date.today()
+    today = datetime.now(ZoneInfo('Asia/Colombo')).date()
     start_month = today.replace(day=1)
 
     # Journal-backed net movements include debit balances in POS contra-revenue.
