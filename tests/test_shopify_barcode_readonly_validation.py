@@ -47,7 +47,7 @@ def test_all_secondary_pages_and_aggregate_metrics(scanned):
     assert result['metrics']['secondary_values_examined']==202
     assert result['metrics']['barcode_values_examined']==204
     assert result['metrics']['untyped_values']==204
-    assert [c['variables']['after'] for c in state.calls if c['query']==adapter.READ]==['1','101','201']
+    assert [c['variables']['after'] for c in state.calls if c['query']==adapter.READ]==[str(i) for i in range(1,203,20)]
 
 
 @pytest.mark.parametrize('mode,reason',[
@@ -219,3 +219,17 @@ def test_postgres_allocation_transaction_is_read_only_and_rollback_only(monkeypa
         engine.dispose()
         with admin.begin() as conn:conn.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
         admin.dispose()
+
+
+def test_bad_request_diagnostic_retains_safe_error_code_without_message(scanned):
+    client,state=scanned;post=client.http.delegate.post
+    def rejected_read(url,*args,**kwargs):
+        if kwargs.get('json',{}).get('query')==adapter.READ:
+            return httpx.Response(200,json={'errors':[{'message':'first cannot exceed 20',
+                'extensions':{'code':'BAD_REQUEST'}}]},headers={'X-Shopify-API-Version':'2026-10'})
+        return post(url,*args,**kwargs)
+    client.http.delegate.post=rejected_read
+    result=diagnostic.run_diagnostic(1,client=client,allocation_loader=lambda _: (dict(SNAP),'READ_ONLY'))
+    assert result['status']=='INCOMPLETE' and not result['coverage_complete']
+    assert result['candidate'] is None and result['metrics']['graphql_error_codes']=={'BAD_REQUEST':1}
+    assert 'first cannot exceed' not in json.dumps(result) and not state.mutations

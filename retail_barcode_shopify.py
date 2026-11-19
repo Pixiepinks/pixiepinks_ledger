@@ -40,14 +40,14 @@ PROBE='''query RetailBarcodeCapabilities {
  } }
 }'''
 # Fixed read-only documents; all barcode pages and catalog IDs are exhausted.
-PAGE_SIZE=100
+PAGE_SIZE=20
 MAX_BARCODE_VALUES=10000
 MAX_CATALOG_VARIANTS=100000
 MAX_READ_REQUESTS=200000
 MAX_SCAN_SECONDS=60
 READ='''query RetailBarcodeObserved($id:ID!,$after:String) {
  productVariant(id:$id) { id barcode product { id status }
-  barcodes(first:100,after:$after) { nodes { value type } pageInfo { hasNextPage endCursor } }
+  barcodes(first:20,after:$after) { nodes { value type } pageInfo { hasNextPage endCursor } }
  }
 }'''
 CATALOG='''query RetailBarcodeCatalog($after:String) {
@@ -219,7 +219,7 @@ class BarcodeClient(ShopifyCatalogClient):
             budget[0]+=1
             self._check_budget(budget)
             data,_=self._read(CATALOG_IDS,{'after':after});self._check_budget(budget)
-            nodes,page=self._connection(data.get('productVariants'))
+            nodes,page=self._connection(data.get('productVariants'),limit=100)
             for node in nodes:
                 value=node.get('id') if isinstance(node,dict) else None
                 if not isinstance(value,str) or not re.fullmatch(r'gid://shopify/ProductVariant/[0-9]+',value) or value in seen:raise RemoteError('INVALID_CATALOG_IDENTITY')
