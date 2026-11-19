@@ -1,5 +1,9 @@
 # Phase 1B: controlled Shopify barcode synchronization
 
+## Schema-backed adapter update (2026-11-19)
+
+The owner-supplied live schema now backs complete bounded barcode reads and full-catalog collision scanning. The minimal mutation and untyped read-back paths are tested with mocked transports. **Production writes remain blocked by a separate source-level semantics gate**; introspection cannot approve replacement behavior. See [schema implementation, tests and remaining blockers](retail-barcode-schema-implementation.md). Existing imports, global API/webhook settings and disabled write-flag defaults are unchanged.
+
 ## Latest live-readiness authorization (2026-11-19)
 
 Read-only inspection may use the existing authorized **live** PixiePinks application connection; do not substitute Barcode Lab. Live mutations remain prohibited until a separate exact-variant authorization. Barcode-only diagnostics are pinned to 2026-10 without changing the global version. Use `python -m scripts.verify_live_barcode_connection`; it cannot enable writes. See the [current live readiness report](retail-live-barcode-readiness-report.md), [evidence](evidence/retail-live-barcode-readiness-2026-11-19.json) and [blocked pilot plan](retail-live-barcode-pilot-plan.md). The current workspace has no authorized live connection; complete state and mutation semantics remain unverified. Historical development-store validation instructions below are not authorization to substitute a development store for this task.

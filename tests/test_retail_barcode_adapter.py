@@ -93,16 +93,15 @@ def test_graphql_errors_and_malformed_schema_are_not_evidence(adapter):
 
 def test_legacy_empty_barcode_never_claims_complete_inspection_or_collision_check(adapter):
     client,calls,state=adapter;state['data']={'productVariant':{'id':'gid://shopify/ProductVariant/1','barcode':None,'product':{'id':'gid://shopify/Product/1','status':'ACTIVE'}}}
-    result=client.inspect({'variant_id':'gid://shopify/ProductVariant/1'})
-    assert not result['complete'] and not result.get('collision_complete')
-    assert result['reason']=='COMPLETE_BARCODE_STATE_UNAVAILABLE'
+    with pytest.raises(RemoteError,match='COMPLETE_BARCODE_SCHEMA_UNVERIFIED'):
+        client.inspect({'variant_id':'gid://shopify/ProductVariant/1','product_id':'gid://shopify/Product/1','code':'P1'})
     assert calls[0][0].endswith('/admin/api/2026-10/graphql.json')
 
 
 def test_flags_and_introspection_never_allow_network_mutation(adapter,monkeypatch):
     client,calls,_=adapter;monkeypatch.setattr(settings,'SHOPIFY_PRODUCT_WRITE_ENABLED',True);monkeypatch.setattr(settings,'RETAIL_BARCODE_SYNC_ENABLED',True)
     assert not client.capabilities()['supported'];count=len(calls)
-    with pytest.raises(RemoteError,match='MULTI_BARCODE_CONTRACT_UNVERIFIED'):
+    with pytest.raises(RemoteError,match='MUTATION_SEMANTICS_UNVERIFIED'):
         client.write_empty({'variant_id':'gid://shopify/ProductVariant/1','code':'P1'})
     assert len(calls)==count
     with pytest.raises(RemoteError,match='UNSUPPORTED_DOCUMENT'):client._read('mutation { forbidden }',{})

@@ -1,0 +1,926 @@
+{
+  "schema_metadata": {
+    "barcode_input": {
+      "enumValues": null,
+      "fields": null,
+      "inputFields": [
+        {
+          "defaultValue": null,
+          "name": "value",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "SCALAR",
+              "name": "String",
+              "ofType": null
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "type",
+          "type": {
+            "kind": "ENUM",
+            "name": "BarcodeType",
+            "ofType": null
+          }
+        }
+      ],
+      "kind": "INPUT_OBJECT",
+      "name": "BarcodeInput",
+      "possibleTypes": null
+    },
+    "bulk_barcodes": {
+      "defaultValue": null,
+      "name": "barcodes",
+      "type": {
+        "kind": "LIST",
+        "name": null,
+        "ofType": {
+          "kind": "NON_NULL",
+          "name": null,
+          "ofType": {
+            "kind": "INPUT_OBJECT",
+            "name": "BarcodeInput",
+            "ofType": null
+          }
+        }
+      }
+    },
+    "bulk_input": {
+      "enumValues": null,
+      "fields": null,
+      "inputFields": [
+        {
+          "defaultValue": null,
+          "name": "barcodes",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "INPUT_OBJECT",
+                "name": "BarcodeInput",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "compareAtPrice",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Money",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "id",
+          "type": {
+            "kind": "SCALAR",
+            "name": "ID",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "mediaSrc",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "SCALAR",
+                "name": "String",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "inventoryPolicy",
+          "type": {
+            "kind": "ENUM",
+            "name": "ProductVariantInventoryPolicy",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "inventoryQuantities",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "INPUT_OBJECT",
+                "name": "InventoryLevelInput",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "quantityAdjustments",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "INPUT_OBJECT",
+                "name": "InventoryAdjustmentInput",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "inventoryItem",
+          "type": {
+            "kind": "INPUT_OBJECT",
+            "name": "InventoryItemInput",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "mediaId",
+          "type": {
+            "kind": "SCALAR",
+            "name": "ID",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "metafields",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "INPUT_OBJECT",
+                "name": "MetafieldInput",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "optionValues",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "INPUT_OBJECT",
+                "name": "VariantOptionValueInput",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "price",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Money",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "taxable",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Boolean",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "taxCode",
+          "type": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "unitPriceMeasurement",
+          "type": {
+            "kind": "INPUT_OBJECT",
+            "name": "UnitPriceMeasurementInput",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "showUnitPrice",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Boolean",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "requiresComponents",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Boolean",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "published",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Boolean",
+            "ofType": null
+          }
+        }
+      ],
+      "kind": "INPUT_OBJECT",
+      "name": "ProductVariantsBulkInput",
+      "possibleTypes": null
+    },
+    "bulk_legacy_barcode": null,
+    "bulk_update": {
+      "args": [
+        {
+          "defaultValue": null,
+          "name": "variants",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "LIST",
+              "name": null,
+              "ofType": {
+                "kind": "NON_NULL",
+                "name": null,
+                "ofType": {
+                  "kind": "INPUT_OBJECT",
+                  "name": "ProductVariantsBulkInput"
+                }
+              }
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "productId",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "SCALAR",
+              "name": "ID",
+              "ofType": null
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "media",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "INPUT_OBJECT",
+                "name": "CreateMediaInput",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "defaultValue": "false",
+          "name": "allowPartialUpdates",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Boolean",
+            "ofType": null
+          }
+        }
+      ],
+      "name": "productVariantsBulkUpdate",
+      "type": {
+        "kind": "OBJECT",
+        "name": "ProductVariantsBulkUpdatePayload",
+        "ofType": null
+      }
+    },
+    "bulk_variant_id": {
+      "defaultValue": null,
+      "name": "id",
+      "type": {
+        "kind": "SCALAR",
+        "name": "ID",
+        "ofType": null
+      }
+    },
+    "variant_barcodes": {
+      "args": [
+        {
+          "defaultValue": null,
+          "name": "first",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Int",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "after",
+          "type": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "last",
+          "type": {
+            "kind": "SCALAR",
+            "name": "Int",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "before",
+          "type": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+          }
+        }
+      ],
+      "name": "barcodes",
+      "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+          "kind": "OBJECT",
+          "name": "ProductVariantBarcodeConnection",
+          "ofType": null
+        }
+      }
+    },
+    "variant_id": {
+      "args": [],
+      "name": "id",
+      "type": {
+        "kind": "NON_NULL",
+        "name": null,
+        "ofType": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        }
+      }
+    },
+    "variant_legacy_barcode": {
+      "args": [],
+      "name": "barcode",
+      "type": {
+        "kind": "SCALAR",
+        "name": "String",
+        "ofType": null
+      }
+    }
+  },
+  "related_types": {
+    "BarcodeType": {
+      "enumValues": [
+        {
+          "name": "UPC"
+        },
+        {
+          "name": "EAN"
+        },
+        {
+          "name": "ISBN"
+        },
+        {
+          "name": "GTIN"
+        },
+        {
+          "name": "ASIN"
+        },
+        {
+          "name": "NS_PID"
+        }
+      ],
+      "fields": null,
+      "inputFields": null,
+      "kind": "ENUM",
+      "name": "BarcodeType",
+      "possibleTypes": null
+    },
+    "CreateMediaInput": {
+      "enumValues": null,
+      "fields": null,
+      "inputFields": [
+        {
+          "defaultValue": null,
+          "name": "originalSource",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "SCALAR",
+              "name": "String",
+              "ofType": null
+            }
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "alt",
+          "type": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+          }
+        },
+        {
+          "defaultValue": null,
+          "name": "mediaContentType",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "ENUM",
+              "name": "MediaContentType",
+              "ofType": null
+            }
+          }
+        }
+      ],
+      "kind": "INPUT_OBJECT",
+      "name": "CreateMediaInput",
+      "possibleTypes": null
+    },
+    "MediaContentType": {
+      "enumValues": [
+        {
+          "name": "VIDEO"
+        },
+        {
+          "name": "EXTERNAL_VIDEO"
+        },
+        {
+          "name": "MODEL_3D"
+        },
+        {
+          "name": "IMAGE"
+        }
+      ],
+      "fields": null,
+      "inputFields": null,
+      "kind": "ENUM",
+      "name": "MediaContentType",
+      "possibleTypes": null
+    },
+    "PageInfo": {
+      "enumValues": null,
+      "fields": [
+        {
+          "args": [],
+          "name": "endCursor",
+          "type": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+          }
+        },
+        {
+          "args": [],
+          "name": "hasNextPage",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "SCALAR",
+              "name": "Boolean",
+              "ofType": null
+            }
+          }
+        },
+        {
+          "args": [],
+          "name": "hasPreviousPage",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "SCALAR",
+              "name": "Boolean",
+              "ofType": null
+            }
+          }
+        },
+        {
+          "args": [],
+          "name": "startCursor",
+          "type": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+          }
+        }
+      ],
+      "inputFields": null,
+      "kind": "OBJECT",
+      "name": "PageInfo",
+      "possibleTypes": null
+    },
+    "ProductVariantBarcode": {
+      "enumValues": null,
+      "fields": [
+        {
+          "args": [],
+          "name": "type",
+          "type": {
+            "kind": "ENUM",
+            "name": "BarcodeType",
+            "ofType": null
+          }
+        },
+        {
+          "args": [],
+          "name": "value",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "SCALAR",
+              "name": "String",
+              "ofType": null
+            }
+          }
+        }
+      ],
+      "inputFields": null,
+      "kind": "OBJECT",
+      "name": "ProductVariantBarcode",
+      "possibleTypes": null
+    },
+    "ProductVariantBarcodeConnection": {
+      "enumValues": null,
+      "fields": [
+        {
+          "args": [],
+          "name": "edges",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "LIST",
+              "name": null,
+              "ofType": {
+                "kind": "NON_NULL",
+                "name": null,
+                "ofType": {
+                  "kind": "OBJECT",
+                  "name": "ProductVariantBarcodeEdge"
+                }
+              }
+            }
+          }
+        },
+        {
+          "args": [],
+          "name": "nodes",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "LIST",
+              "name": null,
+              "ofType": {
+                "kind": "NON_NULL",
+                "name": null,
+                "ofType": {
+                  "kind": "OBJECT",
+                  "name": "ProductVariantBarcode"
+                }
+              }
+            }
+          }
+        },
+        {
+          "args": [],
+          "name": "pageInfo",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "OBJECT",
+              "name": "PageInfo",
+              "ofType": null
+            }
+          }
+        }
+      ],
+      "inputFields": null,
+      "kind": "OBJECT",
+      "name": "ProductVariantBarcodeConnection",
+      "possibleTypes": null
+    },
+    "ProductVariantBarcodeEdge": {
+      "enumValues": null,
+      "fields": [
+        {
+          "args": [],
+          "name": "cursor",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "SCALAR",
+              "name": "String",
+              "ofType": null
+            }
+          }
+        },
+        {
+          "args": [],
+          "name": "node",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "OBJECT",
+              "name": "ProductVariantBarcode",
+              "ofType": null
+            }
+          }
+        }
+      ],
+      "inputFields": null,
+      "kind": "OBJECT",
+      "name": "ProductVariantBarcodeEdge",
+      "possibleTypes": null
+    },
+    "ProductVariantsBulkUpdatePayload": {
+      "enumValues": null,
+      "fields": [
+        {
+          "args": [],
+          "name": "product",
+          "type": {
+            "kind": "OBJECT",
+            "name": "Product",
+            "ofType": null
+          }
+        },
+        {
+          "args": [],
+          "name": "productVariants",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "OBJECT",
+                "name": "ProductVariant",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "args": [],
+          "name": "userErrors",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "LIST",
+              "name": null,
+              "ofType": {
+                "kind": "NON_NULL",
+                "name": null,
+                "ofType": {
+                  "kind": "OBJECT",
+                  "name": "ProductVariantsBulkUpdateUserError"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "inputFields": null,
+      "kind": "OBJECT",
+      "name": "ProductVariantsBulkUpdatePayload",
+      "possibleTypes": null
+    },
+    "ProductVariantsBulkUpdateUserError": {
+      "enumValues": null,
+      "fields": [
+        {
+          "args": [],
+          "name": "code",
+          "type": {
+            "kind": "ENUM",
+            "name": "ProductVariantsBulkUpdateUserErrorCode",
+            "ofType": null
+          }
+        },
+        {
+          "args": [],
+          "name": "field",
+          "type": {
+            "kind": "LIST",
+            "name": null,
+            "ofType": {
+              "kind": "NON_NULL",
+              "name": null,
+              "ofType": {
+                "kind": "SCALAR",
+                "name": "String",
+                "ofType": null
+              }
+            }
+          }
+        },
+        {
+          "args": [],
+          "name": "message",
+          "type": {
+            "kind": "NON_NULL",
+            "name": null,
+            "ofType": {
+              "kind": "SCALAR",
+              "name": "String",
+              "ofType": null
+            }
+          }
+        }
+      ],
+      "inputFields": null,
+      "kind": "OBJECT",
+      "name": "ProductVariantsBulkUpdateUserError",
+      "possibleTypes": null
+    },
+    "ProductVariantsBulkUpdateUserErrorCode": {
+      "enumValues": [
+        {
+          "name": "INVALID_INPUT"
+        },
+        {
+          "name": "CANNOT_SPECIFY_BOTH"
+        },
+        {
+          "name": "MUST_SPECIFY_ONE_OF_PAIR"
+        },
+        {
+          "name": "OPTION_VALUE_NAME_TOO_LONG"
+        },
+        {
+          "name": "PRODUCT_DOES_NOT_EXIST"
+        },
+        {
+          "name": "PRODUCT_VARIANT_ID_MISSING"
+        },
+        {
+          "name": "PRODUCT_VARIANT_DOES_NOT_EXIST"
+        },
+        {
+          "name": "OPTION_DOES_NOT_EXIST"
+        },
+        {
+          "name": "OPTION_VALUE_DOES_NOT_EXIST"
+        },
+        {
+          "name": "MUST_BE_FOR_THIS_PRODUCT"
+        },
+        {
+          "name": "NOT_DEFINED_FOR_SHOP"
+        },
+        {
+          "name": "PRODUCT_SUSPENDED"
+        },
+        {
+          "name": "NO_INVENTORY_QUANTITIES_ON_VARIANTS_UPDATE"
+        },
+        {
+          "name": "VARIANT_ALREADY_EXISTS"
+        },
+        {
+          "name": "GREATER_THAN_OR_EQUAL_TO"
+        },
+        {
+          "name": "NEED_TO_ADD_OPTION_VALUES"
+        },
+        {
+          "name": "OPTION_VALUES_FOR_NUMBER_OF_UNKNOWN_OPTIONS"
+        },
+        {
+          "name": "SUBSCRIPTION_VIOLATION"
+        },
+        {
+          "name": "NO_INVENTORY_QUANTITES_DURING_UPDATE"
+        },
+        {
+          "name": "NEGATIVE_PRICE_VALUE"
+        },
+        {
+          "name": "LOCAL_CURRENCY_GIFT_CARD_PRICE_MUST_BE_ZERO"
+        },
+        {
+          "name": "BLANK"
+        },
+        {
+          "name": "TOO_SHORT"
+        },
+        {
+          "name": "TOO_LONG"
+        },
+        {
+          "name": "INVALID_VALUE"
+        },
+        {
+          "name": "CANNOT_SET_NAME_FOR_LINKED_OPTION_VALUE"
+        },
+        {
+          "name": "UNSUPPORTED_COMBINED_LISTING_PARENT_OPERATION"
+        },
+        {
+          "name": "INVENTORY_QUANTITIES_LIMIT_EXCEEDED"
+        },
+        {
+          "name": "INCOMPATIBLE_BARCODE_FIELDS"
+        },
+        {
+          "name": "BLANK_BARCODE_VALUE"
+        },
+        {
+          "name": "TOO_MANY_BARCODES"
+        },
+        {
+          "name": "BARCODE_VALUE_TOO_LONG"
+        },
+        {
+          "name": "DUPLICATE_BARCODE_VALUE"
+        },
+        {
+          "name": "INVALID_BARCODE_TYPE"
+        },
+        {
+          "name": "INVALID_BARCODE_SEPARATORS"
+        },
+        {
+          "name": "INVALID_BARCODE_LENGTH"
+        },
+        {
+          "name": "INVALID_BARCODE_PREFIX"
+        },
+        {
+          "name": "INVALID_BARCODE_CHARACTERS"
+        },
+        {
+          "name": "BARCODE_CHECKSUM_VALIDATION_FAILED"
+        }
+      ],
+      "fields": null,
+      "inputFields": null,
+      "kind": "ENUM",
+      "name": "ProductVariantsBulkUpdateUserErrorCode",
+      "possibleTypes": null
+    }
+  }
+}

@@ -35,7 +35,7 @@ def verify_connection(client=None,config=None):
         result['schema_fingerprint']=capabilities.get('schema_fingerprint')
         known={'SHOPIFY_NOT_CONFIGURED','SHOP_IDENTITY_UNVERIFIED','WRITE_PRODUCTS_SCOPE_UNVERIFIED',
             'COMPLETE_BARCODE_STATE_UNAVAILABLE','BULK_BARCODE_SCHEMA_UNAVAILABLE',
-            'BARCODE_INPUT_SCHEMA_UNAVAILABLE','MULTI_BARCODE_CONTRACT_UNVERIFIED',
+            'BARCODE_INPUT_SCHEMA_UNAVAILABLE','MULTI_BARCODE_CONTRACT_UNVERIFIED','MUTATION_SEMANTICS_UNVERIFIED',
             'API_VERSION_UNVERIFIED','API_VERSION_FALLBACK_REJECTED',
             'AUTHENTICATION_UNVERIFIED','THROTTLED','REMOTE_UNAVAILABLE','SCHEMA_OR_ACCESS_UNVERIFIED'}
         result['adapter_reason']=capabilities.get('reason') if capabilities.get('reason') in known else 'UNVERIFIED'
