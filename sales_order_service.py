@@ -177,6 +177,7 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str, *
 
 
 def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> SalesOrder:
+    if order.sales_channel=='POS':raise SalesOrderValidationError('Use the POS workflow')
     if order.order_status != "DRAFT":
         raise SalesOrderValidationError("Only draft orders can be edited")
     if order.shopify_draft_order_id:
@@ -215,6 +216,7 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
 
 def transition_order(db: Session, order: SalesOrder, new_status: str, actor: str,
                      reason: str | None = None, *, commit: bool = True) -> SalesOrder:
+    if order.sales_channel=='POS':raise InvalidOrderTransition('Use the POS void/refund workflow')
     target = str(new_status or "").upper()
     if target not in ORDER_STATUSES or target not in TRANSITIONS.get(order.order_status, set()):
         raise InvalidOrderTransition(f"Cannot transition {order.order_status} to {target or 'empty status'}")

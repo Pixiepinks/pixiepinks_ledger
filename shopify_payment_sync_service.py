@@ -208,6 +208,7 @@ def create_preflight(db: Session, order_id: int, actor: str, idempotency_key: st
     if not order: raise ShopifyPaymentSyncError("Sales order not found", status_code=404)
     active = db.query(ShopifyPaymentSyncOperation).filter_by(active_shopify_order_id=order.shopify_order_id).one_or_none()
     if active: return active
+    if order.sales_channel=="POS":raise ShopifyPaymentSyncError("Use the POS payment workflow",status_code=403)
     api = client or ShopifyCatalogClient()
     if "write_orders" not in installed_scopes(api):
         raise ShopifyPaymentSyncError("Shopify write_orders permission is not installed", status_code=403)
@@ -248,6 +249,7 @@ def execute_operation(db: Session, order_id: int, operation_id: str, actor: str,
         _audit(db, operation, "PREFLIGHT_EXPIRED", actor); db.commit()
         raise ShopifyPaymentSyncError(operation.error_summary)
     order = db.query(SalesOrder).filter_by(id=order_id).with_for_update().one()
+    if order.sales_channel=="POS":raise ShopifyPaymentSyncError("Use the POS payment workflow",status_code=403)
     api = client or ShopifyCatalogClient()
     if "write_orders" not in installed_scopes(api):
         raise ShopifyPaymentSyncError("Shopify write_orders permission is not installed", status_code=403)

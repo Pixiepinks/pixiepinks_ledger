@@ -1,0 +1,456 @@
+{
+  "shop": {
+    "myshopifyDomain": "fixture.myshopify.com",
+    "currencyCode": "LKR"
+  },
+  "currentAppInstallation": {
+    "accessScopes": [
+      {
+        "handle": "read_orders"
+      },
+      {
+        "handle": "write_orders"
+      },
+      {
+        "handle": "read_inventory"
+      },
+      {
+        "handle": "read_locations"
+      },
+      {
+        "handle": "read_products"
+      }
+    ]
+  },
+  "t0": {
+    "inputFields": [
+      {
+        "name": "lineItems",
+        "type": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+            "kind": "INPUT_OBJECT",
+            "name": "OrderCreateLineItemInput",
+            "ofType": null
+          }
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "transactions",
+        "type": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+            "kind": "INPUT_OBJECT",
+            "name": "OrderCreateOrderTransactionInput",
+            "ofType": null
+          }
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "fulfillment",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "OrderCreateFulfillmentInput",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "sourceIdentifier",
+        "type": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "currency",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "CurrencyCode",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "tags",
+        "type": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+            "kind": "SCALAR",
+            "name": "String",
+            "ofType": null
+          }
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t1": {
+    "inputFields": [
+      {
+        "name": "inventoryBehaviour",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "OrderCreateInputsInventoryBehavior",
+          "ofType": null
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t2": {
+    "inputFields": [
+      {
+        "name": "variantId",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "priceSet",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "MoneyBagInput",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "quantity",
+        "type": {
+          "kind": "SCALAR",
+          "name": "Int",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "taxLines",
+        "type": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+            "kind": "INPUT_OBJECT",
+            "name": "OrderCreateTaxLineInput",
+            "ofType": null
+          }
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "properties",
+        "type": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+            "kind": "INPUT_OBJECT",
+            "name": "OrderCreateLineItemPropertyInput",
+            "ofType": null
+          }
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t3": {
+    "inputFields": [
+      {
+        "name": "locationId",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t4": {
+    "inputFields": [
+      {
+        "name": "amountSet",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "MoneyBagInput",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "gateway",
+        "type": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "kind",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "OrderTransactionKind",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "status",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "OrderTransactionStatus",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "locationId",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t5": {
+    "inputFields": [
+      {
+        "name": "orderId",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "refundLineItems",
+        "type": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+            "kind": "INPUT_OBJECT",
+            "name": "RefundLineItemInput",
+            "ofType": null
+          }
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "transactions",
+        "type": {
+          "kind": "LIST",
+          "name": null,
+          "ofType": {
+            "kind": "INPUT_OBJECT",
+            "name": "OrderTransactionInput",
+            "ofType": null
+          }
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t6": {
+    "inputFields": [
+      {
+        "name": "lineItemId",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "quantity",
+        "type": {
+          "kind": "SCALAR",
+          "name": "Int",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "restockType",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "RefundLineItemRestockType",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "locationId",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t7": {
+    "inputFields": [
+      {
+        "name": "amount",
+        "type": {
+          "kind": "SCALAR",
+          "name": "Money",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "gateway",
+        "type": {
+          "kind": "SCALAR",
+          "name": "String",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "kind",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "OrderTransactionKind",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "parentId",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      },
+      {
+        "name": "orderId",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t8": {
+    "inputFields": [
+      {
+        "name": "toAssociate",
+        "type": {
+          "kind": "INPUT_OBJECT",
+          "name": "OrderCreateAssociateCustomerAttributesInput",
+          "ofType": null
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "t9": {
+    "inputFields": [
+      {
+        "name": "id",
+        "type": {
+          "kind": "SCALAR",
+          "name": "ID",
+          "ofType": null
+        },
+        "defaultValue": null
+      }
+    ]
+  },
+  "inventoryEnum": {
+    "enumValues": [
+      {
+        "name": "DECREMENT_OBEYING_POLICY"
+      }
+    ]
+  },
+  "restockEnum": {
+    "enumValues": [
+      {
+        "name": "RETURN"
+      },
+      {
+        "name": "NO_RESTOCK"
+      }
+    ]
+  },
+  "mutation": {
+    "fields": [
+      {
+        "name": "orderCreate",
+        "args": [
+          {
+            "name": "order",
+            "type": {
+              "kind": "INPUT_OBJECT",
+              "name": "OrderCreateOrderInput",
+              "ofType": null
+            }
+          },
+          {
+            "name": "options",
+            "type": {
+              "kind": "INPUT_OBJECT",
+              "name": "OrderCreateOptionsInput",
+              "ofType": null
+            }
+          }
+        ]
+      },
+      {
+        "name": "refundCreate",
+        "args": [
+          {
+            "name": "input",
+            "type": {
+              "kind": "INPUT_OBJECT",
+              "name": "RefundInput",
+              "ofType": null
+            }
+          }
+        ]
+      }
+    ]
+  },
+  "__schema": {
+    "directives": [
+      {
+        "name": "idempotent",
+        "locations": [
+          "FIELD"
+        ],
+        "args": [
+          {
+            "name": "key",
+            "type": {
+              "kind": "SCALAR",
+              "name": "String",
+              "ofType": null
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

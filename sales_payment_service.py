@@ -132,9 +132,11 @@ def _audit(db: Session, payment: SalesPayment, action: str, previous: str | None
 
 
 def record_payment_claim(db: Session, order_id: int, payload: dict, actor: str,
-                         idempotency_key: str, *, commit: bool = True) -> tuple[SalesPayment, bool]:
+                         idempotency_key: str, *, commit: bool = True, pos_authorized: bool = False) -> tuple[SalesPayment, bool]:
     if not isinstance(payload, dict) or not idempotency_key or len(idempotency_key) > 100:
         raise PaymentValidationError("A valid idempotency key and payload are required")
+    candidate=db.get(SalesOrder,order_id)
+    if candidate and candidate.sales_channel=='POS' and not pos_authorized:raise PaymentValidationError('Use the POS tender workflow',status_code=403)
     request_hash = _payload_hash(payload)
     existing = db.query(SalesPayment).filter_by(idempotency_key=idempotency_key).one_or_none()
     if existing:
@@ -199,9 +201,11 @@ def record_payment_claim(db: Session, order_id: int, payload: dict, actor: str,
 
 
 def decide_payment(db: Session, order_id: int, payment_id: int, *, approve: bool,
-                   actor: str, idempotency_key: str, reason: str | None = None, commit: bool = True) -> tuple[SalesPayment, bool]:
+                   actor: str, idempotency_key: str, reason: str | None = None, commit: bool = True, pos_authorized: bool = False) -> tuple[SalesPayment, bool]:
     if not idempotency_key or len(idempotency_key) > 100:
         raise PaymentValidationError("A valid idempotency key is required")
+    candidate=db.get(SalesOrder,order_id)
+    if candidate and candidate.sales_channel=='POS' and not pos_authorized:raise PaymentValidationError('Use the POS tender workflow',status_code=403)
     audit_key = f"decision:{idempotency_key}"
     prior = db.query(SalesPaymentAuditEvent).filter_by(idempotency_key=audit_key).one_or_none()
     if prior:
