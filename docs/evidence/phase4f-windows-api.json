@@ -1,0 +1,14 @@
+{
+  "reviewed": "2026-11-20",
+  "purpose": "Maintainer source verification: full DEVMODE DriverData bytes and CreateDC(driver,device,InitData). Not physical printer certification.",
+  "sources": [
+    {
+      "url": "https://raw.githubusercontent.com/mhammond/pywin32/main/win32/src/PyDEVMODE.cpp",
+      "sha256": "4e7547a71befca220a6344b09a88cd1e441b7dc3d4d6775f7403f007491c3082"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/mhammond/pywin32/main/win32/src/win32gui.i",
+      "sha256": "8e9dc1fcf49a5940a3fe818ca3e545ee918d574987287befb2325800e4cb8f23"
+    }
+  ]
+}

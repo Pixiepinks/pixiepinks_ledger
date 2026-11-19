@@ -15,7 +15,7 @@ import pos_shopify as remote
 import pos_money as calc
 import sales_payment_service as payments
 
-PERMISSIONS=['view','sell','discount','hold','refund','void','register_open','register_close','reports','admin']
+PERMISSIONS=['drawer.open','view','sell','discount','hold','refund','void','register_open','register_close','reports','admin']
 ZERO={'type':'FIXED','value':'0.00'}
 DEFAULT={'tax_mode':'UNCONFIGURED','tax_rate':'0.00','tax_title':'','legal_id':'','shop_contact':'','discount_limits':{},
  'pricing_policy':'NET_PRICE_SNAPSHOT','accounts':{}}

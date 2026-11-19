@@ -11,7 +11,7 @@ from pos_models import POSRefund,POSAudit
 import pos_service as service
 
 
-def generate(db,user,checkout_id,profile='80',refund_id=None):
+def generate(db,user,checkout_id,profile='80',refund_id=None,*,commit=True,duplicate=False):
     service.require(user);service.locked(db);r=service.sale(db,user,checkout_id)
     if profile not in {'58','80','A4'}:raise HTTPException(422,'Choose 58, 80 or A4 receipt')
     refund=db.get(POSRefund,refund_id) if refund_id else None
@@ -19,7 +19,9 @@ def generate(db,user,checkout_id,profile='80',refund_id=None):
     if not refund and r.status!='COMPLETE':raise HTTPException(409,'Shopify completion uncertain/unpaid: no finalized receipt can be issued')
     ref=refund.id if refund else r.id
     previous=db.query(POSAudit).filter_by(shop=r.shop,reference=ref,action='RECEIPT_GENERATED').count()
-    service.audit(db,user,ref,'RECEIPT_GENERATED',duplicate=previous>0,profile=profile,refund=bool(refund));db.commit()
+    previous=previous or int(duplicate)
+    service.audit(db,user,ref,'RECEIPT_GENERATED',duplicate=previous>0,profile=profile,refund=bool(refund))
+    db.commit() if commit else db.flush()
     policy=r.frozen['policy'];q=r.frozen['quote'];rows=[]
     for line in q['lines']:
         rows.extend([line['title']+' · '+line['variant_title'],str(line['quantity'])+' x '+line['unit_price']+'    '+line['total'],

@@ -2,6 +2,7 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('pos.drawer.open','POS: authorized manual drawer opening','/crm/pos'),
     ('pos.view','POS: view','/crm/pos'),
     ('pos.sell','POS: sell','/crm/pos'),
     ('pos.discount','POS: discount','/crm/pos'),
