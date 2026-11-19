@@ -10,6 +10,7 @@ import retail_service as service
 import retail_labels as labels
 import retail_sync as sync
 import retail_barcode_sync as barcode_sync
+import retail_inventory
 import retail_barcode_p1_pilot as p1_pilot
 from starlette.concurrency import run_in_threadpool
 
@@ -47,11 +48,11 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
 
     @router.get('/{screen}',include_in_schema=False)
     def screen(screen:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
-        permission={'products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print',
+        permission={'products':'retail.products.view','scanner':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print',
                     'audit':'retail.products.audit','sync':'retail.sync.view','barcode-sync':barcode_sync.PERMISSION}.get(screen)
         if not permission:raise HTTPException(404,'Retail screen not found')
         service.require(user,permission)
-        return templates.TemplateResponse('retail.html',{'request':request,'user':user,'page_title':{'products':'Product Master','barcodes':'Barcode Management','labels':'Barcode Label Printing','audit':'Product Audit','sync':'Import & Sync History','barcode-sync':'Shopify Barcode Sync'}[screen],
+        return templates.TemplateResponse('retail_scanner.html' if screen=='scanner' else 'retail.html',{'request':request,'user':user,'page_title':{'products':'Product Master','scanner':'Barcode Scanner','barcodes':'Barcode Management','labels':'Barcode Label Printing','audit':'Product Audit','sync':'Import & Sync History','barcode-sync':'Shopify Barcode Sync'}[screen],
             'screen':screen,'csrf':csrf_token(request),'retail_permissions':[p for p in service.PERMISSIONS if user.role=='ADMIN' or isinstance(user.section_access,list) and p in user.section_access]},headers={'Cache-Control':'private, no-store'})
 
     def barcode_response(value):
@@ -109,11 +110,46 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.get('/api/scan')
     def scan(code:str=Query(...,min_length=1,max_length=100),offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.products.view')
-        if not service.code_valid(code):raise HTTPException(422,'Scan a valid barcode without control characters')
-        q=db.query(RetailVariant).filter(RetailVariant.shop==service.shop(),
-            service.or_(RetailVariant.barcode==code,RetailVariant.local_barcode==code))
-        ctx=service.audit_context(db)
-        return {'code':code,'total':q.count(),'rows':[service.public(row,ctx) for row in q.order_by(RetailVariant.id).offset(offset).limit(50)]}
+        return barcode_response(service.scan_page(db,code,offset))
+
+    @router.get('/api/scanner/search')
+    def scanner_search(mode:str, q:str=Query(...,min_length=1,max_length=100),offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.products.view');return barcode_response(service.scanner_search(db,mode,q,offset))
+
+    @router.get('/api/scanner/products/{rid}')
+    def scanner_details(rid:int,version:int=Query(...,ge=1),db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.products.view');row=service.scanner_row(db,rid,version)
+        return barcode_response({'row':service.public(row,service.audit_context(db))})
+
+    @router.get('/api/scanner/products/{rid}/inventory')
+    def scanner_inventory(rid:int,version:int=Query(...,ge=1),db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.products.view');row=service.scanner_row(db,rid,version)
+        expected=(row.version,row.product_id,row.variant_id,row.inventory_item_id,row.product_status,row.missing)
+        if row.missing or row.product_status!='ACTIVE':return barcode_response(retail_inventory.unavailable('PRODUCT_INACTIVE'))
+        result=retail_inventory.client.lookup({'shop':row.shop,'version':row.version,'product_id':row.product_id,'variant_id':row.variant_id,'inventory_item_id':row.inventory_item_id})
+        db.expire_all();current=service.scanner_row(db,rid,version)
+        if expected!=(current.version,current.product_id,current.variant_id,current.inventory_item_id,current.product_status,current.missing):raise HTTPException(409,'Catalog changed. Scan again.')
+        return barcode_response(result)
+
+    @router.get('/api/scanner/products/{rid}/admin')
+    def scanner_admin(rid:int,version:int=Query(...,ge=1),db=Depends(get_db),user=Depends(require_user)):
+        from fastapi.responses import RedirectResponse
+        import re
+        service.require(user,'retail.products.view');row=service.scanner_row(db,rid,version)
+        if row.missing or not re.fullmatch(r'gid://shopify/Product/[0-9]+',row.product_id):raise HTTPException(409,'Shopify product identity unavailable')
+        return RedirectResponse(f'https://{service.shop()}.myshopify.com/admin/products/{row.product_id.rsplit("/",1)[-1]}',status_code=303,headers={'Cache-Control':'private, no-store'})
+
+    @router.post('/api/scanner/products/{rid}/labels')
+    async def scanner_labels(rid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.products.view');service.require(user,'retail.barcodes.print')
+        p=await body(request,{'version'},{'version'})
+        if type(p['version']) is not int or p['version']<1:raise HTTPException(422,'Current product version required')
+        service.write_lock(db);row=service.scanner_row(db,rid,p['version'])
+        if 'STALE' in service.issues(row,service.audit_context(db)):raise HTTPException(409,'Refresh the stale catalog before printing labels')
+        selection=service.selection(db,user,{'ids':[rid]})
+        labels.print_rows(db,user,selection['token'])  # Reuse existing barcode/conflict/status checks.
+        service.audit(db,user,'SCANNER_LABEL_HANDOFF',rid,version=row.version)
+        db.commit();return barcode_response(selection)
 
     @router.get('/api/filter-options')
     def filter_options(db=Depends(get_db),user=Depends(require_user)):

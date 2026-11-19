@@ -1,7 +1,7 @@
 {% extends 'base.html' %}{% block content %}
 <section id="retail" data-screen="{{ screen }}" data-csrf="{{ csrf }}" data-permissions='{{ retail_permissions|tojson }}'>
 <div class="card"><h2>{{ page_title }}</h2><p>Catalog imports are read-only. Local assignments preserve Shopify values; controlled barcode synchronization requires a separate reviewed approval.</p>
-<nav class="retail-tabs"><a href="/crm/retail/products">Product Master</a><a href="/crm/retail/barcodes">Barcode Management</a><a href="/crm/retail/labels">Label Printing</a><a href="/crm/retail/audit">Product Audit</a><a href="/crm/retail/sync">Sync History</a>{% if 'retail.barcodes.shopify_sync' in retail_permissions %}<a href="/crm/retail/barcode-sync">Shopify Barcode Sync</a>{% endif %}</nav>
+<nav class="retail-tabs"><a href="/crm/retail/products">Product Master</a><a href="/crm/retail/scanner">Barcode Scanner</a><a href="/crm/retail/barcodes">Barcode Management</a><a href="/crm/retail/labels">Label Printing</a><a href="/crm/retail/audit">Product Audit</a><a href="/crm/retail/sync">Sync History</a>{% if 'retail.barcodes.shopify_sync' in retail_permissions %}<a href="/crm/retail/barcode-sync">Shopify Barcode Sync</a>{% endif %}</nav>
 <p id="retail-status" role="status" aria-live="polite"></p></div>
 {% if screen in ['products','barcodes','audit'] %}
 <div class="card" id="retail-metrics"></div>
@@ -22,5 +22,5 @@
 <div class="card"><h3>Print document history</h3><div class="table-wrap"><table><thead><tr><th>Job</th><th>Labels / State</th><th>Download / Print confirmation</th><th>Actions</th></tr></thead><tbody id="print-rows"></tbody></table></div><button id="print-older" class="btn btn-secondary">Older jobs</button><button id="print-newest" class="btn btn-secondary">Newest jobs</button></div>
 {% endif %}
 <dialog id="scan-picker" aria-labelledby="scan-heading"><h3 id="scan-heading">Choose variant</h3><p id="scan-summary"></p><div id="scan-options"></div><button type="button" id="scan-previous" class="btn btn-secondary">Previous matches</button><button type="button" id="scan-next" class="btn btn-secondary">Next matches</button><button type="button" id="scan-close" class="btn btn-secondary">Close</button></dialog><dialog id="retail-history"><h3>Identifier history</h3><pre></pre><button class="btn btn-secondary" id="close-history">Close</button></dialog>
-</section><link rel="stylesheet" href="/static/retail.css?v=1"><script src="/static/retail.js?v=barcode-production-1"></script>
+</section><link rel="stylesheet" href="/static/retail.css?v=1"><script src="/static/retail.js?v=scanner-shared-lookup-1"></script>
 {% endblock %}

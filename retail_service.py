@@ -112,6 +112,33 @@ def public(row,ctx):
         'admin_url':f"https://{row.shop}.myshopify.com/admin/products/{row.product_id.rsplit('/',1)[-1]}"}
 
 
+def scan_page(db,code,offset=0):
+    """One exact, indexed barcode matcher used by both scanner interfaces."""
+    if not code_valid(code):raise HTTPException(422,'Scan a valid barcode without control characters')
+    query=db.query(RetailVariant).filter(RetailVariant.shop==shop(),or_(RetailVariant.barcode==code,RetailVariant.local_barcode==code))
+    ctx=audit_context(db)
+    return {'code':code,'total':query.count(),'rows':[public(row,ctx) for row in query.order_by(RetailVariant.id).offset(offset).limit(50)]}
+
+
+def scanner_search(db,mode,term,offset=0):
+    if mode not in {'sku','name'} or not isinstance(term,str) or not term.strip() or len(term)>100 or any(ord(c)<32 or ord(c)==127 for c in term):raise HTTPException(422,'Enter a valid SKU or product name, up to 100 characters')
+    query=db.query(RetailVariant).filter_by(shop=shop())
+    if mode=='sku':query=query.filter(or_(RetailVariant.sku==term,RetailVariant.local_sku==term))
+    else:
+        for word in term.split():
+            escaped=word.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
+            query=query.filter(or_(RetailVariant.title.ilike('%'+escaped+'%',escape='\\'),RetailVariant.variant_title.ilike('%'+escaped+'%',escape='\\')))
+    ctx=audit_context(db)
+    return {'mode':mode,'query':term,'total':query.count(),'rows':[public(row,ctx) for row in query.order_by(RetailVariant.id).offset(offset).limit(50)]}
+
+
+def scanner_row(db,rid,version):
+    row=db.query(RetailVariant).filter_by(shop=shop(),id=rid).populate_existing().one_or_none()
+    if not row:raise HTTPException(404,'Product not found in this store')
+    if row.version!=version:raise HTTPException(409,'Catalog changed. Scan or search for this product again.')
+    return row
+
+
 def filtered(db,filters):
     allowed={'q','category','issue','active','product_type','vendor','collection'}
     if not isinstance(filters,dict) or set(filters)-allowed:raise HTTPException(422,'Unknown product filter')
