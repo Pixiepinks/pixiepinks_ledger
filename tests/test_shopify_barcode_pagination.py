@@ -5,6 +5,7 @@ monkeypatched in tests using httpx.MockTransport; no live mutation is permitted.
 """
 import copy
 import json
+import re
 from pathlib import Path
 from types import SimpleNamespace
 import httpx
@@ -39,6 +40,8 @@ def remote(monkeypatch):
     def handle(req):
         body=json.loads(req.content);q=body['query'];v=body['variables'];state.calls.append(body)
         assert str(req.url)=='https://eb2b70.myshopify.com/admin/api/2026-10/graphql.json'
+        if any(int(size)>20 for size in re.findall(r'barcodes\(first:(\d+)',q)):
+            return httpx.Response(200,json={'errors':[{'message':'first cannot exceed 20','extensions':{'code':'BAD_REQUEST'}}]},headers={'X-Shopify-API-Version':state.version})
         if q==PROBE:data=state.probe
         elif q in {CATALOG,CATALOG_IDS}:
             page=int(v['after'] or 0)
@@ -57,7 +60,7 @@ def remote(monkeypatch):
                 'pageInfo':{'hasNextPage':page+1<len(state.catalog),'endCursor':str(page+1)}}}
         elif q==READ:
             vid=v['id'].rsplit('/',1)[-1];page=int(v['after'] or 0);values=state.barcodes.get(vid,[])
-            chunk=values[page:page+100]
+            chunk=values[page:page+20]
             data={'productVariant':{'id':v['id'],'barcode':state.legacy if vid=='1' else None,'product':{'id':'gid://shopify/Product/10','status':'ACTIVE'},
                 'barcodes':{'nodes':chunk,'pageInfo':{'hasNextPage':page+len(chunk)<len(values),'endCursor':'1' if state.bad_cursor else str(page+len(chunk))}}}}
         elif q==MUTATION:
@@ -230,3 +233,40 @@ def test_missing_terminal_page_metadata_never_claims_complete_catalog(remote,mon
         return data,version
     monkeypatch.setattr(client,'_read',read)
     with pytest.raises(RemoteError,match='INCOMPLETE_PAGE_INFO'):client.inspect(SNAP)
+
+
+def test_shopify_bad_request_rejects_oversized_barcode_read(remote,monkeypatch):
+    client,state=remote
+    oversized=READ.replace('barcodes(first:20,','barcodes(first:100,')
+    monkeypatch.setattr(adapter,'READ',oversized)
+    # Model the live HTTP 200 / GraphQL BAD_REQUEST, rather than an HTTP error.
+    response=client.http.post(f'{client.base_url}/admin/api/2026-10/graphql.json',
+        json={'query':oversized,'variables':{'id':SNAP['variant_id'],'after':None}})
+    assert response.status_code==200
+    assert response.json()['errors'][0]=={'message':'first cannot exceed 20','extensions':{'code':'BAD_REQUEST'}}
+    with pytest.raises(RemoteError,match='SCHEMA_OR_ACCESS_UNVERIFIED'):
+        client._read(oversized,{'id':SNAP['variant_id'],'after':None})
+    assert not state.mutations
+
+
+def test_twenty_item_barcode_pages_and_final_short_page_are_exhausted(remote):
+    client,state=remote
+    assert adapter.PAGE_SIZE==20 and 'barcodes(first:20,after:$after)' in READ
+    state.barcodes['1']=[{'value':str(i),'type':None} for i in range(45)]
+    result=client.inspect(SNAP)
+    assert result['complete'] and result['codes']==[str(i) for i in range(45)]
+    offsets=[c['variables']['after'] for c in state.calls if c['query']==READ]
+    # Catalog's first value, continuation pages, then complete target reread.
+    assert offsets==['1','21','41',None,'20','40']
+    with pytest.raises(RemoteError,match='INVALID_CONNECTION'):
+        client._connection({'nodes':[{}]*21,'pageInfo':{'hasNextPage':False,'endCursor':'21'}})
+
+
+def test_catalog_id_validation_keeps_hundred_item_limit(remote):
+    client,state=remote
+    state.catalog=[[str(i) for i in range(1,36)]]
+    state.barcodes['35']=[{'value':'OTHER','type':None},{'value':'P1','type':None}]
+    result=client.inspect(SNAP)
+    assert result['complete'] and result['collision_ids']==['gid://shopify/ProductVariant/35']
+    assert 'productVariants(first:50,' in CATALOG
+    assert 'productVariants(first:100,' in CATALOG_IDS

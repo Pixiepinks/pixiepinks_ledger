@@ -2,6 +2,8 @@
 
 2026-11-19 (Asia/Colombo). Base: main `c5f88cf` (PR #170).
 
+Follow-up: [20-barcode pagination correction and P1 operator rerun](retail-barcode-pagination-20.md). The historical observations below describe the earlier task; the follow-up records the owner-reported live results and current fix.
+
 ## Outcome and evidence boundary
 
 This change adds an operator diagnostic, tests and this procedure. It does not change the production adapter, source-level gate, Shopify imports, Draft Orders, webhook version, database schema, approvals, worker or environment defaults. `MUTATION_SEMANTICS_VERIFIED=False` remains unchanged. Both write flags remain disabled. No live Shopify request, production database query, mutation, deployment or Railway variable change was performed by Codex.
@@ -44,7 +46,7 @@ python - <<'PIXIEPINKS_REVIEWED_READONLY_SOURCE'
 PIXIEPINKS_REVIEWED_READONLY_SOURCE
 ```
 
-The placeholder above is **not** the diagnostic: replace it with the exact reviewed file contents before execution. This executes in memory with the existing deployed modules and credentials, without changing files or deploying. Do not paste tokens or environment output. Review the source from this feature commit; the script verifies the deployed adapter's SHA-256 is `f976339787ec90bfd7bcba9610b3271fec8393ecc222acc7e1a5f7b669c09334`. A different adapter blocks with `DEPLOYED_SCANNER_VERSION_MISMATCH`; review that version instead of weakening the check.
+The placeholder above is **not** the diagnostic: replace it with the exact reviewed file contents before execution. This executes in memory with the existing deployed modules and credentials, without changing files or deploying. Do not paste tokens or environment output. Review the source from this feature commit; the script verifies the deployed adapter's SHA-256 is `180dc2501e3dbb262133ffb682f5c56fa7573830afe25914fef7f7223b7d0f93`. A different adapter blocks with `DEPLOYED_SCANNER_VERSION_MISMATCH`; review that version instead of weakening the check.
 
 To examine a specific **existing** immutable allocation, obtain its `retail_identifiers.id` from an authorized read-only CRM view/operator inspection. Do not substitute the product ID, variant ID or barcode number. Then, if the script is available:
 
@@ -62,7 +64,7 @@ The diagnostic subclasses the deployed `BarcodeClient`, reusing `ShopifyCatalogC
 
 Source-gate and existing write-flag checks run before and after the scan; the diagnostic never changes them. If already enabled, it refuses rather than silently disabling settings. Shop identity and served 2026-10 version must match. Current read/write scope observations are reported, not granted. Global API/webhook settings remain untouched.
 
-The deployed scanner requests 50 variants per catalog page, first barcode per variant, then up to 100 values per continuation page; every continuation is exhausted before counting a variant as fully examined. It validates node/product identity, explicit nullable type, page metadata, cursor progress, duplicate values and legacy/collection consistency. It then re-enumerates all accessible IDs, ordered by ID, 100/page. With an actual allocation it calls the deployed `inspect` method, scans all secondary values for case/whitespace aliases of that code, and finally rereads the target and compares its complete state.
+The deployed scanner requests 50 variants per catalog page, first barcode per variant, then up to 20 values per continuation page; every continuation is exhausted before counting a variant as fully examined. It validates node/product identity, explicit nullable type, page metadata, cursor progress, duplicate values and legacy/collection consistency. It then re-enumerates all accessible IDs, ordered by ID, 100/page. With an actual allocation it calls the deployed `inspect` method, scans all secondary values for case/whitespace aliases of that code, and finally rereads the target and compares its complete state.
 
 Scope of coverage is **all variants returned by the unfiltered connection under this app's visibility**. API permissions and app visibility can constrain that catalog. No GraphQL scan proves visibility of inaccessible variants. A scope error, schema mismatch, unavailable variant, invalid page, changing membership, deadline or limit is an incomplete scan, never evidence of emptiness. An empty catalog is inconclusive. No-allocation mode reports `collision_check_for_candidate=false` even after full coverage: it checks no invented code.
 
