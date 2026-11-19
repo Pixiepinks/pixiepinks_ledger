@@ -15,6 +15,8 @@ class Settings(BaseSettings):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
     RETAIL_ENABLED: bool = False
+    INVENTORY_ENABLED: bool = False
+    SHOPIFY_INVENTORY_WRITE_ENABLED: bool = False
     SHOPIFY_PRODUCT_WRITE_ENABLED: bool = False
     RETAIL_BARCODE_SYNC_ENABLED: bool = False
     RETAIL_BARCODE_SYNC_BATCH_LIMIT: int = Field(5, ge=1, le=5)

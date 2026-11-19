@@ -4729,8 +4729,10 @@ def _stop_collection_queue_worker():
     if _collection_queue_thread is not None: _collection_queue_thread.join(timeout=12)
 
 
-# Default-off retail worker: only queued read-only imports and local PDF generation.
+# Retail worker: independent operation gates; inventory writes additionally remain source-blocked.
 from retail_routes import build_router as build_retail_router
+from inventory_routes import build_router as build_inventory_router
+app.include_router(build_inventory_router(get_db,require_user,_require_csrf,_csrf_token,templates))
 app.include_router(build_retail_router(get_db,require_user,_require_csrf,_csrf_token,templates))
 _retail_stop=threading.Event()
 _retail_thread=None
