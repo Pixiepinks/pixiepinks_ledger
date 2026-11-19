@@ -43,6 +43,8 @@ from sqlalchemy.orm import Session, selectinload
 
 from settings import settings
 from database import SessionLocal, engine
+from finance_reporting import income_statement_totals
+from zoneinfo import ZoneInfo
 from models import (
     Account,
     Base,
@@ -2066,22 +2068,14 @@ def root(request: Request,user: User=Depends(require_user)):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    today = date.today()
+    today = datetime.now(ZoneInfo('Asia/Colombo')).date()
     start_month = today.replace(day=1)
 
-    revenue = (
-        db.query(func.coalesce(func.sum(JournalLine.credit), 0))
-        .join(Account).filter(Account.type == "INCOME")
-        .join(JournalEntry).filter(JournalEntry.date >= start_month, JournalEntry.date <= today)
-        .scalar() or 0
-    )
-    expenses = (
-        db.query(func.coalesce(func.sum(JournalLine.debit), 0))
-        .join(Account).filter(Account.type == "EXPENSE")
-        .join(JournalEntry).filter(JournalEntry.date >= start_month, JournalEntry.date <= today)
-        .scalar() or 0
-    )
-    profit = float(revenue) - float(expenses)
+    # Journal-backed net movements include debit balances in POS contra-revenue.
+    totals = income_statement_totals(db, start_month, today)
+    revenue = totals["total_income"]
+    expenses = totals["total_expenses"]
+    profit = totals["net_profit"]
 
     cash_acc = db.query(Account).filter(Account.name.in_(["Cash on Hand", "Bank - Current Account"])).all()
     cash_balance = 0.0
@@ -4464,65 +4458,28 @@ def income_statement(
     user: User = Depends(require_user),
 ):
     from datetime import datetime as dt
-    if not start or not end:
-        return templates.TemplateResponse(
-            "income_statement.html",
-            {
-                "request": request,
-                "currency": settings.CURRENCY,
-                "start": start,
-                "end": end,
-                "income": 0,
-                "cogs": 0,
-                "other_exp": 0,
-                "gross_profit": 0,
-                "net_profit": 0,
-            },
-        )
 
-    start_dt = dt.strptime(start, "%Y-%m-%d").date()
-    end_dt = dt.strptime(end, "%Y-%m-%d").date()
-
-    income = (
-        db.query(func.coalesce(func.sum(JournalLine.credit), 0))
-        .join(Account).filter(Account.type == "INCOME")
-        .join(JournalEntry)
-        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
-        .scalar() or 0
-    )
-    cogs = (
-        db.query(func.coalesce(func.sum(JournalLine.debit), 0))
-        .join(Account).filter(Account.code == "5000")
-        .join(JournalEntry)
-        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
-        .scalar() or 0
-    )
-    other_exp = (
-        db.query(func.coalesce(func.sum(JournalLine.debit), 0))
-        .join(Account).filter(Account.type == "EXPENSE", Account.code != "5000")
-        .join(JournalEntry)
-        .filter(JournalEntry.date >= start_dt, JournalEntry.date <= end_dt)
-        .scalar() or 0
-    )
-
-    gross_profit = float(income) - float(cogs)
-    net_profit = gross_profit - float(other_exp)
+    if start and end:
+        try:
+            start_dt = dt.strptime(start, "%Y-%m-%d").date()
+            end_dt = dt.strptime(end, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(422, "Invalid income-statement date") from None
+        if end_dt < start_dt:
+            raise HTTPException(422, "End date must not precede start date")
+        totals = income_statement_totals(db, start_dt, end_dt)
+    else:
+        totals = {key: Decimal("0.00") for key in (
+            "gross_sales", "sales_discounts", "sales_returns", "net_sales",
+            "cogs", "gross_profit", "other_income", "other_exp",
+            "total_income", "total_expenses", "net_profit",
+        )}
 
     return templates.TemplateResponse(
         "income_statement.html",
-        {
-            "request": request,
-            "currency": settings.CURRENCY,
-            "start": start,
-            "end": end,
-            "income": income,
-            "cogs": cogs,
-            "other_exp": other_exp,
-            "gross_profit": gross_profit,
-            "net_profit": net_profit,
-        },
+        {"request": request, "currency": settings.CURRENCY,
+         "start": start, "end": end, **totals},
     )
-
 
 # ---------------------- Balance Sheet ----------------------
 @app.get("/reports/balance-sheet", response_class=HTMLResponse)
