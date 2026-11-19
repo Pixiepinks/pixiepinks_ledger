@@ -1,15 +1,17 @@
 # Phase 3 deployment, compatibility evidence and recovery
 
-## Implementation and current blockers
+> **Current release procedure:** [2026-10 adapter activation](inventory-2026-10-activation.md) supersedes the original proposed mutation contract below. Official documentation is now reviewed; old proposal text below is historical and must not be used for activation. Ordinary receiving/adjustments now use available deltas; count reconciliation uses `changeFromQuantity`. Old approvals remain fenced by migration `20261119_46`.
+
+## Original Phase 3 proposal (historical, superseded)
 
 This branch supplies the normal inventory document, approval, dispatch-intent, stock observation, count, reorder/report and pending-transfer architecture. It does **not** claim production-ready mutation compatibility. Shopify documentation retrieval from this execution environment failed with `CONNECT tunnel failed, response 403`. No authorized Railway runtime tool/connection is available here. No live store queries, mutations, scope changes, environment changes or deployments have been performed.
 
-The mutation adapter is a **proposed fixture-tested contract**, with an unconditional source-level production block. It uses an explicitly versioned 2026-10 endpoint through `ShopifyCatalogClient` authentication. It proposes `inventorySetQuantities` for `on_hand`, per-item/location `compareQuantity`, an idempotent directive key, and a document URI. It never uses `ignoreCompareQuantity`, absolute available resets, global barcode-write flags or automatic retries. Before release, authoritative evidence must establish:
+The mutation adapter is a **proposed fixture-tested contract**, with an unconditional source-level production block. It uses an explicitly versioned 2026-10 endpoint through `ShopifyCatalogClient` authentication. It proposes `inventorySetQuantities` for `on_hand`, per-count-item/location `changeFromQuantity`, an idempotent directive key, and a document URI. It never uses `ignoreCompareQuantity`, absolute available resets, global barcode-write flags or automatic retries. Before release, authoritative evidence must establish:
 
 1. The exact 2026-10 mutation/input type names, scalar types, fields and required fields; whether the quantity input is actually `InventoryQuantityInput`; the accepted `on_hand` name and reason; and the required scopes. Do not infer this from fixtures.
 2. The actual supported idempotency mechanism, directive position/key argument/scalar, key retention/replay semantics and collision behavior. Introspection alone cannot certify idempotency or concurrency semantics.
-3. The documented compareQuantity behavior for on-hand, interaction with committed/available/reserved states and concurrent orders/fulfillments, and multi-line partial/error behavior.
-4. The actual adjustment group return shape (including whether an ID is exposed), and authoritative correlation/reconciliation using referenceDocumentUri/idempotency key. A matching current quantity is insufficient proof of a prior uncertain write.
+3. The documented changeFromQuantity behavior for on-hand, interaction with committed/available/reserved states and concurrent orders/fulfillments, and multi-line partial/error behavior.
+4. The actual adjustment group return shape (without assuming an ID is exposed), and authoritative correlation/reconciliation using referenceDocumentUri/idempotency key. A matching current quantity is insufficient proof of a prior uncertain write.
 5. The native transfer API lifecycle, permissions, inventory reservations, dispatch/receipt behavior, concurrency and recovery contract. Until verified, transfers stay pending and never dispatch as a pair of adjustments.
 
 Expected read scopes are `read_inventory` (or `write_inventory`), `read_locations` (or `write_locations`), and product read access for variant/product metadata. Writing requires `write_inventory`. The reader executes fixed queries, checks shop/API-version identity, validates exact product/item/location/tracking state, and requires both named integer quantities. Errors fail unavailable. The runtime mutation probe checks expected shapes, installed scopes and the idempotent directive; it does not remove the independent source verification requirement. API version mismatches fail closed; global catalog API and webhook versions are untouched.

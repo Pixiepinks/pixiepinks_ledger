@@ -1,0 +1,88 @@
+{
+  "reviewed_at_utc": "2026-11-19T12:51:43.685991+00:00",
+  "api_version": "2026-10",
+  "source_contract_verified": true,
+  "live_mutations_performed": false,
+  "sources": [
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/inventoryAdjustQuantities",
+      "http_status": 200,
+      "html_sha256": "60fbf612c630895d3af951224e66b0a5233dece6059af0d21414ae6a1b0eee58"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/mutations/inventorySetQuantities",
+      "http_status": 200,
+      "html_sha256": "0e32ee9571f09bc3d5f4d7ce3313150393835a16833dc587ce98ccef2c8d3fc9"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/InventoryQuantityInput",
+      "http_status": 200,
+      "html_sha256": "c6c7da573f0f9429fe10890c10ec6fb4ad5806abc79a692808bf508256719515"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/InventoryChangeInput",
+      "http_status": 200,
+      "html_sha256": "a9937a68413b82f11627023d963fdaeae4eca6b7442b1675fad787771721ab1a"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/InventoryAdjustQuantitiesInput",
+      "http_status": 200,
+      "html_sha256": "e53b26f7888d910977afcbdd655a9016b6c72aebe7010e3371b273494ed1f2bc"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/InventorySetQuantitiesInput",
+      "http_status": 200,
+      "html_sha256": "60c25ce5de082b7ada52c03791c63ce9e42061c7ed5bb3e2aaa37a7d99b7e696"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/objects/InventoryAdjustmentGroup",
+      "http_status": 200,
+      "html_sha256": "00221d2d212d69d5dad12e643e954e291b0ae6d7aec167fbebb22ad4d34422ce"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/objects/InventoryChange",
+      "http_status": 200,
+      "html_sha256": "cb75885524841231f084d0bcb5d20b2a97a9024921ee548ebec2dd2d475d3b7d"
+    },
+    {
+      "url": "https://shopify.dev/docs/apps/build/orders-fulfillment/inventory-management-apps/manage-quantities-states",
+      "http_status": 200,
+      "html_sha256": "c9aadf40e73f4b415e3fa137bfa773406200d1a4933d5339455a6538345e8f6b"
+    },
+    {
+      "url": "https://shopify.dev/docs/apps/build/apis/graphql-admin/implementing-idempotency",
+      "http_status": 200,
+      "html_sha256": "758b6fd54581b1409deceb9c8a5ca686825ecf62f32dfc44c9b4ea774c219373"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/usage/idempotent-requests",
+      "http_status": 200,
+      "html_sha256": "33146a2b00df6deddd6ebb98c2e9b014d199e881ecd57b10637440276b0f24fa"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/objects/InventoryAdjustQuantitiesUserError",
+      "http_status": 200,
+      "html_sha256": "c84c0b50c3aca4e6345da9ce7fdc13d365eb095c8cc145de69bba9c9ae14ed0f"
+    },
+    {
+      "url": "https://shopify.dev/docs/api/admin-graphql/2026-10/objects/InventorySetQuantitiesUserError",
+      "http_status": 200,
+      "html_sha256": "4dffa856ea657e61c17cb49b5c98a273c93a0fd24eb2fdb2d12464a6c5a82df2"
+    }
+  ],
+  "confirmed": {
+    "referenceDocumentUri_type": "String",
+    "changeFromQuantity_type": "Int; semantically explicit presence required for both APIs; adapter never supplies null",
+    "idempotency": "String! key variable; directive on mutation field; Shopify key retention 24 hours; client no automatic retry",
+    "ordinary_changes": "inventoryAdjustQuantities available delta with fresh available CAS and stable non-Shopify ledgerDocumentUri",
+    "counts": "inventorySetQuantities on_hand with frozen-cutoff CAS; only authorized physical counts establish absolute truth",
+    "group": "id ID!, createdAt DateTime!, reason String!, referenceDocumentUri String, per-item/location changes; no synthetic Shopify ID",
+    "reasons": [
+      "received",
+      "damaged",
+      "shrinkage",
+      "restock",
+      "correction"
+    ]
+  }
+}

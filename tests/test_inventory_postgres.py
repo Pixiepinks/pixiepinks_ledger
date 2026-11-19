@@ -65,3 +65,22 @@ def test_postgres_duplicate_receipt_request_is_one_document(pg,monkeypatch):
     with r.sessions() as db:
         assert db.query(InventoryDocument).count()==1
         assert db.query(InventoryEvent).filter_by(action='CREATED').count()==1
+
+
+def test_contract_migration_preserves_old_null_approval_identity(pg):
+    import json
+    from uuid import uuid4
+    engine,sessions,uid=pg
+    docid=str(uuid4())
+    with engine.begin() as conn:
+        conn.execute(text('ALTER TABLE inventory_documents DROP COLUMN contract_version'))
+        conn.execute(text("""INSERT INTO inventory_documents
+            (id,shop,client_key,kind,reference,payload,payload_hash,status,actor_id,dispatch_key,attempts,created_at)
+            VALUES (:id,'retail-pg-fixture',:key,'RECEIPT',:reference,CAST(:payload AS JSON),:hash,'APPROVED',:uid,:dispatch,0,:created)"""),
+            {'id':docid,'key':uuid4().hex,'reference':'LEGACY-'+uuid4().hex[:12],'payload':json.dumps({'legacy':True}),
+             'hash':'a'*64,'uid':uid,'dispatch':str(uuid4()),'created':datetime.utcnow()})
+    cfg=Config(str(Path(__file__).parents[1]/'alembic.ini'));command.stamp(cfg,'20261119_45');command.upgrade(cfg,'head')
+    with sessions() as db:
+        doc=db.get(InventoryDocument,docid)
+        assert doc.contract_version is None and doc.status=='APPROVED' and doc.payload=={'legacy':True}
+        with pytest.raises(DatabaseError):db.execute(text("UPDATE inventory_documents SET contract_version='new' WHERE id=:id"),{'id':docid});db.commit()
