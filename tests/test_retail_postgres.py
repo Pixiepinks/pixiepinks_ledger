@@ -44,6 +44,9 @@ def pg(monkeypatch):
 def test_additive_migration_and_import_does_not_reject_legacy_duplicates(pg):
     engine,sessions,uid=pg
     models=[RetailShop,RetailVariant,RetailSyncJob,RetailImportRow,RetailCounter,RetailIdentifier,RetailPreview,RetailAudit,RetailException,RetailLabelTemplate,RetailPrintJob,RetailBarcodeJob,RetailBarcodeItem,RetailBarcodeReservation,RetailBarcodeEvent]
+    # Reconstruct the pre-retail schema in dependency order, including additive Phase 3 tables.
+    from inventory_models import InventoryDocument, InventoryEvent, InventoryObservation, InventoryPolicy, InventoryPolicyEvent
+    models += [InventoryDocument, InventoryEvent, InventoryObservation, InventoryPolicy, InventoryPolicyEvent]
     for model in reversed(models):model.__table__.drop(engine)
     cfg=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'));command.stamp(cfg,'20261111_41');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
     with sessions() as db:

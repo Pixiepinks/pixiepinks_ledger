@@ -2,6 +2,9 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('retail.inventory.view','Inventory: View stock and reports','/crm/retail/inventory'),
+    ('retail.inventory.prepare','Inventory: Prepare documents and counts','/crm/retail/inventory'),
+    ('retail.inventory.manage','Inventory: Manage reorder policies','/crm/retail/inventory'),
     ('retail.barcodes.shopify_sync','Retail: Approve Shopify barcode sync','/crm/retail/barcode-sync'),
     ('retail.products.view','Retail: View products','/crm/retail/products'),
     ('retail.products.audit','Retail: Audit products','/crm/retail/audit'),
@@ -31,7 +34,7 @@ def allowed(user, section):
     if user.role=='ADMIN':return True
     if isinstance(section,str) and section.startswith('retail.'):
         from settings import settings
-        return settings.RETAIL_ENABLED and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
+        return settings.RETAIL_ENABLED and (not section.startswith('retail.inventory.') or settings.INVENTORY_ENABLED) and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     if section=='ad_analytics':return isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     grants=getattr(user,'section_access',None)
     if grants is None and section=='quick_messages':return user.role in {'ADMIN','SALES_MANAGER'}
@@ -45,7 +48,7 @@ def managed_grant(user,section):
 def section_for(path):
     if path.startswith('/crm/retail/'):
         page=path.split('/')[3]
-        return {'products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print','audit':'retail.products.audit','sync':'retail.sync.view','barcode-sync':'retail.barcodes.shopify_sync'}.get(page,'retail.products.view')
+        return {'inventory':'retail.inventory.view','products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print','audit':'retail.products.audit','sync':'retail.sync.view','barcode-sync':'retail.barcodes.shopify_sync'}.get(page,'retail.products.view')
     if path=='/crm/notifications' or path.startswith('/crm/notifications/'):return 'whatsapp'
     if path=='/crm/ad-flows' or path.startswith('/crm/ad-flows/'):return 'quick_messages'
     if path=='/crm/ad-assignments' or path.startswith('/crm/ad-assignments/'):return 'ad_analytics'
@@ -78,7 +81,7 @@ def landing(user):
     if user.role=='ADMIN' or getattr(user,'section_access',None) is None:return '/dashboard'
     from settings import settings
     for key,_,path in sorted(SECTIONS,key=lambda row:row[0].startswith('retail.')):
-        if key.startswith('retail.') and key not in {'retail.products.view','retail.products.audit','retail.barcodes.print','retail.sync.view'}:continue
+        if key.startswith('retail.') and key not in {'retail.inventory.view','retail.products.view','retail.products.audit','retail.barcodes.print','retail.sync.view'}:continue
         if key=='sales_orders' and not settings.SALES_ORDERS_ENABLED:continue
         if key=='fulfillments' and not settings.SALES_FULFILLMENT_ENABLED:continue
         if allowed(user,key):return path

@@ -1215,3 +1215,7 @@ from media_delivery_status import MediaDeliveryStatus
 
 from retail_models import (RetailShop, RetailVariant, RetailSyncJob, RetailImportRow, RetailCounter,
     RetailIdentifier, RetailPreview, RetailAudit, RetailException, RetailLabelTemplate, RetailPrintJob)
+
+# Inventory documents are operational/audit records, not a second stock ledger.
+from inventory_models import (InventoryDocument, InventoryEvent, InventoryObservation,
+    InventoryPolicy, InventoryPolicyEvent)

@@ -38,6 +38,7 @@
 {% if can_access_section(nav_user,"intents") %}      <a href="/crm/orders" class="{{ 'active' if request.url.path == '/crm/orders' else '' }}"><span>◇</span> Orders / Sales Intents</a>{% endif %}
 {% if can_access_section(nav_user,"sales_orders") %}      {% if settings.SALES_ORDERS_ENABLED %}<a href="/crm/sales-orders" class="{{ 'active' if request.url.path.startswith('/crm/sales-orders') else '' }}"><span>▣</span> Sales Orders</a>{% endif %}{% endif %}
 {% if can_access_section(nav_user,"fulfillments") %}      {% if settings.SALES_FULFILLMENT_ENABLED %}<a href="/crm/fulfillments" class="{{ 'active' if request.url.path.startswith('/crm/fulfillments') else '' }}"><span>▰</span> Fulfillments</a>{% endif %}{% endif %}
+{% if settings.RETAIL_ENABLED and settings.INVENTORY_ENABLED and can_access_section(nav_user,'retail.inventory.view') %}<p class="nav-label">Stock operations</p><a href="/crm/retail/inventory" class="{{ 'active' if request.url.path == '/crm/retail/inventory' else '' }}">Inventory Management</a>{% endif %}
 {% if settings.RETAIL_ENABLED %}<p class="nav-label">Retail Management</p>
 {% if can_access_section(nav_user,'retail.products.view') %}<a href="/crm/retail/products">Product Master</a><a href="/crm/retail/scanner" class="{{ 'active' if request.url.path == '/crm/retail/scanner' else '' }}">Barcode Scanner</a><a href="/crm/retail/barcodes">Barcode Management</a>{% endif %}
 {% if can_access_section(nav_user,'retail.barcodes.print') %}<a href="/crm/retail/labels">Barcode Label Printing</a>{% endif %}
