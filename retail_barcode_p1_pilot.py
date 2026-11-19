@@ -1,9 +1,4 @@
-"""One identity, one durable intent, explicit authenticated admin approval.
-
-No worker dispatch path, generic target arguments, flag override or ordinary
-source-gate override. PostgreSQL shop/user/variant locks fence local writers
-across independently committed intent records and the bounded remote call.
-"""
+"""Retired P1 pilot: historical audit display and read-only reconciliation only."""
 from contextlib import contextmanager
 from datetime import datetime,timedelta
 import hashlib
@@ -25,22 +20,8 @@ from retail_barcode_p1_remote import P1Client,IDENTITY,exact_identity,fingerprin
 TOKEN=hashlib.sha256(b'pixiepinks-one-time-P1-47281619206447-v2').hexdigest()[:32]
 KEY=hashlib.sha256(b'pixiepinks-one-time-P1-47281619206447-v2-attempt').hexdigest()
 CONFIRMATION='WRITE P1 ONLY TO eb2b70.myshopify.com PRODUCT 9055242223919 VARIANT 47281619206447 SKU 1001200 ALLOCATION 1 VERSION 2'
-_PERMIT_KEY=object()
-
-
-class _Permit:
-    def __init__(self,key,deadline):
-        if key is not _PERMIT_KEY:raise RemoteError('P1_ATTEMPT_NOT_AUTHORIZED')
-        self.used=False;self.expires=min(deadline,time.monotonic()+5)
-    def live(self):return time.monotonic()<=self.expires
-    def consume(self):
-        if self.used or not self.live():return False
-        self.used=True;return True
-
 
 def guards():
-    if contract.MUTATION_SEMANTICS_VERIFIED is not False or settings.SHOPIFY_PRODUCT_WRITE_ENABLED or settings.RETAIL_BARCODE_SYNC_ENABLED:
-        raise HTTPException(409,'P1_GLOBAL_GUARDS_MUST_REMAIN_DISABLED')
     if service.shop()!=IDENTITY['shop']:raise HTTPException(409,'P1_SHOP_MISMATCH')
 
 
@@ -105,7 +86,7 @@ def digest(job,item):
 def public(job,item):
     return {'job_id':job.id,'status':job.status,'identity':dict(IDENTITY),'attempts':item.attempts,
         'reason':item.reason,'expires_at':job.expires_at.isoformat()+'Z',
-        'ordinary_sync_enabled':False,'write_authorized':False,'confirmation':CONFIRMATION,
+        'ordinary_sync_enabled':workflow.flags(),'pilot_retired':True,'write_authorized':False,'confirmation':CONFIRMATION,
         'protected_before_sha256':fingerprint(item.before['protected']),
         'after':item.after,'verified_at':item.verified_at.isoformat()+'Z' if item.verified_at else None}
 
@@ -131,30 +112,7 @@ def final_target(remote,readback=False):
 
 
 def prepare(engine,actor_id,*,editors_paused,risk_accepted,remote=None):
-    if editors_paused is not True or risk_accepted is not True:raise HTTPException(422,'P1_PAUSE_AND_NONATOMIC_RISK_ATTESTATION_REQUIRED')
-    remote=remote or P1Client()
-    with locked(engine,actor_id) as (db,sessions,user):
-        snap=local(db);job,item=records(db);quiet(db,job.id if job else None)
-        if job and (job.status!='PILOT_PREPARED' or item.attempts or job.actor_id!=user.id):raise HTTPException(409,'P1_ALREADY_CONSUMED_OR_OTHER_APPROVER')
-        try:
-            protected=remote.protected();state=remote_state(remote,snap)
-            if remote.protected()!=protected:raise RemoteError('P1_PROTECTED_CHANGED')
-            final_target(remote)
-        except Exception:raise HTTPException(409,'P1_PREPARATION_REMOTE_VERIFICATION_FAILED') from None
-        if local(db)!=snap:raise HTTPException(409,'P1_ALLOCATION_CHANGED')
-        nonce=secrets.token_hex(32)
-        before={'protected':protected,'remote':state,'nonce_hash':hashlib.sha256(nonce.encode()).hexdigest(),
-            'editors_paused':True,'risk_accepted':True}
-        with sessions() as audit:
-            j,i=records(audit)
-            if not j:
-                j=RetailBarcodeJob(shop=IDENTITY['shop'],actor_id=user.id,actor=user.username,token=TOKEN,status='PILOT_PREPARED',api_version='2026-10',digest='',expires_at=datetime.utcnow()+timedelta(minutes=10))
-                audit.add(j);audit.flush()
-                i=RetailBarcodeItem(job_id=j.id,variant_id=snap['id'],idempotency_key=KEY,snapshot=snap,before=before,status='PILOT_PREPARED',reason='P1_REVIEW_REQUIRED')
-                audit.add(i)
-            else:i.before=before;i.snapshot=snap;j.expires_at=datetime.utcnow()+timedelta(minutes=10)
-            j.digest=digest(j,i);audit.flush();workflow.event(audit,j,'P1_PREPARED',i,protected_sha256=fingerprint(protected),identity=dict(IDENTITY),before=before,digest=j.digest)
-            result=public(j,i);result['nonce']=nonce;audit.commit();return result
+    raise HTTPException(410,'P1_PILOT_PERMANENTLY_RETIRED')
 
 
 def mark(sessions,job_id,status,reason,*,intent=False,approved=False,after=None,actor=None):
@@ -193,45 +151,14 @@ def reconcile_locked(db,sessions,job,item,remote,actor):
 
 
 def execute(engine,actor_id,*,nonce,confirmation,editors_paused,risk_accepted,remote=None):
-    if editors_paused is not True or risk_accepted is not True or confirmation!=CONFIRMATION or not isinstance(nonce,str) or len(nonce)!=64:
-        raise HTTPException(422,'P1_EXACT_CONFIRMATION_REQUIRED')
-    remote=remote or P1Client()
-    with locked(engine,actor_id) as (db,sessions,user):
-        job,item=records(db)
-        if not job or job.actor_id!=user.id or job.status!='PILOT_PREPARED' or item.attempts or item.sent_at:
-            raise HTTPException(409,'P1_NOT_AWAITING_THIS_ADMIN_APPROVAL')
-        if job.expires_at<datetime.utcnow() or job.digest!=digest(job,item) or not secrets.compare_digest(item.before['nonce_hash'],hashlib.sha256(nonce.encode()).hexdigest()):
-            raise HTTPException(409,'P1_APPROVAL_EXPIRED_OR_CHANGED')
-        quiet(db,job.id)
-        if local(db)!=item.snapshot:raise HTTPException(409,'P1_ALLOCATION_CHANGED')
-        mark(sessions,job.id,'PILOT_APPROVED','P1_EXPLICIT_OPERATOR_APPROVAL',approved=True,actor=user.id)
-        try:
-            if remote.protected()!=item.before['protected']:raise RemoteError('P1_PROTECTED_CHANGED')
-            remote_state(remote,item.snapshot)  # New complete collision scan, never earlier evidence.
-            if remote.protected()!=item.before['protected']:raise RemoteError('P1_PROTECTED_CHANGED')
-            final_target(remote);fresh_at=time.monotonic()
-            guards();quiet(db,job.id)
-            db.expire_all()
-            if local(db)!=item.snapshot or job.expires_at<datetime.utcnow() or time.monotonic()-fresh_at>5:raise RemoteError('P1_APPROVAL_OR_ALLOCATION_CHANGED')
-        except Exception:
-            return mark(sessions,job.id,'PILOT_BLOCKED','P1_FRESH_PREFLIGHT_FAILED_NO_MUTATION',actor=user.id)
-        # Separate connection commits intent while the shop/user/variant locks
-        # remain held here. Any restart sees consumed intent and ONLY reconciles.
-        mark(sessions,job.id,'PILOT_INTENT','P1_SINGLE_ATTEMPT_CONSUMED',intent=True,actor=user.id)
-        try:
-            db.execute(text('SELECT 1'));guards()
-            if job.expires_at<datetime.utcnow() or time.monotonic()-fresh_at>5:raise RemoteError('P1_FINAL_CHECK_EXPIRED')
-            remote._attempt_p1(_Permit(_PERMIT_KEY,fresh_at+5))
-        except Exception:
-            mark(sessions,job.id,'PILOT_UNKNOWN','P1_MUTATION_RESPONSE_UNCERTAIN',actor=user.id)
-        db.expire_all();job,item=records(db)
-        return reconcile_locked(db,sessions,job,item,remote,user.id)
+    raise HTTPException(410,'P1_PILOT_PERMANENTLY_RETIRED')
 
 
 def reconcile(engine,actor_id,remote=None):
     with locked(engine,actor_id) as (db,sessions,user):
         job,item=records(db)
         if not job:raise HTTPException(404,'P1_PILOT_NOT_PREPARED')
+        if job.status=='PILOT_VERIFIED':return public(job,item)
         quiet(db,job.id)
         return reconcile_locked(db,sessions,job,item,remote or P1Client(),user.id)
 

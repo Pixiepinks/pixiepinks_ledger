@@ -155,6 +155,11 @@ class RetailBarcodeJob(Base):
     status=Column(String(30),nullable=False,default='PREVIEW',index=True)
     api_version=Column(String(20),nullable=False)
     digest=Column(String(64),nullable=False)
+    release_version=Column(String(40),index=True)  # NULL is permanently historical, never write-authorized.
+    preview_selection=Column(JSON)
+    preview_capability=Column(JSON)
+    preview_claim=Column(String(40))
+    preview_lease=Column(DateTime)
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
     expires_at=Column(DateTime,nullable=False)
     approved_at=Column(DateTime)
