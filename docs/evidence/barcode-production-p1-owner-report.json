@@ -1,0 +1,16 @@
+{
+  "provenance": "Owner-provided production result in the 2026-11-19 release request; not a live request executed by Codex",
+  "shop": "eb2b70.myshopify.com",
+  "product": "Kids Projector Torch - Pink",
+  "sku": "1001200",
+  "barcode": "P1",
+  "variant_id": "gid://shopify/ProductVariant/47281619206447",
+  "pilot_status": "PILOT_VERIFIED",
+  "mutation_attempts": 1,
+  "full_readback_and_protected_comparisons_passed": true,
+  "owner_visually_verified_in_shopify_admin": true,
+  "previous_accessible_catalog_count": 2259,
+  "previous_scan_approx_seconds": 26,
+  "api_version": "2026-10",
+  "production_writes_enabled_by_this_change": false
+}

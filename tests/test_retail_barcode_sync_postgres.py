@@ -30,11 +30,20 @@ def setup(pg,monkeypatch):
     remote=Remote()
     with sessions() as db:
         result=sync.preview(db,db.get(User,uid),token,remote);db.commit()
+    for _ in range(5):
+        if not sync.check_preview_one(sessions,remote):break
+    with sessions() as db:result=sync.report(db,db.get(RetailBarcodeJob,result['id']))
     return sessions,uid,remote,result
 
 
 def approve(sessions,uid,remote,p):
     with sessions() as db:
+        job=db.get(RetailBarcodeJob,p['id'])
+        if job.status in {'PREVIEW_PENDING','PREVIEW_CHECKING'}:
+            db.rollback()
+            for _ in range(5):
+                if not sync.check_preview_one(sessions,remote):break
+            db.expire_all();p=sync.report(db,db.get(RetailBarcodeJob,p['id']))
         result=sync.approve(db,db.get(User,uid),p['id'],p['approval_token'],p['confirmation'],remote);db.commit();return result
 
 
@@ -92,7 +101,7 @@ def test_pg_import_waits_for_dispatch_boundary(pg,monkeypatch):
     from threading import Event
     sessions,uid,remote,p=setup(pg,monkeypatch);approve(sessions,uid,remote,p)
     entered=Event();release=Event();imported=Event();original=remote.write_empty
-    def write(snap):
+    def write(snap,protected_before=None,not_after=None):
         entered.set();assert release.wait(10);original(snap)
     remote.write_empty=write
     def publish():
@@ -114,7 +123,7 @@ def test_pg_approver_revocation_waits_for_authorized_dispatch_boundary(pg,monkey
     from threading import Event
     sessions,uid,remote,p=setup(pg,monkeypatch);approve(sessions,uid,remote,p)
     entered=Event();release=Event();revoking=Event();revoked=Event();original=remote.write_empty
-    def write(snap):
+    def write(snap,protected_before=None,not_after=None):
         entered.set();assert release.wait(10);original(snap)
     remote.write_empty=write
     def revoke():

@@ -61,6 +61,17 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     def barcode_overview(offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
         return barcode_response(barcode_sync.overview(db,user,offset))
 
+    @router.get('/api/barcode-sync/reservations')
+    def barcode_reservations(offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
+        barcode_sync.authorize(user);q=barcode_sync.legacy_reservations(db)
+        return barcode_response({'total':q.count(),'offset':offset,'rows':[{'variant_id':r.variant_id,'code':r.value,'item_id':r.item_id}
+            for r in q.order_by(RetailBarcodeReservation.item_id).offset(offset).limit(100)]})
+
+    @router.post('/api/barcode-sync/retire-legacy')
+    async def retire_legacy(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        p=await body(request,{'confirmation'},{'confirmation'})
+        result=barcode_sync.retire_legacy(db,user,p['confirmation']);db.commit();return barcode_response(result)
+
     @router.post('/api/barcode-sync/preview')
     async def barcode_preview(request:Request,db=Depends(get_db),user=Depends(require_user)):
         barcode_sync.authorize(user);p=await body(request,{'selection'},{'selection'})

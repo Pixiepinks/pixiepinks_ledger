@@ -9,6 +9,7 @@ from fastapi import HTTPException
 from sqlalchemy import select,or_,func,case
 from retail_models import *
 from settings import settings
+from retail_barcode_contract import RELEASE_ID
 
 PERMISSIONS=('retail.barcodes.shopify_sync','retail.products.view','retail.products.audit','retail.products.manage','retail.barcodes.assign',
              'retail.barcodes.print','retail.sync.run','retail.sync.view','retail.settings.manage')
@@ -209,7 +210,7 @@ def selection(db,user,payload):
     else:
         ids=[r.id for r in filtered(db,payload['filters']).with_entities(RetailVariant.id).order_by(RetailVariant.id).limit(10001).all()]
         if not 1<=len(ids)<=10000:raise HTTPException(422,'Select 1–10000 variants; narrow the filter')
-    value=RetailPreview(token=secrets.token_hex(16),shop=shop(),actor_id=user.id,kind='SELECTION',payload={'ids':ids},expires_at=datetime.utcnow()+timedelta(hours=2))
+    value=RetailPreview(token=secrets.token_hex(16),shop=shop(),actor_id=user.id,kind='SELECTION',payload={'ids':ids,'barcode_release':RELEASE_ID},expires_at=datetime.utcnow()+timedelta(hours=2))
     db.add(value);db.flush();return {'token':value.token,'count':len(ids)}
 
 

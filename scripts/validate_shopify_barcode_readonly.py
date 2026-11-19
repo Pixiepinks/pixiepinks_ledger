@@ -28,7 +28,7 @@ import retail_barcode_shopify as adapter
 from retail_barcode_shopify import BarcodeClient,RemoteError,PROBE,READ,CATALOG,CATALOG_IDS
 
 EXPECTED_SHOP='eb2b70.myshopify.com'
-EXPECTED_ADAPTER_SHA='180dc2501e3dbb262133ffb682f5c56fa7573830afe25914fef7f7223b7d0f93'
+EXPECTED_ADAPTER_SHA='c1bee08ac7a5c81bb763235506ad567d6ec450d3549ae8181f6af58ce7f7fc41'
 READ_DOCUMENTS={PROBE:'schema',READ:'barcode_pages',CATALOG:'catalog',CATALOG_IDS:'verify_ids'}
 ERROR_CODES={'BAD_REQUEST','THROTTLED','MAX_COST_EXCEEDED','ACCESS_DENIED','GRAPHQL_VALIDATION_FAILED','UNDEFINEDFIELD','UNDEFINED_FIELD'}
 SAFE_FAILURES=set(re.findall(r"RemoteError\('([A-Z_]+)'",Path(adapter.__file__).read_text()))|{'READ_ONLY_TRANSPORT_REJECTED','READ_ONLY_DIAGNOSTIC'}
@@ -176,7 +176,7 @@ def run_diagnostic(allocation_id=None,client=None,allocation_loader=load_allocat
         'database_read_requested':allocation_id is not None,'adapter_source_sha256':None,
         'scan_limits':{'seconds':adapter.MAX_SCAN_SECONDS,'logical_reads':adapter.MAX_READ_REQUESTS,
             'variants':min(adapter.MAX_CATALOG_VARIANTS,settings.RETAIL_MAX_VARIANTS),'values_per_variant':adapter.MAX_BARCODE_VALUES}}
-    if not result['source_gate_false'] or not result['write_flags_disabled']:return {**result,'reason':'WRITE_GUARDS_NOT_DISABLED'}
+    result['mutation_semantics_verified']=contract.MUTATION_SEMANTICS_VERIFIED is True
     actual_hash=hashlib.sha256(Path(adapter.__file__).read_bytes()).hexdigest();result['adapter_source_sha256']=actual_hash
     if actual_hash!=EXPECTED_ADAPTER_SHA:return {**result,'reason':'DEPLOYED_SCANNER_VERSION_MISMATCH'}
     missing=[n for n in ('SHOPIFY_SHOP','SHOPIFY_CLIENT_ID','SHOPIFY_CLIENT_SECRET') if not getattr(config,n,None)]
@@ -208,8 +208,7 @@ def run_diagnostic(allocation_id=None,client=None,allocation_loader=load_allocat
                 result['candidate_reason']='PROPOSED_ONLY_NOT_AUTHORIZED'
         if not client.metrics.variants:result.update(status='INCONCLUSIVE_EMPTY_CATALOG',coverage_complete=False,reason='EMPTY_ACCESSIBLE_CATALOG_REQUIRES_REVIEW')
         else:result['reason']='SCAN_COMPLETE_WRITE_AUTHORIZATION_NOT_GRANTED'
-        if contract.MUTATION_SEMANTICS_VERIFIED is not False or config.SHOPIFY_PRODUCT_WRITE_ENABLED or config.RETAIL_BARCODE_SYNC_ENABLED:
-            result.update(status='BLOCKED',reason='WRITE_GUARD_CHANGED',candidate=None)
+        # The sealed transport, not production write configuration, enforces read-only.
         result['elapsed_seconds']=round(time.monotonic()-started,3)
         return result
     except RemoteError as error:

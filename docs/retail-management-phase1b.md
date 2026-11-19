@@ -1,5 +1,7 @@
 # Phase 1B: controlled Shopify barcode synchronization
 
+Current release: [normal production synchronization](retail-barcode-production-release.md). The P1 mutation path is permanently retired; source-level verification and runtime activation are now distinct. Earlier procedures below are historical and do not authorize replay.
+
 ## Schema-backed adapter update (2026-11-19)
 
 The owner-supplied live schema now backs complete bounded barcode reads and full-catalog collision scanning. The minimal mutation and untyped read-back paths are tested with mocked transports. **Production writes remain blocked by a separate source-level semantics gate**; introspection cannot approve replacement behavior. See [schema implementation, tests and remaining blockers](retail-barcode-schema-implementation.md). Existing imports, global API/webhook settings and disabled write-flag defaults are unchanged.

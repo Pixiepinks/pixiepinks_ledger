@@ -18,11 +18,11 @@ def scanned(remote):
     original,state=remote
     client=diagnostic.DiagnosticClient(http_client=original.http)
     client._token='fake';client._expires_at=10**12
-    assert contract.MUTATION_SEMANTICS_VERIFIED is False
+    assert contract.MUTATION_SEMANTICS_VERIFIED is True
     assert not settings.SHOPIFY_PRODUCT_WRITE_ENABLED and not settings.RETAIL_BARCODE_SYNC_ENABLED
     yield client,state
     assert not state.mutations
-    assert contract.MUTATION_SEMANTICS_VERIFIED is False
+    assert contract.MUTATION_SEMANTICS_VERIFIED is True
     assert not settings.SHOPIFY_PRODUCT_WRITE_ENABLED and not settings.RETAIL_BARCODE_SYNC_ENABLED
 
 
@@ -79,14 +79,14 @@ def test_selected_existing_allocation_proposed_only_after_actual_inspect(scanned
     def load(ledger_id):calls.append(ledger_id);return copy.deepcopy(snapshot),'COMMITTED_ALLOCATION_READ_ONLY'
     result=diagnostic.run_diagnostic(1,client=client,allocation_loader=load)
     assert calls==[1,1] and result['collision_check_for_candidate']
-    assert result['candidate']['code']=='P1' and result['candidate']['administrator_approval_required']
+    assert result['candidate']['code']=='P2' and result['candidate']['administrator_approval_required']
     assert not result['candidate']['write_authorized'] and result['metrics']['target_rechecks']==1
 
 
 @pytest.mark.parametrize('mode',['secondary_collision','supplier','local_changed','missing'])
 def test_no_candidate_if_remote_or_local_state_not_eligible(scanned,mode):
     client,state=scanned;count=0
-    if mode=='secondary_collision':state.barcodes['2'] += [{'value':'P1','type':None}]
+    if mode=='secondary_collision':state.barcodes['2'] += [{'value':'P2','type':None}]
     if mode=='supplier':state.barcodes['1']=[{'value':'KEEP','type':'EAN'}]
     def load(_):
         nonlocal count
@@ -165,7 +165,7 @@ def test_allocation_reads_enforced_read_only_and_always_rollback(monkeypatch):
     first=MagicMock();first.mappings.return_value.all.return_value=[row]
     second=MagicMock();second.scalar_one.return_value=0;conn.execute.side_effect=[first,second]
     snapshot,reason=diagnostic.load_allocation(1,engine)
-    assert snapshot['code']=='P1' and reason=='COMMITTED_ALLOCATION_READ_ONLY'
+    assert snapshot['code']=='P2' and reason=='COMMITTED_ALLOCATION_READ_ONLY'
     assert [c.args[0] for c in conn.exec_driver_sql.call_args_list]==['SET TRANSACTION READ ONLY',"SET LOCAL statement_timeout = '5000ms'"]
     assert all(str(c.args[0]).lstrip().startswith('SELECT') for c in conn.execute.call_args_list)
     conn.begin.return_value.rollback.assert_called_once();conn.commit.assert_not_called()
@@ -196,8 +196,8 @@ def test_postgres_allocation_transaction_is_read_only_and_rollback_only(monkeypa
                 sku text,barcode text,local_barcode text,product_status text,missing boolean,stale boolean,synced_at timestamp)'''))
             conn.execute(text('CREATE TABLE retail_identifiers (id integer,value text,variant_id integer,shop text,kind text)'))
             conn.execute(text("""INSERT INTO retail_variants VALUES (1,1,'eb2b70','gid://shopify/Product/10','gid://shopify/ProductVariant/1',
-                '1001',NULL,'P1','ACTIVE',false,false,CURRENT_TIMESTAMP)"""))
-            conn.execute(text("INSERT INTO retail_identifiers VALUES (1,'P1',1,'eb2b70','barcode')"))
+                '1001',NULL,'P2','ACTIVE',false,false,CURRENT_TIMESTAMP)"""))
+            conn.execute(text("INSERT INTO retail_identifiers VALUES (1,'P2',1,'eb2b70','barcode')"))
         observed=[];commits=[]
         @event.listens_for(engine,'before_cursor_execute')
         def verify_readonly(conn,cursor,statement,parameters,context,executemany):
@@ -207,7 +207,7 @@ def test_postgres_allocation_transaction_is_read_only_and_rollback_only(monkeypa
         def unexpected_commit(conn):commits.append(True)
         monkeypatch.setattr(settings,'SHOPIFY_SHOP','eb2b70')
         snapshot,reason=diagnostic.load_allocation(1,engine)
-        assert reason=='COMMITTED_ALLOCATION_READ_ONLY' and snapshot['code']=='P1'
+        assert reason=='COMMITTED_ALLOCATION_READ_ONLY' and snapshot['code']=='P2'
         assert observed==['on','on'] and commits==[]
         with engine.connect() as conn:
             # Inspect via a separate read-only transaction too.

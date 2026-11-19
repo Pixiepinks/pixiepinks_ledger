@@ -1,9 +1,12 @@
 """Strict read/input shapes verified from the owner-supplied 2026-10 export.
 
 Shape verification is independent of update/replacement semantics. No environment
-variable can approve those semantics. That release decision remains false.
+variable can approve those semantics. Owner-confirmed official replacement/untyped semantics and the completed P1
+live pilot establish support; runtime flags and per-job release fencing still
+default to deny writes. See docs/retail-barcode-production-release.md.
 """
-MUTATION_SEMANTICS_VERIFIED=False
+MUTATION_SEMANTICS_VERIFIED=True
+RELEASE_ID='20261119_standard_v1'
 TYPES={'UPC','EAN','ISBN','GTIN','ASIN','NS_PID'}
 
 

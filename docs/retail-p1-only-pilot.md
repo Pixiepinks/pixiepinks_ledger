@@ -1,5 +1,7 @@
 # P1-only barcode pilot: implementation and manual procedure
 
+Current release: [normal production synchronization](retail-barcode-production-release.md). The P1 mutation path is permanently retired; source-level verification and runtime activation are now distinct. Earlier procedures below are historical and do not authorize replay.
+
 2026-11-19 (Asia/Colombo). Base main: `d842d3e`.
 
 **Prepared for review only. No live Shopify request or mutation, deployment, merge, Railway variable change, scope change or production database change was performed during implementation. No approval to execute the pilot has been given.** Ordinary `MUTATION_SEMANTICS_VERIFIED=False`, `SHOPIFY_PRODUCT_WRITE_ENABLED=false` and `RETAIL_BARCODE_SYNC_ENABLED=false` remain mandatory throughout this pilot, including future execution. There is no general-purpose gate bypass.

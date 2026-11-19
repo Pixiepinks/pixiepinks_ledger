@@ -1,5 +1,7 @@
 # Phase 1B live read-only barcode validation
 
+Current release: [normal production synchronization](retail-barcode-production-release.md). The P1 mutation path is permanently retired; source-level verification and runtime activation are now distinct. Earlier procedures below are historical and do not authorize replay.
+
 2026-11-19 (Asia/Colombo). Base: main `c5f88cf` (PR #170).
 
 Follow-up: [20-barcode pagination correction and P1 operator rerun](retail-barcode-pagination-20.md). The historical observations below describe the earlier task; the follow-up records the owner-reported live results and current fix.

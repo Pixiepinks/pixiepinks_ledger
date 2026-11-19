@@ -101,7 +101,7 @@ def test_legacy_empty_barcode_never_claims_complete_inspection_or_collision_chec
 def test_flags_and_introspection_never_allow_network_mutation(adapter,monkeypatch):
     client,calls,_=adapter;monkeypatch.setattr(settings,'SHOPIFY_PRODUCT_WRITE_ENABLED',True);monkeypatch.setattr(settings,'RETAIL_BARCODE_SYNC_ENABLED',True)
     assert not client.capabilities()['supported'];count=len(calls)
-    with pytest.raises(RemoteError,match='MUTATION_SEMANTICS_UNVERIFIED'):
+    with pytest.raises(RemoteError,match='WRITES_DISABLED'):
         client.write_empty({'variant_id':'gid://shopify/ProductVariant/1','code':'P1'})
     assert len(calls)==count
     with pytest.raises(RemoteError,match='UNSUPPORTED_DOCUMENT'):client._read('mutation { forbidden }',{})
@@ -126,3 +126,11 @@ def test_read_and_write_scope_observations_are_explicit_and_do_not_unlock_writes
     result=client.capabilities()
     assert result['read_products_scope_observed'] and result['write_products_scope_observed']
     assert not result['supported'] and not result['contract_verified']
+
+
+def test_incomplete_schema_blocks_even_with_all_mock_flags_enabled(adapter,monkeypatch):
+    client,calls,_=adapter
+    for key in ['RETAIL_ENABLED','SHOPIFY_PRODUCT_WRITE_ENABLED','RETAIL_BARCODE_SYNC_ENABLED']:monkeypatch.setattr(settings,key,True)
+    with pytest.raises(RemoteError,match='WRITE_CONTRACT_OR_SCOPE_UNVERIFIED'):
+        client.write_empty({'product_id':'gid://shopify/Product/1','variant_id':'gid://shopify/ProductVariant/1','code':'P2','sku':'TEST'})
+    assert all(call[1]['query']==PROBE for call in calls)

@@ -24,8 +24,11 @@ class Remote:
         if self.unavailable:raise RemoteError('THROTTLED')
         value=copy.deepcopy(self.states.get(snap['variant_id'],{'complete':True,'variant_id':snap['variant_id'],'product_id':snap['product_id'],'status':'ACTIVE','codes':[]}))
         value.update(version=self.version,collision_complete=True,collision_ids=[vid for vid,state in self.states.items() if snap['code'] in state.get('codes',[])])
+        value['barcodes']=[{'value':c,'type':None} for c in value.get('codes',[])]
+        value['readback_untyped_required']=True;value['untyped_local_code']=snap['code'] in value.get('codes',[])
         return value
-    def write_empty(self,snap):
+    def protected(self,snap):return {'sku':snap.get('sku',''),'price':'8500.00','inventory':4,'options':[]}
+    def write_empty(self,snap,protected_before=None,not_after=None):
         self.writes.append(copy.deepcopy(snap))
         if not self.reject:self.states[snap['variant_id']]={'complete':True,'variant_id':snap['variant_id'],'product_id':snap['product_id'],'status':'ACTIVE','codes':[snap['code']]}
         if self.uncertain:raise RemoteError('uncertain')
@@ -42,7 +45,10 @@ def fixture(retail,monkeypatch):
 
 def preview(r,ids=None):
     response=r.post('barcode-sync/preview',{'selection':choose(r,ids=ids or [1])});assert response.status_code==200,response.text
-    return response.json()
+    p=response.json()
+    for _ in range(10):
+        if not sync.check_preview_one(r.sessions,r.remote):break
+    with r.sessions() as db:return sync.report(db,db.get(RetailBarcodeJob,p['id']))
 
 
 def approve(r,p):
@@ -137,8 +143,12 @@ def test_scope_schema_version_expiry_and_exact_confirmation(fixture):
     bad=r.post(f"barcode-sync/{p['id']}/approve",{'token':p['approval_token'],'confirmation':'yes'})
     assert bad.status_code==422
     for field in ['scope','supported']:
-        setattr(r.remote,field,False);assert approve(r,p).status_code==409;setattr(r.remote,field,True)
-    r.remote.version='2027-01';assert approve(r,p).status_code==409;r.remote.version='2026-10'
+        setattr(r.remote,field,False)
+        with r.sessions() as db:db.get(RetailBarcodeJob,p['id']).preview_capability=r.remote.capabilities();db.commit()
+        assert approve(r,p).status_code==409;setattr(r.remote,field,True)
+    r.remote.version='2027-01'
+    with r.sessions() as db:db.get(RetailBarcodeJob,p['id']).preview_capability=r.remote.capabilities();db.commit()
+    assert approve(r,p).status_code==409;r.remote.version='2026-10'
     with r.sessions() as db:db.get(RetailBarcodeJob,p['id']).expires_at=datetime.utcnow()-timedelta(seconds=1);db.commit()
     assert approve(r,p).status_code==409
     assert not r.remote.writes
@@ -265,7 +275,7 @@ def test_browser_review_confirmation_queue_and_verified_history(fixture,monkeypa
 def test_readback_unavailable_then_reconcile_with_writes_disabled(fixture,monkeypatch):
     r=fixture;p=preview(r);assert approve(r,p).status_code==200
     original=r.remote.write_empty
-    def uncertain(snap):original(snap);r.remote.unavailable=True;raise RemoteError('SECRET_DO_NOT_LOG')
+    def uncertain(snap,protected_before=None,not_after=None):original(snap);r.remote.unavailable=True;raise RemoteError('SECRET_DO_NOT_LOG')
     r.remote.write_empty=uncertain;run(r)
     assert item(r).status=='UNKNOWN' and len(r.remote.writes)==1
     r.remote.unavailable=False;monkeypatch.setattr(settings,'SHOPIFY_PRODUCT_WRITE_ENABLED',False)
@@ -307,7 +317,7 @@ def test_api_version_change_at_final_dispatch_boundary_blocks_write(fixture):
 
 def test_contradictory_legacy_barcode_never_marks_verified(fixture):
     r=fixture;p=preview(r);assert approve(r,p).status_code==200;original=r.remote.write_empty
-    def write(snap):
+    def write(snap,protected_before=None,not_after=None):
         original(snap);r.remote.states[snap['variant_id']]['legacy_barcode']='UNEXPECTED'
     r.remote.write_empty=write;run(r)
     assert item(r).status=='CONFLICT' and item(r).reason=='READBACK_MISMATCH'

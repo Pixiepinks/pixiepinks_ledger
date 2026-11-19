@@ -1,4 +1,4 @@
-"""Schema-backed barcode reads and gated barcode-only updates; live writes blocked.
+"""Production barcode-only adapter; runtime flags remain default-off.
 
 Introspection proves observed schema shape, not collection completeness, search
 coverage, custom BarcodeInput semantics or safe update behavior. None of these
@@ -6,6 +6,7 @@ observations can enable writes without a verified official contract and complete
 inspection. Legacy `barcode` alone never establishes empty remote barcode state.
 """
 import hashlib
+from datetime import datetime
 import json
 import httpx
 import re
@@ -258,20 +259,34 @@ class BarcodeClient(ShopifyCatalogClient):
             readback_untyped_required=True,untyped_local_code=any(c['value']==snapshot['code'] and c['type'] is None for c in fresh['barcodes']))
         return fresh
 
-    def write_empty(self,snapshot):
-        # Compile-time release gate: no environment variable or introspection can
-        # approve replacement/custom-value semantics. Tests override only with a
-        # mocked transport; production remains unconditionally blocked today.
+    def protected(self,snapshot):
+        from retail_barcode_protection import read_protected
+        return read_protected(self,snapshot)
+
+    def write_empty(self,snapshot,protected_before=None,not_after=None):
+        # Verified semantics do not activate writes: both runtime flags remain
+        # default-off, and the worker separately requires fresh release approval.
         if not contract.MUTATION_SEMANTICS_VERIFIED:raise RemoteError('MUTATION_SEMANTICS_UNVERIFIED')
         if not (settings.RETAIL_ENABLED and settings.SHOPIFY_PRODUCT_WRITE_ENABLED and settings.RETAIL_BARCODE_SYNC_ENABLED):raise RemoteError('WRITES_DISABLED')
+        if self.base_url.lower()=='https://eb2b70.myshopify.com' and (snapshot.get('code')=='P1' or snapshot.get('variant_id')=='gid://shopify/ProductVariant/47281619206447'):
+            raise RemoteError('COMPLETED_P1_PILOT_CANNOT_REPLAY')
         payload=mutation_payload(snapshot);cap=self.capabilities()
         if not cap.get('supported') or not cap.get('scope'):raise RemoteError('WRITE_CONTRACT_OR_SCOPE_UNVERIFIED')
-        state=self.inspect(snapshot)  # Fresh target read is the final network read.
+        protected=self.protected(snapshot)
+        if protected_before is not None and protected!=protected_before:raise RemoteError('PROTECTED_ATTRIBUTES_CHANGED')
+        state=self.inspect(snapshot)
+        if self.protected(snapshot)!=protected:raise RemoteError('PROTECTED_ATTRIBUTES_CHANGED')
+        fresh=self._barcode_pages(snapshot['variant_id'],[0,time.monotonic()+15])
+        if fresh['codes'] or fresh.get('legacy_barcode') or fresh['product_id']!=snapshot['product_id'] or fresh['status']!='ACTIVE':raise RemoteError('REMOTE_NOT_EMPTY_OR_CODE_REUSED')
         if not state.get('write_scope_confirmed'):raise RemoteError('WRITE_PRODUCTS_SCOPE_UNVERIFIED')
         if state['status']!='ACTIVE' or state['codes'] or state.get('legacy_barcode') or state['collision_ids']:raise RemoteError('REMOTE_NOT_EMPTY_OR_CODE_REUSED')
+        final_at=time.monotonic()
         try:
+            token=self.get_token()
+            if time.monotonic()-final_at>5:raise RemoteError('FINAL_TARGET_CHECK_EXPIRED')
+            if not_after is not None and datetime.utcnow()>=not_after:raise RemoteError('APPROVAL_OR_LEASE_EXPIRED')
             response=self.http.post(f'{self.base_url}/admin/api/{BARCODE_API_VERSION}/graphql.json',
-                headers={'X-Shopify-Access-Token':self.get_token()},json={'query':MUTATION,'variables':payload},timeout=httpx.Timeout(15,connect=5))
+                headers={'X-Shopify-Access-Token':token},json={'query':MUTATION,'variables':payload},timeout=httpx.Timeout(15,connect=5))
             if response.status_code!=200 or response.headers.get('X-Shopify-API-Version')!=BARCODE_API_VERSION:raise RemoteError('MUTATION_OUTCOME_UNCERTAIN')
             body=response.json();result=(body.get('data') or {}).get('productVariantsBulkUpdate')
             if body.get('errors') or not isinstance(result,dict) or not isinstance(result.get('userErrors'),list):raise RemoteError('MUTATION_OUTCOME_UNCERTAIN')

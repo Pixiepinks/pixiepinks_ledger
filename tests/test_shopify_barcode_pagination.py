@@ -15,10 +15,11 @@ from test_whatsapp_quick_messages import inbox
 from test_retail_phase1 import retail,node,import_nodes,choose,allocate
 import retail_barcode_contract as contract
 import retail_barcode_shopify as adapter
+from retail_barcode_protection import PROTECTED
 from retail_barcode_shopify import BarcodeClient,PROBE,READ,CATALOG,CATALOG_IDS,MUTATION,RemoteError,mutation_payload
 
 SCHEMA=json.loads((Path(__file__).parent/'fixtures/shopify_barcode_2026_10_schema.json').read_text())
-SNAP={'id':1,'version':1,'shop':'eb2b70','product_id':'gid://shopify/Product/10','variant_id':'gid://shopify/ProductVariant/1','code':'P1','ledger_id':1}
+SNAP={'sku':'ORIGINAL-SKU','id':1,'version':1,'shop':'eb2b70','product_id':'gid://shopify/Product/10','variant_id':'gid://shopify/ProductVariant/1','code':'P2','ledger_id':1}
 
 
 def probe():
@@ -58,6 +59,12 @@ def remote(monkeypatch):
                 rows.append(row)
             data={'productVariants':{'nodes':rows,
                 'pageInfo':{'hasNextPage':page+1<len(state.catalog),'endCursor':str(page+1)}}}
+        elif q==PROTECTED:
+            from test_retail_p1_pilot import attrs
+            row=attrs();row.update(id=v['id'],sku='ORIGINAL-SKU');row['product']['id']=SNAP['product_id']
+            row['inventoryItem']['inventoryLevels']={'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}
+            row['product']['images']={'nodes':[],'pageInfo':{'hasNextPage':False,'endCursor':None}}
+            data={'productVariant':row}
         elif q==READ:
             vid=v['id'].rsplit('/',1)[-1];page=int(v['after'] or 0);values=state.barcodes.get(vid,[])
             chunk=values[page:page+20]
@@ -66,10 +73,10 @@ def remote(monkeypatch):
         elif q==MUTATION:
             state.mutations.append(body)
             if state.mode=='timeout':
-                state.barcodes['1']=[{'value':'P1','type':None}];raise httpx.ReadTimeout('private payload')
+                state.barcodes['1']=[{'value':'P2','type':None}];raise httpx.ReadTimeout('private payload')
             if state.mode=='user_error':data={'productVariantsBulkUpdate':{'product':None,'productVariants':None,'userErrors':[{'code':'INVALID_INPUT','field':['variants']} ]}}
             else:
-                state.barcodes['1']=[{'value':'P1','type':'UPC' if state.mode=='typed' else None}]
+                state.barcodes['1']=[{'value':'P2','type':'UPC' if state.mode=='typed' else None}]
                 data={'productVariantsBulkUpdate':{'product':{'id':SNAP['product_id']},'productVariants':[{'id':SNAP['variant_id']}],'userErrors':[]}}
         else:raise AssertionError('Unapproved document')
         return httpx.Response(200,json={'data':data},headers={'X-Shopify-API-Version':state.version})
@@ -78,13 +85,13 @@ def remote(monkeypatch):
     http.close()
 
 
-def test_actual_supplied_schema_is_readable_and_write_semantics_remain_unverified(remote):
+def test_actual_schema_support_is_released_but_write_flags_default_off(remote):
     client,state=remote;assert contract.shape_verified(probe())
-    cap=client.capabilities();assert cap['read_supported'] and not cap['supported'] and not cap['contract_verified']
-    assert cap['reason']=='MUTATION_SEMANTICS_UNVERIFIED'
+    cap=client.capabilities();assert cap['read_supported'] and cap['supported'] and cap['contract_verified']
+    assert cap['reason']=='SUPPORTED'
     assert {x['name'] for x in SCHEMA['related_types']['BarcodeType']['enumValues']}==contract.TYPES
     assert 'CUSTOM' not in contract.TYPES
-    with pytest.raises(RemoteError,match='MUTATION_SEMANTICS_UNVERIFIED'):client.write_empty(SNAP)
+    with pytest.raises(RemoteError,match='WRITES_DISABLED'):client.write_empty(SNAP)
     assert not state.mutations
 
 
@@ -97,7 +104,7 @@ def test_unknown_added_required_field_or_changed_null_type_blocks_contract():
 
 def test_full_catalog_and_every_barcode_page_including_secondary_collision(remote):
     client,state=remote
-    state.barcodes['2']=[{'value':str(i),'type':None} for i in range(100)]+[{'value':'P1','type':None}]
+    state.barcodes['2']=[{'value':str(i),'type':None} for i in range(100)]+[{'value':'P2','type':None}]
     result=client.inspect(SNAP)
     assert result['complete'] and result['collision_complete'] and result['codes']==[]
     assert result['collision_ids']==['gid://shopify/ProductVariant/2']
@@ -123,44 +130,44 @@ def test_incomplete_or_ambiguous_states_never_claim_coverage(remote,change,reaso
 
 
 def test_minimal_payload_omits_regulated_type_and_all_other_product_fields():
-    assert mutation_payload(SNAP)=={'productId':SNAP['product_id'],'variants':[{'id':SNAP['variant_id'],'barcodes':[{'value':'P1'}]}]}
+    assert mutation_payload(SNAP)=={'productId':SNAP['product_id'],'variants':[{'id':SNAP['variant_id'],'barcodes':[{'value':'P2'}]}]}
     with pytest.raises(RemoteError):mutation_payload({**SNAP,'code':' arbitrary UPC '})
 
 
-def enable_mock_semantics(monkeypatch):
+def enable_mock_writes(monkeypatch):
     # Test-only semantic approval; production source remains False, with no env override.
-    monkeypatch.setattr(contract,'MUTATION_SEMANTICS_VERIFIED',True)
+    assert contract.MUTATION_SEMANTICS_VERIFIED is True
     for key in ['RETAIL_ENABLED','SHOPIFY_PRODUCT_WRITE_ENABLED','RETAIL_BARCODE_SYNC_ENABLED']:monkeypatch.setattr(settings,key,True)
 
 
 def test_mock_only_mutation_is_exact_and_acceptance_is_not_verification(remote,monkeypatch):
-    client,state=remote;enable_mock_semantics(monkeypatch)
+    client,state=remote;enable_mock_writes(monkeypatch)
     assert client.write_empty(SNAP)=={'accepted':True}
     assert len(state.mutations)==1 and state.mutations[0]['variables']==mutation_payload(SNAP)
-    result=client.inspect(SNAP);assert result['codes']==['P1'] and result['untyped_local_code']
+    result=client.inspect(SNAP);assert result['codes']==['P2'] and result['untyped_local_code']
 
 
 @pytest.mark.parametrize('mode', ['timeout','user_error'])
 def test_mutation_uncertainty_is_never_retried_and_requires_fresh_readback(remote,monkeypatch,mode):
-    client,state=remote;enable_mock_semantics(monkeypatch);state.mode=mode
+    client,state=remote;enable_mock_writes(monkeypatch);state.mode=mode
     with pytest.raises(RemoteError):client.write_empty(SNAP)
     assert len(state.mutations)==1
     result=client.inspect(SNAP)
-    assert result['complete'] and result['codes']==(['P1'] if mode=='timeout' else [])
+    assert result['complete'] and result['codes']==(['P2'] if mode=='timeout' else [])
 
 
 def test_existing_manufacturer_or_remote_collision_blocks_mock_mutation(remote,monkeypatch):
-    client,state=remote;enable_mock_semantics(monkeypatch);state.barcodes['1']=[{'value':'MAKER','type':'EAN'}]
+    client,state=remote;enable_mock_writes(monkeypatch);state.barcodes['1']=[{'value':'MAKER','type':'EAN'}]
     with pytest.raises(RemoteError,match='REMOTE_NOT_EMPTY_OR_CODE_REUSED'):client.write_empty(SNAP)
     assert not state.mutations
-    state.barcodes['1']=[];state.barcodes['3']=[{'value':'P1','type':None}]
+    state.barcodes['1']=[];state.barcodes['3']=[{'value':'P2','type':None}]
     with pytest.raises(RemoteError,match='REMOTE_NOT_EMPTY_OR_CODE_REUSED'):client.write_empty(SNAP)
     assert not state.mutations
 
 
 def test_typed_readback_cannot_be_verified(remote):
     import retail_barcode_sync as workflow
-    client,state=remote;state.barcodes['1']=[{'value':'P1','type':'UPC'}]
+    client,state=remote;state.barcodes['1']=[{'value':'P2','type':'UPC'}]
     result=client.inspect(SNAP)
     assert workflow.remote_reason(result,SNAP,{'supported':True,'scope':True,'version':'2026-10'},readback=True)=='READBACK_TYPE_MISMATCH'
 
@@ -185,13 +192,21 @@ def test_limits_fail_closed_never_return_partial_coverage(remote,monkeypatch,lim
 def test_worker_with_actual_schema_adapter_reconciles_once_preserves_local_fields(retail,remote,monkeypatch,mode,status):
     import retail_barcode_sync as workflow
     from retail_models import RetailBarcodeItem,RetailVariant
-    client,state=remote;r=retail;enable_mock_semantics(monkeypatch)
+    client,state=remote;r=retail;enable_mock_writes(monkeypatch)
     monkeypatch.setattr(workflow,'client',client)
     value=node(1,sku='ORIGINAL-SKU');value['product']['id']=SNAP['product_id']
-    import_nodes(r,[value]);allocate(r,choose(r,ids=[1]))
+    import_nodes(r,[value])
+    from retail_models import RetailCounter
+    with r.sessions() as db:db.add(RetailCounter(shop='eb2b70',kind='barcode',value=1));db.commit()
+    allocate(r,choose(r,ids=[1]))
     selection=choose(r,ids=[1]);p=r.post('barcode-sync/preview',{'selection':selection})
     assert p.status_code==200,p.text
-    p=p.json();assert p['rows'][0]['status']=='ELIGIBLE',p
+    p=p.json()
+    assert workflow.check_preview_one(r.sessions,client)
+    with r.sessions() as db:
+        from retail_models import RetailBarcodeJob
+        p=workflow.report(db,db.get(RetailBarcodeJob,p['id']))
+    assert p['rows'][0]['status']=='ELIGIBLE',p
     response=r.post(f"barcode-sync/{p['id']}/approve",{'token':p['approval_token'],'confirmation':p['confirmation']})
     assert response.status_code==200,response.text
     state.mode=mode
@@ -200,7 +215,7 @@ def test_worker_with_actual_schema_adapter_reconciles_once_preserves_local_field
     with r.sessions() as db:
         item=db.query(RetailBarcodeItem).one();assert item.status==status,item.reason
         row=db.get(RetailVariant,1)
-        assert row.local_barcode=='P1' and row.barcode is None and row.sku=='ORIGINAL-SKU' and str(row.price)=='8500.00'
+        assert row.local_barcode=='P2' and row.barcode is None and row.sku=='ORIGINAL-SKU' and str(row.price)=='8500.00'
         if status=='VERIFIED':assert item.verified_at is not None and item.after['untyped_local_code']
         else:assert item.verified_at is None
 
@@ -216,12 +231,12 @@ def test_long_retry_after_never_causes_unbounded_wait(remote):
 
 
 def test_case_or_whitespace_alias_is_conservatively_a_collision(remote):
-    client,state=remote;state.barcodes['3']=[{'value':' p1 ','type':None}]
+    client,state=remote;state.barcodes['3']=[{'value':' p2 ','type':None}]
     assert client.inspect(SNAP)['collision_ids']==['gid://shopify/ProductVariant/3']
 
 
 def test_missing_type_is_not_treated_as_explicit_untyped_null(remote):
-    client,state=remote;state.barcodes['2']=[{'value':'P1'}]
+    client,state=remote;state.barcodes['2']=[{'value':'P2'}]
     with pytest.raises(RemoteError,match='INVALID_BARCODE_STATE'):client.inspect(SNAP)
 
 
@@ -265,8 +280,17 @@ def test_twenty_item_barcode_pages_and_final_short_page_are_exhausted(remote):
 def test_catalog_id_validation_keeps_hundred_item_limit(remote):
     client,state=remote
     state.catalog=[[str(i) for i in range(1,36)]]
-    state.barcodes['35']=[{'value':'OTHER','type':None},{'value':'P1','type':None}]
+    state.barcodes['35']=[{'value':'OTHER','type':None},{'value':'P2','type':None}]
     result=client.inspect(SNAP)
     assert result['complete'] and result['collision_ids']==['gid://shopify/ProductVariant/35']
     assert 'productVariants(first:50,' in CATALOG
     assert 'productVariants(first:100,' in CATALOG_IDS
+
+
+def test_expiry_is_checked_after_final_reads_before_the_only_post(remote,monkeypatch):
+    from datetime import datetime,timedelta
+    client,state=remote;enable_mock_writes(monkeypatch)
+    with pytest.raises(RemoteError,match='APPROVAL_OR_LEASE_EXPIRED'):
+        client.write_empty(SNAP,not_after=datetime.utcnow()-timedelta(seconds=1))
+    assert any(c['query']==READ for c in state.calls)
+    assert not state.mutations

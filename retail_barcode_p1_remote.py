@@ -1,4 +1,4 @@
-"""Fixed P1-only transport. Ordinary BarcodeClient.write_empty remains gated."""
+"""Historical P1 protected reader; the pilot mutation method is permanently retired."""
 import copy
 import hashlib
 import json
@@ -93,23 +93,4 @@ class P1Client(BarcodeClient):
         raise RemoteError('P1_PROTECTED_BUDGET')
 
     def _attempt_p1(self,permit):
-        # Only the service can issue an ephemeral permit after durable intent.
-        from retail_barcode_p1_pilot import _Permit
-        if type(permit) is not _Permit or not permit.consume() or self.__attempted:
-            raise RemoteError('P1_ATTEMPT_NOT_AUTHORIZED')
-        self.__attempted=True
-        if self.base_url!='https://eb2b70.myshopify.com':raise RemoteError('P1_SHOP_MISMATCH')
-        # Exactly one POST. No inherited retrying GraphQL mutation helper.
-        try:
-            token=self.get_token()
-            # Token refresh can itself use the network. Recheck the original
-            # final-target deadline after authentication, before the sole POST.
-            if not permit.live():raise RemoteError('P1_FINAL_CHECK_EXPIRED')
-            response=self.http.post(f'{self.base_url}/admin/api/{BARCODE_API_VERSION}/graphql.json',
-                headers={'X-Shopify-Access-Token':token},json={'query':MUTATION,'variables':copy.deepcopy(PAYLOAD)},
-                timeout=httpx.Timeout(15,connect=5))
-            value=response.json();result=value.get('data',{}).get('productVariantsBulkUpdate')
-            if response.status_code!=200 or response.headers.get('X-Shopify-API-Version')!=BARCODE_API_VERSION or value.get('errors') or not isinstance(result,dict) or result.get('userErrors')!=[] or result.get('productVariants')!=[{'id':IDENTITY['variant_id']}] or (result.get('product') or {}).get('id')!=IDENTITY['product_id']:
-                raise RemoteError('P1_OUTCOME_UNCERTAIN')
-            return True
-        except Exception:raise RemoteError('P1_OUTCOME_UNCERTAIN') from None
+        raise RemoteError('P1_PILOT_PERMANENTLY_RETIRED')
