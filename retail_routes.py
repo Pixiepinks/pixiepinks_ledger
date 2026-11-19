@@ -10,6 +10,8 @@ import retail_service as service
 import retail_labels as labels
 import retail_sync as sync
 import retail_barcode_sync as barcode_sync
+import retail_barcode_p1_pilot as p1_pilot
+from starlette.concurrency import run_in_threadpool
 
 
 def build_router(get_db,require_user,csrf,csrf_token,templates):
@@ -138,6 +140,35 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     async def allocation_preview(request:Request,db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.barcodes.assign');p=await body(request,{'selection','kind','category','reason'},{'selection','kind'})
         result=service.allocate_preview(db,user,p['selection'],p['kind'],p.get('category',''),p.get('reason',''));db.commit();return result
+
+    # No target/actor arguments: identity is fixed and actor comes from the
+    # existing authenticated session. These actions are never worker-dispatched.
+    @router.get('/api/barcode-p1-pilot')
+    def p1_status(db=Depends(get_db),user=Depends(require_user)):
+        return JSONResponse(p1_pilot.status(db,user),headers={'Cache-Control':'no-store'})
+
+    @router.post('/api/barcode-p1-pilot/prepare')
+    async def p1_prepare(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        p1_pilot.authorize(user)
+        p=await body(request,{'editors_paused','risk_accepted'},{'editors_paused','risk_accepted'})
+        actor=user.id;engine=db.get_bind();db.rollback()
+        result=await run_in_threadpool(p1_pilot.prepare,engine,actor,**p)
+        return JSONResponse(result,headers={'Cache-Control':'no-store'})
+
+    @router.post('/api/barcode-p1-pilot/execute')
+    async def p1_execute(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        p1_pilot.authorize(user)
+        p=await body(request,{'nonce','confirmation','editors_paused','risk_accepted'},{'nonce','confirmation','editors_paused','risk_accepted'})
+        actor=user.id;engine=db.get_bind();db.rollback()
+        result=await run_in_threadpool(p1_pilot.execute,engine,actor,**p)
+        return JSONResponse(result,headers={'Cache-Control':'no-store'})
+
+    @router.post('/api/barcode-p1-pilot/reconcile')
+    async def p1_reconcile(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        p1_pilot.authorize(user);await body(request,set())
+        actor=user.id;engine=db.get_bind();db.rollback()
+        result=await run_in_threadpool(p1_pilot.reconcile,engine,actor)
+        return JSONResponse(result,headers={'Cache-Control':'no-store'})
 
     @router.get('/api/allocations/{token}')
     def allocation_page(token:str,offset:int=Query(0,ge=0),limit:int=Query(100,ge=1,le=100),db=Depends(get_db),user=Depends(require_user)):
