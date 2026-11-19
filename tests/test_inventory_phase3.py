@@ -33,14 +33,15 @@ class FakeInventory:
         self.calls.append((line['inventory_item_id'],line['location_id']))
         if self.read_error:raise InventoryError('READ_UNAVAILABLE')
         return {**self.values.setdefault((line['inventory_item_id'],line['location_id']),{'on_hand':10,'available':8}),'location_name':'Shop'}
-    def set_quantities(self,plan,reference,key):
+    def apply(self,plan,reference,key,kind,reason=None,prepared=None):
         self.mutations.append((copy.deepcopy(plan),reference,key))
         if self.error:raise self.error
         for p in plan:
             value=self.values[(p['inventory_item_id'],p['location_id'])]
-            if value['on_hand']!=p['before']:raise InventoryError('COMPARE_FAILED')
+            if kind in {'COUNT','OPENING'} and value['on_hand']!=p['before']:raise InventoryError('COMPARE_FAILED')
+            if kind not in {'COUNT','OPENING'} and value['available']!=p['available_before']:raise InventoryError('CHANGE_FROM_QUANTITY_STALE')
             delta=p['after']-p['before'];value['on_hand']+=delta;value['available']+=delta
-        return 'gid://shopify/InventoryAdjustmentGroup/1'
+        return {'group_id':'gid://shopify/InventoryAdjustmentGroup/1','group':{'referenceDocumentUri':reference},'operation':'SET' if kind in {'COUNT','OPENING'} else 'ADJUST'}
 
 
 @pytest.fixture
@@ -105,11 +106,11 @@ def test_delta_adjustments_preserve_reserved_stock(inv,monkeypatch,kind,qty,afte
     assert value['on_hand']==after and value['available']==3+qty
 
 
-def test_concurrent_onhand_change_blocks_without_mutation(inv,monkeypatch):
+def test_delta_receipt_preserves_concurrent_onhand_change(inv,monkeypatch):
     r=inv;doc=prepare(r);submit_approve(r,doc);r.remote.values[('gid://shopify/InventoryItem/1',LOCATION)]['on_hand']=11
     enable_mock_dispatch(monkeypatch);service.dispatch_one(r.sessions,r.remote)
-    with r.sessions() as db:assert db.get(InventoryDocument,doc['id']).status=='CONFLICT'
-    assert r.remote.mutations==[]
+    with r.sessions() as db:assert db.get(InventoryDocument,doc['id']).status=='VERIFIED'
+    assert len(r.remote.mutations)==1 and r.remote.values[('gid://shopify/InventoryItem/1',LOCATION)]['on_hand']==13
 
 
 def test_uncertain_blocks_next_document_and_never_blindly_retries(inv,monkeypatch):
@@ -235,10 +236,10 @@ def test_stale_worker_is_never_requeued(inv,monkeypatch):
 
 def test_accepted_mutation_bad_readback_requires_review_not_retry(inv,monkeypatch):
     r=inv;doc=prepare(r);submit_approve(r,doc);enable_mock_dispatch(monkeypatch)
-    original=r.remote.set_quantities
-    def applied(*args):
-        group=original(*args);r.remote.read_error=True;return group
-    r.remote.set_quantities=applied
+    original=r.remote.apply
+    def applied(*args,**kwargs):
+        group=original(*args,**kwargs);r.remote.read_error=True;return group
+    r.remote.apply=applied
     service.dispatch_one(r.sessions,r.remote)
     with r.sessions() as db:assert db.get(InventoryDocument,doc['id']).status=='APPLIED_REVIEW'
     assert service.dispatch_one(r.sessions,r.remote) is False and len(r.remote.mutations)==1
@@ -283,3 +284,70 @@ def test_barcode_flags_cannot_enable_inventory_dispatch(inv,monkeypatch):
     monkeypatch.setattr(settings,'RETAIL_BARCODE_SYNC_ENABLED',True)
     assert settings.SHOPIFY_INVENTORY_WRITE_ENABLED is False
     assert service.dispatch_one(r.sessions,r.remote) is False and r.remote.mutations==[]
+
+
+def test_count_changed_after_approval_stays_absolute_and_blocks(inv,monkeypatch):
+    r=inv;doc=prepare(r,'COUNT');post(r,'documents/'+doc['id']+'/count',{'line':0,'quantity':12});submit_approve(r,doc)
+    r.remote.values[('gid://shopify/InventoryItem/1',LOCATION)]['on_hand']=11
+    enable_mock_dispatch(monkeypatch);service.dispatch_one(r.sessions,r.remote)
+    with r.sessions() as db:assert db.get(InventoryDocument,doc['id']).status=='CONFLICT'
+    assert r.remote.mutations==[]
+
+
+def test_contract_identity_cannot_be_changed(inv):
+    r=inv;doc=prepare(r)
+    with r.sessions() as db:
+        with pytest.raises(DatabaseError):db.execute(text("UPDATE inventory_documents SET contract_version='old' WHERE id=:id"),{'id':doc['id']});db.commit()
+
+
+def test_unknown_contract_document_cannot_be_approved(inv):
+    r=inv;p=payload(r)
+    # Insert pre-release row as it would exist after additive migration, with NULL contract.
+    with r.sessions() as db:
+        source=service.create(db,db.get(User,r.uid),p,r.remote)
+        service.submit(db,db.get(User,r.uid),source.id,r.remote)
+        legacy=InventoryDocument(id=str(uuid4()),shop=source.shop,client_key=uuid4().hex,kind=source.kind,
+            business_key=None,reference='LEGACY-'+uuid4().hex[:10],payload=source.payload,payload_hash=source.payload_hash,
+            actor_id=r.uid,status='SUBMITTED',baseline=source.baseline,plan=source.plan,dispatch_key=str(uuid4()),contract_version=None)
+        db.add(legacy);db.commit();document_id=legacy.id;reference=legacy.reference
+    assert post(r,'documents/'+document_id+'/approve',{'confirmation':reference}).status_code==409
+    assert r.remote.mutations==[]
+
+
+def test_delta_execution_uses_fresh_baseline_without_rewriting_approval(inv,monkeypatch):
+    r=inv;doc=prepare(r);submit_approve(r,doc)
+    value=r.remote.values[('gid://shopify/InventoryItem/1',LOCATION)];value.update(on_hand=7,available=5)
+    enable_mock_dispatch(monkeypatch);service.dispatch_one(r.sessions,r.remote)
+    with r.sessions() as db:
+        record=db.get(InventoryDocument,doc['id'])
+        assert record.plan[0]['before']==10 and record.plan[0]['after']==12
+        intent=db.query(InventoryEvent).filter_by(document_id=doc['id'],action='DISPATCH_INTENT').one()
+        assert intent.detail['plan'][0]['before']==7 and intent.detail['plan'][0]['after']==9
+        report=service.movement_report(db,db.get(User,r.uid))[0]
+        assert report['approved_before']==10 and report['before']==7 and report['after']==9 and report['observed_on_hand']==9
+        accepted=db.query(InventoryEvent).filter_by(document_id=doc['id'],action='REMOTE_ACCEPTED').one()
+        assert accepted.detail['outcome']['group']['referenceDocumentUri'].endswith(doc['id'])
+
+
+def test_delta_cas_race_is_uncertain_with_exact_saved_wire(inv,monkeypatch):
+    r=inv;doc=prepare(r);submit_approve(r,doc);enable_mock_dispatch(monkeypatch)
+    original=r.remote.apply
+    def race(*args,**kwargs):
+        r.remote.values[('gid://shopify/InventoryItem/1',LOCATION)]['available']-=1
+        return original(*args,**kwargs)
+    r.remote.apply=race
+    service.dispatch_one(r.sessions,r.remote)
+    with r.sessions() as db:
+        record=db.get(InventoryDocument,doc['id']);assert record.status=='UNCERTAIN' and record.attempts==1
+        intent=db.query(InventoryEvent).filter_by(document_id=doc['id'],action='DISPATCH_INTENT').one()
+        assert intent.detail['wire']['variables']['key']==record.dispatch_key
+        assert intent.detail['wire']['variables']['input']['changes'][0]['changeFromQuantity']==8
+        assert intent.detail['wire_sha256']==service.digest(intent.detail['wire'])
+    assert service.dispatch_one(r.sessions,r.remote) is False
+
+
+def test_negative_adjustment_never_removes_committed_stock(inv,monkeypatch):
+    r=inv;doc=prepare(r,'ADJUSTMENT',-9);submit_approve(r,doc);enable_mock_dispatch(monkeypatch)
+    service.dispatch_one(r.sessions,r.remote)
+    with r.sessions() as db:assert db.get(InventoryDocument,doc['id']).error=='INSUFFICIENT_AVAILABLE_STOCK'
+    assert r.remote.mutations==[]

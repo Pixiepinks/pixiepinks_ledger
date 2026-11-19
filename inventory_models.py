@@ -18,6 +18,7 @@ class InventoryDocument(Base):
     actor_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     approved_by = Column(Integer, ForeignKey('users.id'))
     approval_hash = Column(String(64))
+    contract_version = Column(String(60))
     baseline = Column(JSON(none_as_null=True))
     plan = Column(JSON(none_as_null=True))
     dispatch_key = Column(String(36), nullable=False, unique=True)

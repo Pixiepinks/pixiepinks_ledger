@@ -2,6 +2,8 @@
 
 Base: main `ce070ca` (Phase 2 merged in PR #175). Branch: `feature/retail-phase3-inventory`.
 
+> Historical PR #176 report. For the completed 2026-10 contract and current source-review status, see [activation](inventory-2026-10-activation.md) and [official evidence](inventory-2026-10-evidence.md). The original proposal/status below records that earlier implementation.
+
 ## Delivered code
 
 - `/crm/retail/inventory`: responsive stock overview, exact barcode/manual variant selection, product/SKU/vendor/supplier filtering, Shopify location selection, targeted distinct available/on-hand observations, low/out-of-stock filters, current-page stock export and paginated document history.

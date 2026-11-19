@@ -1,10 +1,12 @@
 # Phase 3 Inventory Management — staff and administrator guide
 
+> Mutation adapter update: see [2026-10 activation and scope-preservation instructions](inventory-2026-10-activation.md). Official mutation semantics are reviewed; write flags remain disabled pending release approval and live scope/schema verification; native transfers remain pending.
+
 ## Authority and release status
 
 Shopify owns all inventory balances. The CRM stores documents, observations, approvals, policies and audit events, not an independent stock ledger. The same product/variant/inventory-item/location identities and exact barcode matcher support Inventory Management and the future POS.
 
-**Development implementation; live write compatibility is blocked.** The proposed compare-and-set/idempotent mutation path is mock-tested but has not been certified against authoritative Shopify 2026-10 documentation or the configured live app. `inventory_shopify.MUTATION_CONTRACT_VERIFIED=False` is a source-level block in addition to a distinct, default-off `SHOPIFY_INVENTORY_WRITE_ENABLED` setting. Changing an environment flag alone cannot release it. No live stock operations were performed during development. This is a normal transaction workflow, not a special one-product pilot.
+**Release preparation; production writes are not enabled.** The delta/count-CAS/idempotent contract is reviewed against official Shopify 2026-10 documentation. `inventory_shopify.MUTATION_CONTRACT_VERIFIED=True` records that review only. The distinct `SHOPIFY_INVENTORY_WRITE_ENABLED` setting defaults off; live scope/schema checks and separate activation approval remain required. No live stock operations were performed during development. This is a normal transaction workflow, not a special one-product pilot.
 
 Native transfer behavior is also unverified: approved transfers stay `TRANSFER_PENDING`, and dispatch/receiving confirmations are records only. They never trigger a pair of simulated inventory adjustments.
 
@@ -47,7 +49,7 @@ For a return already restocked by a Shopify order/refund process, do not create 
 
 Select products/location and choose Physical count sheet. Acknowledging the cutoff means staff will control physical receipts/dispatches during counting and record the procedure in notes. Saving starts the sheet with fresh, immutable Shopify baselines; no correction occurs yet. Scan/add each variant explicitly, record counted quantities in the saved sheet, and retain the observation history. Corrections to observations append a new observation; previous counts are not erased.
 
-Every line needs a count. Submitting freezes the latest counted values and per-line variance. If on-hand or available changed since the cutoff, restart the count with a new sheet. Before dispatch, both are checked again; the proposed mutation uses Shopify on-hand compareQuantity rather than ignoring concurrent changes. A concurrent order that changes available only is not restored to its old available balance by an on-hand correction; an on-hand conflict fails closed. Cross-quantity changes, ABA changes and multi-page reads are not an atomic physical snapshot. The cutoff/movement-control procedure, read-back and operator reconciliation remain essential.
+Every line needs a count. Submitting freezes the latest counted values and per-line variance. If on-hand or available changed since the cutoff, restart the count with a new sheet. Before dispatch, both are checked again; the count mutation supplies explicit on-hand `changeFromQuantity` CAS rather than ignoring concurrent changes. A concurrent order that changes available only is not restored to its old available balance by an on-hand correction; an on-hand conflict fails closed. Cross-quantity changes, ABA changes and multi-page reads are not an atomic physical snapshot. The cutoff/movement-control procedure, read-back and operator reconciliation remain essential.
 
 Full-store physical reconciliation is **not required now** and is intentionally deferred until POS completion. The Opening reconciliation type uses the same count/approval workflow later: preserve all receiving, sales, adjustments, transfers and observations; record discrepancies, operator, cutoff, verification time and reference without resetting history. Verified opening references are shown per variant/location. It is not a bulk “reset inventory” button. Reconcile in explicit bounded sheets with reviewed ongoing-movement controls, not an unrestricted full-store overwrite.
 

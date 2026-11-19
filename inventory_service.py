@@ -122,7 +122,7 @@ def create(db,user,payload,client=None):
     business_key=digest({'supplier':supplier,'invoice':normalized['invoice'].casefold()}) if kind=='RECEIPT' else None
     if business_key and db.query(InventoryDocument).filter_by(shop=retail.shop(),business_key=business_key).first():raise HTTPException(409,'This supplier invoice already has a receiving document; review its existing outcome')
     doc=InventoryDocument(business_key=business_key,id=str(uuid4()),shop=retail.shop(),client_key=key,kind=kind,reference='INV-'+uuid4().hex[:16].upper(),
-        payload=normalized,payload_hash=digest(normalized),actor_id=user.id,dispatch_key=str(uuid4()),status='DRAFT')
+        payload=normalized,payload_hash=digest(normalized),contract_version=remote.CONTRACT_VERSION,actor_id=user.id,dispatch_key=str(uuid4()),status='DRAFT')
     db.add(doc);db.flush()
     if kind in {'COUNT','OPENING'}:
         # Start sheet now; every later correction compares against this immutable cutoff.
@@ -182,8 +182,9 @@ def approve(db,user,document_id,confirmation):
     require(user,admin=True);retail.write_lock(db);doc=get(db,document_id)
     if doc.status!='SUBMITTED':raise HTTPException(409,'Only submitted documents can be approved')
     if confirmation!=doc.reference:raise HTTPException(422,'Confirm the exact document reference')
+    if doc.contract_version!=remote.CONTRACT_VERSION:raise HTTPException(409,'Document uses an older inventory contract; reject and prepare a newly reviewed document')
     if digest(doc.payload)!=doc.payload_hash or not doc.plan:raise HTTPException(409,'Document integrity failure')
-    doc.approved_by=user.id;doc.approval_hash=digest({'payload':doc.payload_hash,'plan':doc.plan,'baseline':doc.baseline,'shop':doc.shop})
+    doc.approved_by=user.id;doc.approval_hash=digest({'payload':doc.payload_hash,'plan':doc.plan,'baseline':doc.baseline,'shop':doc.shop,'contract':doc.contract_version})
     doc.status='TRANSFER_PENDING' if doc.kind=='TRANSFER' else 'APPROVED'
     event(db,doc,'ADMIN_APPROVED',user,approval_hash=doc.approval_hash,reference=doc.reference,write_enabled=bool(settings.SHOPIFY_INVENTORY_WRITE_ENABLED and remote.MUTATION_CONTRACT_VERIFIED))
     db.commit();return doc
@@ -208,7 +209,7 @@ def public(db,doc):
     events=db.query(InventoryEvent).filter_by(document_id=doc.id).order_by(InventoryEvent.id).all()
     observations=db.query(InventoryObservation).filter_by(document_id=doc.id).order_by(InventoryObservation.id).all()
     return {'id':doc.id,'reference':doc.reference,'kind':doc.kind,'status':doc.status,'payload':doc.payload,'baseline':doc.baseline,'plan':doc.plan,
-        'actor_id':doc.actor_id,'approved_by':doc.approved_by,'attempts':doc.attempts,'remote_reference':doc.remote_reference,
+        'contract_version':doc.contract_version,'actor_id':doc.actor_id,'approved_by':doc.approved_by,'attempts':doc.attempts,'remote_reference':doc.remote_reference,
         'completed_at':doc.completed_at.isoformat()+'Z' if doc.completed_at else None,
         'created_at':doc.created_at.isoformat()+'Z','dispatched_at':doc.dispatched_at.isoformat()+'Z' if doc.dispatched_at else None,
         'error':doc.error,'physical_balance':'VERIFIED_AT_COUNT_CUTOFF' if doc.kind=='OPENING' and doc.status=='VERIFIED' else 'PROVISIONAL',
@@ -236,23 +237,35 @@ def dispatch_one(sessions,client=None):
         try:
             approver=db.get(User,doc.approved_by);creator=db.get(User,doc.actor_id)
             require(approver,admin=True);require(creator,'retail.inventory.prepare')
-            if doc.kind not in KINDS-{'TRANSFER'} or doc.attempts!=0 or digest(doc.payload)!=doc.payload_hash or doc.approval_hash!=digest({'payload':doc.payload_hash,'plan':doc.plan,'baseline':doc.baseline,'shop':doc.shop}):raise InventoryError('APPROVAL_INTEGRITY_FAILED')
+            if doc.contract_version!=remote.CONTRACT_VERSION or doc.kind not in KINDS-{'TRANSFER'} or doc.attempts!=0 or digest(doc.payload)!=doc.payload_hash or doc.approval_hash!=digest({'payload':doc.payload_hash,'plan':doc.plan,'baseline':doc.baseline,'shop':doc.shop,'contract':doc.contract_version}):raise InventoryError('APPROVAL_INTEGRITY_FAILED')
             approval=db.query(InventoryEvent).filter_by(document_id=doc.id,action='ADMIN_APPROVED').one()
             if approval.created_at<datetime.utcnow()-timedelta(minutes=30):raise InventoryError('APPROVAL_EXPIRED')
             cap=client.capabilities()
             if not all(cap.get(k) for k in ('write_inventory','read_inventory','read_locations','mutation_shape_verified','source_contract_verified')):raise InventoryError('INVENTORY_MUTATION_CONTRACT_UNVERIFIED')
             current=observe_lines(db,doc,client)
-            if any(current[i]['on_hand']!=p['before'] or (doc.kind in {'COUNT','OPENING'} and current[i]['available']!=p['available_before']) for i,p in enumerate(doc.plan)):raise InventoryError('CONCURRENT_STOCK_CHANGE')
+            absolute=doc.kind in {'COUNT','OPENING'}
+            if absolute and any(current[i]['on_hand']!=p['before'] or current[i]['available']!=p['available_before'] for i,p in enumerate(doc.plan)):raise InventoryError('CONCURRENT_STOCK_CHANGE')
+            execution=copy.deepcopy(doc.plan)
+            if not absolute:
+                # Approval authorizes a delta; current balances may legitimately change.
+                for i,p in enumerate(execution):
+                    delta=doc.plan[i]['after']-doc.plan[i]['before']
+                    p['before']=current[i]['on_hand'];p['after']=p['before']+delta
+                    p['available_before']=current[i]['available']
+                    if delta<0 and p['available_before']+delta<0:raise InventoryError('INSUFFICIENT_AVAILABLE_STOCK')
+                    if not 0<=p['after']<=2147483647:raise InventoryError('INVALID_RESULTING_STOCK')
             if all(p['after']==p['before'] for p in doc.plan):
                 doc.status='VERIFIED';doc.completed_at=datetime.utcnow();event(db,doc,'NO_CHANGE_VERIFIED',before=current,after=current);db.commit();return True
+            plan=execution;kind=doc.kind;reason=doc.payload.get('reason');reference='urn:pixiepinks:inventory:'+doc.shop+':'+doc.id;key=doc.dispatch_key;doc_id=doc.id
+            wire=remote.InventoryShopify.prepare(plan,reference,key,kind,reason)
             doc.status='DISPATCHING';doc.attempts=1;doc.dispatched_at=datetime.utcnow()
-            plan=copy.deepcopy(doc.plan);reference='urn:pixiepinks:inventory:'+doc.shop+':'+doc.id;key=doc.dispatch_key;doc_id=doc.id
-            event(db,doc,'DISPATCH_INTENT',key=key,reference=reference,plan=plan);db.commit()
+            event(db,doc,'DISPATCH_INTENT',key=key,reference=reference,plan=plan,before=current,contract_version=remote.CONTRACT_VERSION,operation='SET' if absolute else 'ADJUST',reason=wire['reason'],wire=wire,wire_sha256=digest(wire),quantity_name='on_hand' if absolute else 'available',ledger_prefix=f'gid://pixiepinks/InventoryMovement/{key}-');db.commit()
         except (InventoryError,HTTPException) as error:
             doc.status='CONFLICT';doc.error=error.reason if isinstance(error,InventoryError) else 'PERMISSION_OR_IDENTITY_CHANGED'
             event(db,doc,'PREFLIGHT_BLOCKED',reason=doc.error);db.commit();return True
     try:
-        group=client.set_quantities(plan,reference,key)
+        outcome=client.apply(plan,reference,key,kind,reason,prepared=wire)
+        group=outcome['group_id']
     except Exception:
         with sessions() as db:
             retail.write_lock(db);doc=get(db,doc_id);doc.status='UNCERTAIN';doc.error='MUTATION_OUTCOME_UNKNOWN'
@@ -260,12 +273,12 @@ def dispatch_one(sessions,client=None):
         return True
     with sessions() as db:
         retail.write_lock(db);doc=get(db,doc_id);doc.remote_reference=group
-        event(db,doc,'REMOTE_ACCEPTED',group=group)
+        event(db,doc,'REMOTE_ACCEPTED',group=group,outcome=outcome)
         try:
             after=observe_lines(db,doc,client)
-            matches=all(after[i]['on_hand']==p['after'] for i,p in enumerate(doc.plan))
+            matches=all(after[i]['on_hand']==p['after'] for i,p in enumerate(plan))
             doc.status='VERIFIED' if matches else 'APPLIED_REVIEW';doc.error=None if matches else 'READBACK_CHANGED'
-            event(db,doc,'READBACK_VERIFIED' if matches else 'READBACK_REQUIRES_REVIEW',before=doc.baseline,after=after,group=group)
+            event(db,doc,'READBACK_VERIFIED' if matches else 'READBACK_REQUIRES_REVIEW',before=current,after=after,group=group,execution_plan=plan)
             if matches:doc.completed_at=datetime.utcnow()
         except Exception:
             doc.status='APPLIED_REVIEW';doc.error='READBACK_UNAVAILABLE';event(db,doc,'READBACK_UNAVAILABLE',group=group)
@@ -323,9 +336,17 @@ def movement_report(db,user):
     require(user);result=[]
     docs=db.query(InventoryDocument).filter_by(shop=retail.shop()).order_by(InventoryDocument.created_at.desc()).limit(500)
     for doc in docs:
+        events=db.query(InventoryEvent).filter_by(document_id=doc.id).order_by(InventoryEvent.id).all()
+        intent=next((e.detail for e in reversed(events) if e.action=='DISPATCH_INTENT'),{})
+        observed=next((e.detail.get('after',[]) for e in reversed(events) if e.action in {'READBACK_VERIFIED','READBACK_REQUIRES_REVIEW'}),[])
         for i,line in enumerate(doc.payload['lines']):
-            p=doc.plan[i] if doc.plan else {}
+            approved=doc.plan[i] if doc.plan else {}
+            p=intent.get('plan',doc.plan or [])[i] if doc.plan else {}
             result.append({'reference':doc.reference,'kind':doc.kind,'status':doc.status,'title':line['title'],'sku':line['sku'],
+                'contract_version':doc.contract_version,'basis':'EXECUTION_INTENT' if intent else 'APPROVED_PLAN',
+                'approved_before':approved.get('before'),'approved_after':approved.get('after'),
+                'observed_on_hand':observed[i].get('on_hand') if len(observed)>i else None,
+                'observed_available':observed[i].get('available') if len(observed)>i else None,
                 'barcode':line['barcode'],'location':line['location_id'],'before':p.get('before'),'after':p.get('after'),
                 'delta':p.get('after',0)-p.get('before',0) if p else None,'unit_cost':line.get('unit_cost'),
                 'supplier':doc.payload.get('supplier_name'),'date':doc.payload['date'],'api_reference':doc.remote_reference})
