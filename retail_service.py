@@ -82,7 +82,7 @@ def issues(row,ctx):
     if row.barcode and code_valid(row.barcode) and not row.local_barcode:result.append('EXISTING_MANUFACTURER_OR_EXTERNAL')
     if value and ctx['effective'][value]>1 and ('effective',value) not in ctx['shared']:result.append('SCAN_CONFLICT')
     check=ctx.get('barcode_checks',{}).get(row.id,{})
-    verified=check.get('status')=='VERIFIED' and check.get('code')==row.local_barcode and (not row.barcode or row.barcode==row.local_barcode)
+    verified=check.get('status') in {'VERIFIED','PILOT_VERIFIED'} and check.get('code')==row.local_barcode and (not row.barcode or row.barcode==row.local_barcode)
     if row.local_sku or row.local_barcode and not verified:result.append('LOCAL_PENDING_SYNC')
     if verified:result.append('VERIFIED_ON_SHOPIFY')
     if row.local_barcode and row.barcode and row.local_barcode==row.barcode:result.append('LOCAL_MATCHES_SHOPIFY')  # Observation, never a confirmed write.
