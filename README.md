@@ -1262,3 +1262,7 @@ The earlier [exact-proxy policy](docs/print-agent-trusted-proxy.md) remains avai
 ### Railway isolated Print Agent ingress
 
 Railway does not provide the stable exclusive proxy identities required by the earlier IP policy. The selected [isolation-backed ingress plan](docs/print-agent-railway-ingress.md) preserves the current HTTPS address and current Python agent, without buying a code-signing certificate. Its new mode defaults off and **must not be enabled on the current shared private network**. Administrator-approved network isolation and edge sanitation are mandatory. The web entrypoint is now `railway_ingress:app`; no Uvicorn wildcard forwarding trust is introduced.
+
+### Phase 4G manual POS receipts
+
+[Professional 80 mm receipts and Chrome printing](docs/pos-phase4g-receipts.md) use the same canonical PDF as future authorized hardware jobs. Browser printing works with the agent parked; no security/write flags or Windows driver settings change. The guide covers history duplicates, optional 58/A4, popup recovery, manual-driver cashbox limitations and rollback. [Implementation/test report](docs/pos-phase4g-implementation-report.md).
