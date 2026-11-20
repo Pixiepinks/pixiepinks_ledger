@@ -36,19 +36,21 @@ This feature does not resolve the earlier Shopify full-read error.
    receipt while printing. Use **Refresh sale status** to check completion; this
    reads status, never retries CREATE or records payment.
 5. Reprints retain the original acknowledgement ID and first-issued timestamp and
-   say DUPLICATE / REPRINT. PDF generation is audited even if the print dialog is
+   say COPY / REPRINT. PDF generation is audited even if the print dialog is
    cancelled. Reopening the current blob/download link does not regenerate it.
 6. If additional existing tender evidence becomes verified, a later PDF retains
    the same logical acknowledgement ID, increments its payment-evidence revision,
-   and says Updated payment evidence. It does not record another payment.
+   in the audit history; the customer copy says COPY / REPRINT. It does not record another payment.
 7. After separately approved normal processing/recovery marks the **same** checkout
    COMPLETE, use the normal **Print Receipt (80 mm)** action. Its final PDF says
    it replaces the provisional acknowledgement and uses the original POS reference.
    Keep both records; do not create another checkout, payment or Shopify order to
    obtain the final receipt. Completed sales cannot issue new provisional PDFs.
 
-The heading and footer prominently say PROVISIONAL PAYMENT ACKNOWLEDGEMENT,
-NOT FINALIZED / NOT SHOPIFY VERIFIED and NOT A TAX INVOICE. Product/variant,
+The Phase 1 customer heading is INVOICE with the immediate qualification
+PROVISIONAL — FINAL CONFIRMATION PENDING. It remains a provisional payment
+document, not a finalized tax invoice. The footer contains the owner-approved
+exchange policy, thank-you and PRYAMO contact. Product/variant,
 quantity, unit price, discounts, tax and grand total come from the original frozen
 quote. Only verified matched payment amounts are acknowledged; cash received and
 change come from that tender's frozen snapshot. Balance is grand total less
@@ -122,7 +124,7 @@ sale/payment/audit. Never use either designated test checkout for customer PDFs.
 - Use the driver's supported 80 mm roll/custom form, portrait, 100% / Actual size.
   The PDF is 80 mm wide, 4 mm side margins and measured variable height; do not fit
   to A4 or choose a label form. Validate the driver's actual paper-length behavior.
-- Verify large provisional warnings at both ends; long English/Sinhala names,
+- Verify the legible provisional qualification under INVOICE; long English/Sinhala names,
   quantities/unit prices, discounts/tax, verified totals, balance, cash/change and
   footer are readable and unclipped. Check actual paper/cut/feed, not just preview.
 - Keep the normal receipt driver's Cash Drawer=None. Driver cashbox pulses are
@@ -164,3 +166,6 @@ WhatsApp Sales Orders remain operational.
 
 No live Shopify API, production financial operation, old-test cleanup, deployment,
 Railway variable or physical printer command was used during verification.
+
+
+The customer presentation above is updated by [Receipt branding Phase 1](pos-receipt-branding-phase1.md). Internal issuance timestamps, evidence, revision and reprint audits are preserved. Detailed printer alignment remains deferred.

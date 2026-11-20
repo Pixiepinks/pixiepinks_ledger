@@ -2,6 +2,7 @@
 from datetime import datetime
 from decimal import Decimal
 from math import ceil
+from pathlib import Path
 from fastapi import HTTPException
 from models import SalesOrder, SalesPayment
 from pos_models import POSAudit, POSRefund, POSOperation
@@ -11,6 +12,9 @@ import pos_service as service
 TEST_REFERENCES={'POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA'}
 STATES={'AWAITING_PAYMENT','PAYMENT_READY','QUEUED','REVIEW','UNCERTAIN','CONFLICT'}
 EVENTS={'PROVISIONAL_ISSUED','PROVISIONAL_REPRINTED','PROVISIONAL_UPDATED'}
+LOGO=Path(__file__).parent/'static'/'images'/'login_logo.png'
+CONTACTS=('Address: 213/5, Magammana, Homagama','info@pixiepinks.shop','0705755777','www.pixiepinks.shop')
+PAYMENT_LABELS={'CASH':'Cash','CARD_PAYMENT':'Card Payment','BANK_TRANSFER':'Bank Transfer'}
 
 
 def require(condition,message):
@@ -50,21 +54,23 @@ def evidence(db,sale):
 class ProvisionalLayout(ReceiptLayout):
     def draw_acknowledgement(self,sale,meta,paid,total,balance):
         f=sale.frozen;q=f['quote'];policy=f['policy']
-        self.pdf.set_title('Provisional payment acknowledgement — NOT FINALIZED')
-        self.text('PixiePinks',17,'C')
-        self.text('PROVISIONAL PAYMENT ACKNOWLEDGEMENT',11,'C')
-        self.text('NOT FINALIZED / NOT SHOPIFY VERIFIED',10,'C')
-        self.text('NOT A TAX INVOICE',10,'C')
-        if meta['duplicate']:self.text('DUPLICATE / REPRINT',10,'C')
-        if meta['revision']>1:self.text('Updated payment evidence — revision '+str(meta['revision']),9,'C')
-        if policy.get('shop_contact'):self.text(policy['shop_contact'],8,'C')
-        self.rule();self.text('Acknowledgement: '+meta['document_id'],8)
-        self.text('Original POS reference: '+sale.reference,9)
-        self.text('First issued: '+local_time(meta['first_issued_at']),8)
-        self.text('This copy issued: '+local_time(meta['issued_at']),8)
+        self.pdf.set_title('PixiePinks invoice — provisional, final confirmation pending')
+        if LOGO.is_file():
+            try:
+                y=self.pdf.get_y()
+                self.pdf.image(str(LOGO),x=(self.pdf.w-32)/2,y=y,w=32,h=32,keep_aspect_ratio=True)
+                self.pdf.set_y(y+33)
+            except (OSError,ValueError):self.text('PixiePinks',17,'C')
+        else:self.text('PixiePinks',17,'C')
+        for contact in CONTACTS:self.text(contact,8,'C')
+        self.text('INVOICE',15,'C')
+        self.text('PROVISIONAL — FINAL CONFIRMATION PENDING',8,'C')
+        if meta['duplicate'] or meta['revision']>1:self.text('COPY / REPRINT',8,'C')
+        self.rule()
         self.text('Sale recorded: '+local_time(sale.created_at),8)
         self.text('Cashier: '+f['cashier'],8)
-        if f.get('customer_name'):self.text('Customer: '+f['customer_name'],8)
+        self.text('Customer: '+(f.get('customer_name') or 'Walk-in Customer'),8)
+        self.text('Invoice No: '+sale.reference,9)
         self.rule();self.text('ITEM / QTY × UNIT PRICE',8);self.text('All amounts in LKR',7,'R')
         for line in q['lines']:
             self.text(line['title'],9.5)
@@ -85,9 +91,17 @@ class ProvisionalLayout(ReceiptLayout):
         self.pair('Verified received LKR',lkr(total),11)
         self.pair('Remaining balance LKR',lkr(balance),10)
         if balance:self.text('Pending/unverified tender claims are NOT acknowledged as received.',8)
-        self.rule();self.text('Shopify completion and final receipt remain pending. This document does not confirm a completed sale, fulfillment, stock update or accounting posting.',9)
-        self.text('Keep the original POS reference. Do not pay or create the sale again to obtain the final receipt.',8)
-        self.rule();self.text('PROVISIONAL — NOT FINALIZED',10,'C');self.text('NOT SHOPIFY VERIFIED / NOT A TAX INVOICE',8,'C')
+        self.rule()
+        methods=list(dict.fromkeys(PAYMENT_LABELS[payment['method']] for payment in paid))
+        self.text('Mode of Payment: '+('Mixed — ' if len(methods)>1 else '')+' / '.join(methods),9)
+        self.text('No of Item sold: '+str(sum(line['quantity'] for line in q['lines'])),9)
+        self.rule()
+        self.text('Items in Original Condition can be Exchanged',8,'C')
+        self.text('within 3 days along with the receipt.',8,'C')
+        self.text('All purchases are non-refundable.',8,'C')
+        self.text('No cash refund.',8,'C')
+        self.rule();self.text('Thank you for shopping @ Pixiepinks',9,'C')
+        self.rule();self.text('Powered by PRYAMO',8,'C');self.text('0703322111',8,'C')
         return self.pdf.get_y()+5
 
 

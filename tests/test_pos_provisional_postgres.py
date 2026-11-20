@@ -16,7 +16,7 @@ def test_concurrent_provisional_issuance_is_one_original_and_one_reprint(pg,monk
         barrier.wait()
         with r.sessions() as db:return provisional.generate(db,db.get(User,r.uid),rid,True)
     with ThreadPoolExecutor(2) as pool:outputs=list(pool.map(issue,range(2)))
-    assert sum('DUPLICATE / REPRINT' in text(raw) for raw in outputs)==1
+    assert sum('COPY / REPRINT' in text(raw) for raw in outputs)==1
     with r.sessions() as db:
         records=db.query(POSAudit).filter(POSAudit.action.in_(provisional.EVENTS)).all()
         assert len(records)==2 and {row.action for row in records}=={'PROVISIONAL_ISSUED','PROVISIONAL_REPRINTED'}
