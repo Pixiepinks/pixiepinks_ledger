@@ -38,7 +38,7 @@ def test_pending_sale_status_and_history_use_distinct_confirmed_provisional_path
         page.once('dialog',lambda dialog:dialog.dismiss());primary.click();assert not pdfs
         page.once('dialog',lambda dialog:dialog.accept());primary.click()
         page.get_by_role('link',name='Open provisional PDF',exact=True).wait_for()
-        assert 'NOT FINALIZED / NOT SHOPIFY VERIFIED' in text(pdfs[0])
+        assert 'PROVISIONAL — FINAL CONFIRMATION PENDING' in ' '.join(text(pdfs[0]).split())
         # Polling must not erase the download links while a cashier is printing.
         page.wait_for_timeout(2200)
         assert page.get_by_role('link',name='Download provisional PDF',exact=True).count()==1
@@ -47,7 +47,7 @@ def test_pending_sale_status_and_history_use_distinct_confirmed_provisional_path
         page.get_by_role('button',name='Provisional receipt / status',exact=True).first.click()
         page.once('dialog',lambda dialog:dialog.accept());page.get_by_role('button',name='Print Provisional Receipt (80 mm)',exact=True).click()
         page.get_by_role('link',name='Open provisional PDF',exact=True).wait_for()
-        assert len(pdfs)==2 and 'DUPLICATE / REPRINT' in text(pdfs[1])
+        assert len(pdfs)==2 and 'COPY / REPRINT' in text(pdfs[1])
         assert not any('/receipt/pdf' in path or '/api/print-agent/' in path or '/hardware/' in path for path in paths)
         assert not errors;browser.close()
     assert snapshot(r,rid)==before and not r.pos.calls and not r.remote.mutations

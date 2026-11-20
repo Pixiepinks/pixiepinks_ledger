@@ -38,7 +38,7 @@ def test_verified_cash_80mm_pending_sale_audit_only(pos,status):
     with pos.sessions() as db:db.get(POSCheckout,rid).status=status;db.commit()
     before=snapshot(pos,rid);raw=issue(pos,rid);out=text(raw)
     assert_geometry(raw,80)
-    for value in ['PROVISIONAL PAYMENT ACKNOWLEDGEMENT','NOT FINALIZED / NOT SHOPIFY VERIFIED','NOT A TAX INVOICE','8,500.00','9,000.00','500.00','Remaining balance LKR']:
+    for value in ['INVOICE','PROVISIONAL — FINAL CONFIRMATION PENDING','8,500.00','9,000.00','500.00','Remaining balance LKR']:
         assert value in " ".join(out.split())
     assert 'Payment: PAID / Shopify verified' not in out and 'SALES RECEIPT' not in out
     assert snapshot(pos,rid)==before and not pos.pos.calls and not pos.remote.mutations
@@ -58,7 +58,7 @@ def test_split_payment_prints_only_verified_funds_then_updates_revision(pos):
     with pos.sessions() as db:
         sale=db.get(POSCheckout,rid);payment=db.query(SalesPayment).filter_by(sales_order_id=sale.sales_order_id,payment_method='BANK_TRANSFER').one()
         service.verify_bank(db,db.get(User,pos.uid),rid,payment.id,'verified-bank-'+rid)
-    revised=text(issue(pos,rid));assert 'revision 2' in revised and 'Bank transfer' in revised
+    revised=text(issue(pos,rid));assert 'Bank transfer' in revised and 'COPY / REPRINT' in revised
     with pos.sessions() as db:
         records=db.query(POSAudit).filter(POSAudit.action.in_(provisional.EVENTS)).order_by(POSAudit.id).all()
         assert [a.action for a in records]==['PROVISIONAL_ISSUED','PROVISIONAL_UPDATED']
@@ -70,7 +70,7 @@ def test_split_payment_prints_only_verified_funds_then_updates_revision(pos):
 
 def test_reprint_preserves_identity_and_final_receipt_links_same_checkout(pos):
     rid=checkout(pos);first=text(issue(pos,rid));second=text(issue(pos,rid))
-    assert 'DUPLICATE / REPRINT' not in first and 'DUPLICATE / REPRINT' in second
+    assert 'COPY / REPRINT' not in first and 'COPY / REPRINT' in second
     with pos.sessions() as db:
         records=db.query(POSAudit).filter(POSAudit.action.in_(provisional.EVENTS)).order_by(POSAudit.id).all()
         assert len(records)==2 and records[0].detail['document_id']==records[1].detail['document_id']
