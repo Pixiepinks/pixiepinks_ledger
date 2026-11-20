@@ -80,7 +80,7 @@ Compact 15 mm labels combine product/variant text and hide brand/SKU/price by de
 
 Choose **30x15 Compact — SKU & Price** in the Label profile dropdown (API preset ID `30x15-compact-sku-price`). This is a separate preset; existing 30×15 and other saved profiles retain their layouts.
 
-It prints exactly: one product-name line (5 pt), a Code 128 graphic (5 mm high), `barcode | SKU: value` together on one line (4.5 pt), then the variant selling price in `Rs. 1,500.00` format on a separate bottom line (5 pt). Brand and variant lines are hidden. The default margin is 0.625 mm, adjustable between 0.5 and 0.75 mm subject to physical printing validation. Modules remain at least two 203-dpi dots with ten-module quiet zones.
+It prints exactly: one product-name line (5 pt), a Code 128 graphic (5 mm high), `barcode | SKU: value` together on one line (4.5 pt), then the variant selling price in `Rs. 1,500.00` format on a separate bottom line (adaptive Noto Sans Bold, largest safe size; name remains 5 pt). Brand and variant lines are hidden. The default margin is 0.625 mm, adjustable between 0.5 and 0.75 mm subject to physical printing validation. Modules remain at least two 203-dpi dots with ten-module quiet zones.
 
 Product names may be shortened with an ellipsis without splitting combining marks/conjuncts. Barcode values, SKUs and prices are never shortened or scaled down. An SKU and a valid LKR variant selling price are required. SKU priority remains the existing Shopify SKU, then an assigned local SKU if Shopify has none. The price comes from the selected variant's selling price, not compare-at price or another variant; missing/non-LKR currency is rejected rather than assumed. All selected rows are checked for fit before preview/queueing, including rows beyond the five-label preview.
 
@@ -171,3 +171,6 @@ Samples in `docs/samples` contain non-production identifiers. Digital decoding d
 ### Shared supplier barcode lookup
 
 On Product Master, scan into **Scan supplier or local barcode** and press Enter (or Find variant). Exact Shopify and local barcode matches are shown independently of list filters. Choose the physical colour / size using its variant title, options, SKU and price. No match is selected automatically, even if only one exists. Shared codes across different products also require an explicit choice. Results are paginated; inactive or missing variants are visible but cannot be selected. A choice adds its variant record ID to checked products; use the existing selection/printing actions to continue. Clear any frozen selection first. This does not approve duplicate identifiers, change barcode assignments, update Shopify, or bypass existing print validation. Leading zeros remain intact.
+
+
+[Compact price enlargement](compact-label-prominent-price.md) documents the 30×15 Compact price-only change and before/after sample; all other profile rendering remains unchanged.
