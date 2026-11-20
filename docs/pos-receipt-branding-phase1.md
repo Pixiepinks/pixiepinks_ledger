@@ -1,5 +1,7 @@
 # Receipt content and branding — Phase 1
 
+Historical Phase 1 design: [Phase 2](receipt-phase2-layout-printing.md) retains this wording while updating geometry and defaulting to a monochrome derivative. The original color asset and fallback remain unchanged.
+
 Presentation-only update to the provisional customer PDF. Detailed column alignment,
 clipping, printable-width calibration and Windows driver changes are explicitly
 out of scope and deferred to Phase 2. Existing 80 mm page construction, margins,
