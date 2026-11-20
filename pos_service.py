@@ -14,6 +14,7 @@ import inventory_service as inventory
 import pos_shopify as remote
 import pos_money as calc
 import sales_payment_service as payments
+from pos_failure_codes import failure_code,sanitized
 
 PERMISSIONS=['drawer.open','view','sell','discount','hold','refund','void','register_open','register_close','reports','admin']
 ZERO={'type':'FIXED','value':'0.00'}
@@ -389,7 +390,10 @@ def dispatch_one(sessions,client=None):
         locked(db)
         running=db.query(POSOperation).filter(POSOperation.shop==retail.shop(),POSOperation.status=='DISPATCHING').first()
         if running and running.dispatched_at<datetime.utcnow()-timedelta(minutes=2):
-            running.status='UNCERTAIN';running.error='WORKER_INTERRUPTED';audit(db,None,running.id,'WORKER_INTERRUPTED');db.commit();return True
+            running.status='UNCERTAIN';running.error='WORKER_INTERRUPTED'
+            interrupted=db.get(POSCheckout,running.checkout_id)
+            if interrupted and interrupted.status=='QUEUED':interrupted.status='UNCERTAIN'
+            audit(db,None,running.id,'WORKER_INTERRUPTED');db.commit();return True
         if db.query(POSOperation).filter(POSOperation.shop==retail.shop(),POSOperation.status.in_(['DISPATCHING','UNCERTAIN','REVIEW'])).first():return False
         op=db.query(POSOperation).filter_by(shop=retail.shop(),status='QUEUED').order_by(POSOperation.updated_at).first()
         if not op:return False
@@ -430,14 +434,19 @@ def dispatch_one(sessions,client=None):
     with sessions() as db:
         locked(db);op=db.get(POSOperation,opid);r=db.get(POSCheckout,rid)
         op.outcome={'remote_id':remote_id};audit(db,None,op.id,'REMOTE_RETURNED',remote_id=remote_id)
+        stage='SHOPIFY_READBACK' if kind=='CREATE' else 'REFUND_VERIFICATION'
         try:
             with db.begin_nested():
                 if kind=='CREATE':
-                    observed=verify_order(r,api.read(remote_id));op.outcome={'remote_id':remote_id,'order':observed};publish_sale(db,r,observed)
+                    order=api.read(remote_id);stage='ORDER_VERIFICATION'
+                    observed=verify_order(r,order);op.outcome={'remote_id':remote_id,'order':observed}
+                    stage='LOCAL_POSTING';publish_sale(db,r,observed)
                 else:finish_refund(db,r,op,api,remote_id)
-                op.status='VERIFIED';op.updated_at=datetime.utcnow()
+                stage='LOCAL_FLUSH';op.status='VERIFIED';op.updated_at=datetime.utcnow()
                 db.flush()
-        except Exception:op.status='REVIEW';op.error='READBACK_OR_POSTING_UNAVAILABLE';r.status='REVIEW';audit(db,None,op.id,'READBACK_REVIEW')
+        except Exception as exc:
+            op.status='REVIEW';op.error='READBACK_OR_POSTING_UNAVAILABLE';r.status='REVIEW'
+            audit(db,None,op.id,'READBACK_REVIEW',stage=stage,failure_code=failure_code(stage,exc))
         db.commit()
     return True
 
@@ -446,20 +455,33 @@ def reconcile(db,user,operation_id,notes,client=None):
     require(user,'admin',True);locked(db);op=db.query(POSOperation).filter_by(shop=retail.shop(),id=operation_id).with_for_update().one_or_none()
     if not op or op.status not in {'UNCERTAIN','REVIEW','CONFLICT'}:raise HTTPException(409,'Operation does not need read-only reconciliation')
     r=db.get(POSCheckout,op.checkout_id);api=client or remote.client;notes=inventory.text(notes,1000,True)
-    if op.kind=='CREATE':
-        found=api.find(r.reference)
-        if len(found)!=1:raise HTTPException(409,'Exactly one authoritative matching order required; zero matches never permit a blind retry')
-        observed=verify_order(r,api.read(found[0]['id']));op.outcome={'remote_id':observed['id'],'order':observed};publish_sale(db,r,observed)
-    else:
-        known=(op.outcome or {}).get('remote_id')
-        if not known:
-            order=db.get(SalesOrder,r.sales_order_id);evidence=api.read(order.shopify_order_id)
-            if not evidence or evidence.get('id')!=order.shopify_order_id or evidence.get('sourceIdentifier')!=r.reference:raise HTTPException(409,'Refund order identity unavailable')
-            matches=[f for f in evidence.get('refunds',[]) if (f.get('note') or '').startswith('PixiePinks POS refund '+op.id+' ')]
-            if len(matches)!=1:raise HTTPException(409,'Exactly one source-correlated Shopify refund is required; no automatic resend')
-            known=matches[0]['id']
-        finish_refund(db,r,op,api,known)
-    op.status='VERIFIED';op.error=None;audit(db,user,op.id,'RECONCILED_READ_ONLY',notes=notes);db.commit();return r
+    stage='SHOPIFY_SEARCH' if op.kind=='CREATE' else 'REFUND_VERIFICATION'
+    try:
+        with db.begin_nested():
+            if op.kind=='CREATE':
+                found=api.find(r.reference)
+                if len(found)!=1:raise HTTPException(409,'Exactly one authoritative matching order required; zero matches never permit a blind retry')
+                stage='SHOPIFY_READBACK';order=api.read(found[0]['id'])
+                stage='ORDER_VERIFICATION';observed=verify_order(r,order)
+                op.outcome={'remote_id':observed['id'],'order':observed}
+                stage='LOCAL_POSTING';publish_sale(db,r,observed)
+            else:
+                known=(op.outcome or {}).get('remote_id')
+                if not known:
+                    order=db.get(SalesOrder,r.sales_order_id);evidence=api.read(order.shopify_order_id)
+                    if not evidence or evidence.get('id')!=order.shopify_order_id or evidence.get('sourceIdentifier')!=r.reference:raise HTTPException(409,'Refund order identity unavailable')
+                    matches=[f for f in evidence.get('refunds',[]) if (f.get('note') or '').startswith('PixiePinks POS refund '+op.id+' ')]
+                    if len(matches)!=1:raise HTTPException(409,'Exactly one source-correlated Shopify refund is required; no automatic resend')
+                    known=matches[0]['id']
+                finish_refund(db,r,op,api,known)
+            stage='LOCAL_FLUSH';op.status='VERIFIED';op.error=None
+            audit(db,user,op.id,'RECONCILED_READ_ONLY',notes=notes);db.flush()
+    except Exception as exc:
+        code=failure_code(stage,exc)
+        audit(db,user,op.id,'READBACK_REVIEW',stage=stage,failure_code=code)
+        db.commit()
+        raise HTTPException(409,'Reconciliation not finalized: '+stage+' / '+code+'. No CREATE/refund was resent; inspect the existing order and local posting evidence.') from None
+    db.commit();return r
 
 
 def cancel_checkout(db,user,checkout_id,notes):
@@ -572,12 +594,17 @@ def confirm_payout(db,user,refund_id,reference):
     refund.status='PAID_OUT';refund.payout_at=datetime.utcnow();audit(db,user,refund.id,'REFUND_PAYOUT_CONFIRMED',reference=reference,journal_id=journal,method=method);db.commit();return refund
 
 
+def operation_view(db,op):
+    latest=db.query(POSAudit).filter_by(shop=op.shop,reference=op.id,action='READBACK_REVIEW').order_by(POSAudit.id.desc()).first()
+    return {'id':op.id,'kind':op.kind,'status':op.status,'attempts':op.attempts,'error':op.error,'outcome':op.outcome,'diagnostic':sanitized(latest.detail) if latest else None}
+
+
 def public_sale(db,r):
     order=db.get(SalesOrder,r.sales_order_id)
     return {'id':r.id,'reference':r.reference,'status':r.status,'frozen':r.frozen,'created_at':r.created_at.isoformat()+'Z','completed_at':r.completed_at.isoformat()+'Z' if r.completed_at else None,
         'shopify_order_id':order.shopify_order_id,'shopify_order_name':order.shopify_order_name,
         'payments':[{'id':p.id,'method':p.payment_method,'amount':str(p.amount),'status':p.verification_status,'reference':p.payment_reference} for p in db.query(SalesPayment).filter_by(sales_order_id=order.id)],
-        'operations':[{'id':o.id,'kind':o.kind,'status':o.status,'attempts':o.attempts,'error':o.error,'outcome':o.outcome} for o in db.query(POSOperation).filter_by(checkout_id=r.id)],
+        'operations':[operation_view(db,o) for o in db.query(POSOperation).filter_by(checkout_id=r.id)],
         'refunds':[{'id':f.id,'status':f.status,'plan':f.plan} for f in db.query(POSRefund).filter_by(checkout_id=r.id)]}
 
 
