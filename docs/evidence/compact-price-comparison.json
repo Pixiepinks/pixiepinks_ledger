@@ -1,0 +1,58 @@
+[
+  {
+    "page": 1,
+    "mode": "Before",
+    "price": "350.00",
+    "font_pt": 5,
+    "price_bold": false
+  },
+  {
+    "page": 2,
+    "mode": "After",
+    "price": "350.00",
+    "font_pt": 12.82,
+    "price_bold": true
+  },
+  {
+    "page": 3,
+    "mode": "Before",
+    "price": "1860.00",
+    "font_pt": 5,
+    "price_bold": false
+  },
+  {
+    "page": 4,
+    "mode": "After",
+    "price": "1860.00",
+    "font_pt": 10.86,
+    "price_bold": true
+  },
+  {
+    "page": 5,
+    "mode": "Before",
+    "price": "15500.00",
+    "font_pt": 5,
+    "price_bold": false
+  },
+  {
+    "page": 6,
+    "mode": "After",
+    "price": "15500.00",
+    "font_pt": 10.86,
+    "price_bold": true
+  },
+  {
+    "page": 7,
+    "mode": "Before",
+    "price": "125000.00",
+    "font_pt": 5,
+    "price_bold": false
+  },
+  {
+    "page": 8,
+    "mode": "After",
+    "price": "125000.00",
+    "font_pt": 10.86,
+    "price_bold": true
+  }
+]

@@ -5,6 +5,9 @@ import unicodedata
 from datetime import datetime,timedelta
 from pathlib import Path
 from math import floor
+from functools import lru_cache
+from fontTools.ttLib import TTFont
+from fontTools.pens.boundsPen import BoundsPen
 import hashlib
 import os
 import secrets
@@ -61,7 +64,7 @@ def validate_config(config):
     if is_compact(config):
         fixed={'width_mm':30,'height_mm':15,'font_pt':5,'barcode_height_mm':5,'show_brand':False,'show_variant':False,'show_sku':True,'show_price':True}
         if any(config[key]!=value for key,value in fixed.items()) or not .5<=config['margin_mm']<=.75:
-            raise HTTPException(422,'30x15 Compact — SKU & Price requires 30×15 mm, 5 pt name/price, 5 mm barcode, SKU/price visible, no brand/variant line and 0.5–0.75 mm margins')
+            raise HTTPException(422,'30x15 Compact — SKU & Price requires 30×15 mm, 5 pt name, adaptive bold price, 5 mm barcode, SKU/price visible, no brand/variant line and 0.5–0.75 mm margins')
     return dict(config)
 
 
@@ -89,11 +92,63 @@ def symbol_geometry(value,config):
         raise HTTPException(422,f'Barcode {value} cannot fit this label at 203 dpi with 2+ dot modules and quiet zones. Choose a larger label; assigned values are never shortened.')
     return bits,module,width
 
+def add_compact_price_font(pdf,config):
+    if is_compact(config):pdf.add_font('NotoPrice',fname=str(FONT_DIR/'NotoSans-Bold.ttf'))
+
+
+@lru_cache(maxsize=1)
+def price_font_metrics():
+    # Per-character ink bounds, not an oversized generic font line box.
+    with TTFont(FONT_DIR/'NotoSans-Bold.ttf') as font:
+        glyphs=font.getGlyphSet();cmap=font.getBestCmap();bounds={}
+        for char in 'Rs. 0123456789,':
+            pen=BoundsPen(glyphs);glyphs[cmap[ord(char)]].draw(pen)
+            if pen.bounds:bounds[char]=pen.bounds
+        return font['head'].unitsPerEm,bounds
+
+
+@dataclass(frozen=True)
+class CompactPrice:
+    font_pt:float
+    baseline:float
+    width:float
+    ink_top:float
+    ink_bottom:float
+
+
+def compact_price_plan(pdf,text,config,y=0):
+    margin=config['margin_mm']
+    name_height=5*.352778*1.2;id_height=4.5*.352778*1.2
+    barcode_y=round((y+margin+name_height+.5)/DOT)*DOT
+    top=barcode_y+5+.45+id_height+2*DOT
+    bottom=y+15-margin-DOT
+    units,bounds=price_font_metrics()
+    ascent=max(bounds[c][3] for c in text if c in bounds)
+    descent=min(bounds[c][1] for c in text if c in bounds)
+    usable=config['width_mm']-2*margin-2*DOT
+    pdf.set_font('NotoPrice',size=10);pdf.set_text_shaping(False)
+    try:
+        width_at_ten=pdf.get_string_width(text)
+        maximum=min((bottom-top)*72/25.4*units/(ascent-descent),10*usable/width_at_ten)
+        # Whole 1/100 pt candidates; baseline must lie on the 203-dpi dot grid.
+        candidate=floor(maximum*100)/100
+        while candidate>=5:
+            scale=candidate*25.4/72/units
+            baseline=floor((bottom+descent*scale)/DOT)*DOT
+            ink_top=baseline-ascent*scale;ink_bottom=baseline-descent*scale
+            if ink_top>=top-1e-8 and ink_bottom<=bottom+1e-8:
+                return CompactPrice(candidate,baseline,width_at_ten*candidate/10,ink_top,ink_bottom)
+            candidate=round(candidate-.01,2)
+        raise HTTPException(422,'Selling price cannot fit safely at 5 pt or larger on 30×15 mm; use a larger profile')
+    finally:pdf.set_text_shaping(True)
+
+
 def label_pdf(config):
     pdf=FPDF(unit='mm',format=(30,15))
     pdf.set_auto_page_break(False);pdf.set_margins(0,0,0)
     pdf.add_font('Noto',fname=str(FONT_DIR/'NotoSans-Regular.ttf'))
     pdf.add_font('Sinhala',fname=str(FONT_DIR/'NotoSansSinhala-Regular.ttf'))
+    add_compact_price_font(pdf,config)
     pdf.set_font('Noto',size=config['font_pt']);pdf.set_fallback_fonts(['Sinhala']);pdf.set_text_shaping(True)
     return pdf
 
@@ -132,19 +187,17 @@ def compact_plan(pdf,label,config):
     if pdf.get_string_width(identifier)>usable:
         raise HTTPException(422,'Barcode number and SKU cannot fit together at 4.5 pt on 30×15 mm. Use a larger profile; identifiers are never truncated.')
     price_text=f'Rs. {price:,.2f}'
-    pdf.set_font('Noto',size=5)
-    if pdf.get_string_width(price_text)>usable:raise HTTPException(422,'Selling price cannot fit at 5 pt on 30×15 mm; use a larger profile')
+    compact_price_plan(pdf,price_text,config)
     return name,identifier,price_text,bits,module,width
 
 
 def draw_compact(pdf,label,config,x,y):
     name,identifier,price,bits,module,width=compact_plan(pdf,label,config)
     margin=config['margin_mm'];usable=config['width_mm']-2*margin
-    name_height=5*.352778*1.2;id_height=4.5*.352778*1.2;price_height=name_height
+    name_height=5*.352778*1.2;id_height=4.5*.352778*1.2
     barcode_y=round((y+margin+name_height+.5)/DOT)*DOT
     identifier_y=barcode_y+5+.45
-    price_y=y+15-margin-price_height
-    if identifier_y+id_height>price_y-.2:raise HTTPException(422,'Required compact label fields would overlap; review margins and calibration')
+    price_layout=compact_price_plan(pdf,price,config,y)
     def cell(value,size,top,height):
         pdf.set_font('Noto',size=size);pdf.set_xy(x+margin,top);pdf.cell(w=usable,h=height,text=value,align='C')
     cell(name,5,y+margin,name_height)
@@ -156,7 +209,9 @@ def draw_compact(pdf,label,config,x,y):
         while end<len(bits) and bits[end]=='1':end+=1
         pdf.rect(left+index*module,barcode_y,(end-index)*module,5,style='F');index=end
     cell(identifier,4.5,identifier_y,id_height)
-    cell(price,5,price_y,price_height)
+    pdf.set_font('NotoPrice',size=price_layout.font_pt);pdf.set_text_shaping(False)
+    try:pdf.text(x+(config['width_mm']-price_layout.width)/2,price_layout.baseline,price)
+    finally:pdf.set_text_shaping(True)
 
 
 def validate_rows(rows,config):
@@ -174,6 +229,7 @@ class PDFBackend:
         rows=max(1,floor((pageheight+c['gap_mm'])/(h+c['gap_mm']))) if c['layout']=='a4' else 1
         pdf=FPDF(unit='mm',format=(pagewidth,pageheight));pdf.set_auto_page_break(False);pdf.set_margins(0,0,0)
         pdf.add_font('Noto',fname=str(FONT_DIR/'NotoSans-Regular.ttf'));pdf.add_font('Sinhala',fname=str(FONT_DIR/'NotoSansSinhala-Regular.ttf'))
+        add_compact_price_font(pdf,c)
         pdf.set_font('Noto',size=c['font_pt']);pdf.set_fallback_fonts(['Sinhala']);pdf.set_text_shaping(True)
         pdf.set_title('PixiePinks Code 128 labels — document generated, not physically printed')
         count=0

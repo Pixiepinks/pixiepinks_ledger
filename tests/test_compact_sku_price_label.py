@@ -37,7 +37,7 @@ def test_pdf_dimensions_content_font_sizes_order_and_bar_geometry():
     by_text={value:(size,y) for value,size,y in pieces}
     assert by_text['Magical Kids Water Book'][0]==5
     assert by_text['P2 | SKU: 1001150'][0]==4.5
-    assert by_text['Rs. 1,500.00'][0]==5
+    assert by_text['Rs. 1,500.00'][0]>10
     bars=[]
     for operands,op in ContentStream(page.get_contents(),reader).operations:
         if op==b're':bars.append([float(v)*25.4/72 for v in operands])
