@@ -1254,3 +1254,7 @@ See [architecture/release](docs/retail-phase4f-hardware.md),
 [implementation report](docs/phase4f-implementation-report.md).
 Migration `20261120_48` is additive. Windows packaging/signing and physical acceptance
 remain required; no installer, deployment or live drawer action is claimed.
+
+### Print Agent HTTPS proxy verification
+
+Railway TLS termination requires explicitly approved proxy peers for the native agent API. See [trusted-proxy deployment, verification and rollback](docs/print-agent-trusted-proxy.md). The Procfile disables automatic Uvicorn forwarded-header rewriting; new exact-peer/public-origin settings default empty and fail closed. This does not activate printing or cash-drawer automation.

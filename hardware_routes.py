@@ -7,6 +7,7 @@ from hardware_models import PrintDevice,HardwareJob,HardwareEvent
 from pos_models import POSSession
 from settings import settings
 import hardware_service as s
+from print_agent_security import require_native_https
 
 
 def build_router(get_db,require_user,csrf):
@@ -25,7 +26,7 @@ def build_router(get_db,require_user,csrf):
         if user.role=='ADMIN' or 'pos.admin' in (user.section_access or []):return
         if not db.query(POSSession).filter_by(register_id=d.register_id,cashier_id=user.id,status='OPEN',shop=d.shop).first():raise HTTPException(403,'This device belongs to another register session')
     def native(request,db):
-        if request.url.scheme!='https' or request.headers.get('origin'):raise HTTPException(403,'Native agent over TLS required')
+        require_native_https(request)
         identity=hmac.new(settings.SECRET_KEY.encode(),('agent:'+str(request.client.host if request.client else '')).encode(),hashlib.sha256).hexdigest()
         s.throttle(db,identity,240)
         d=s.authenticate(db,request.headers.get('authorization',''));s.pos.locked(db);return d
@@ -94,7 +95,7 @@ def build_router(get_db,require_user,csrf):
     @router.post('/api/print-agent/pair')
     async def pairing(request:Request,db=Depends(get_db)):
         if not s.enabled():raise HTTPException(404,'Hardware disabled')
-        if request.url.scheme!='https' or request.headers.get('origin'):raise HTTPException(403,'Native TLS pairing required')
+        require_native_https(request)
         p=await body(request,['code'],False)
         if not isinstance(p['code'],str) or len(p['code'])>150:raise HTTPException(422,'Pairing code required')
         identity=hmac.new(settings.SECRET_KEY.encode(),str(request.client.host if request.client else '').encode(),hashlib.sha256).hexdigest();s.throttle(db,'pair:'+identity)
