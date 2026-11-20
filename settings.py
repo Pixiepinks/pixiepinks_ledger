@@ -14,7 +14,9 @@ class Settings(BaseSettings):
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-    # Empty by default: operator-approved, exact immediate TLS-proxy socket IPs.
+    # Enable only AFTER exclusive ingress isolation and edge sanitation are verified.
+    PRINT_AGENT_RAILWAY_ISOLATED_INGRESS_ENABLED: bool = False
+    # Legacy exact-peer policy for other deployments with verifiable proxy IPs.
     PRINT_AGENT_TRUSTED_PROXY_IPS: str = ""
     PRINT_AGENT_PUBLIC_ORIGIN: str = ""
     POS_LOCAL_PRINT_ENABLED: bool = False
