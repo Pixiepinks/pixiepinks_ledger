@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+    POS_LOCAL_PRINT_ENABLED: bool = False
+    POS_CASH_DRAWER_AUTOMATION_ENABLED: bool = False
+    RETAIL_HARDWARE_LABEL_PRINT_ENABLED: bool = False
     POS_ENABLED: bool = False
     POS_CHECKOUT_WRITE_ENABLED: bool = False
     POS_REFUND_WRITE_ENABLED: bool = False

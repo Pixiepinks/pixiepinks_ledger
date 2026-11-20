@@ -1223,3 +1223,5 @@ from inventory_models import (InventoryDocument, InventoryEvent, InventoryObserv
 
 from pos_models import (POSConfig, POSRegister, POSSession, POSCart, POSCheckout,
     POSOperation, POSRefund, POSCashMovement, POSAudit, POSPosting, POSCustomerBinding)
+
+from hardware_models import PrintDevice, HardwareJob, HardwareEvent, HardwareRate

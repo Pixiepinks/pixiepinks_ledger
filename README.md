@@ -1240,3 +1240,17 @@ and barcode writing. See the [administrator/cashier and release guide](docs/reta
 and [implementation/test report](docs/retail-phase4-pos-report.md). Live API and
 printer acceptance, accounting-policy review and release approval remain required;
 no automatic deployment or production transaction is authorized by this change.
+
+### Phase 4F — Windows local print companion (default off)
+
+Receipt/label printing and isolated vendor-driver cash-drawer control are downstream
+of the existing POS. One DBL USB printer has separate receipt/label queues; the
+Windows agent uses outbound TLS, DPAPI, a permanent action journal and shared media
+coordination. Automatic reprints never kick the drawer. All three hardware gates
+default false; existing checkout/refund/product/inventory gates are unchanged.
+See [architecture/release](docs/retail-phase4f-hardware.md),
+[Windows installation/offline recovery](docs/windows-print-agent-install.md),
+[physical acceptance](docs/phase4f-hardware-acceptance.md) and
+[implementation report](docs/phase4f-implementation-report.md).
+Migration `20261120_48` is additive. Windows packaging/signing and physical acceptance
+remain required; no installer, deployment or live drawer action is claimed.

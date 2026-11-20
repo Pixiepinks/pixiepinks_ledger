@@ -4688,6 +4688,8 @@ def _stop_collection_queue_worker():
 
 # Retail worker: independent operation gates; inventory writes additionally remain source-blocked.
 from retail_routes import build_router as build_retail_router
+from hardware_routes import build_router as build_hardware_router
+app.include_router(build_hardware_router(get_db,require_user,_require_csrf))
 from pos_routes import build_router as build_pos_router
 app.include_router(build_pos_router(get_db,require_user,_require_csrf,_csrf_token,templates))
 from inventory_routes import build_router as build_inventory_router
@@ -4699,7 +4701,7 @@ _retail_thread=None
 @app.on_event('startup')
 def _start_retail_worker():
     global _retail_thread
-    if not (settings.RETAIL_ENABLED or settings.POS_ENABLED):return
+    if not (settings.RETAIL_ENABLED or settings.POS_ENABLED or settings.POS_LOCAL_PRINT_ENABLED or settings.RETAIL_HARDWARE_LABEL_PRINT_ENABLED):return
     import retail_worker
     _retail_stop.clear()
     _retail_thread=threading.Thread(target=retail_worker.worker,args=(SessionLocal,_retail_stop),daemon=True,name='retail-jobs')

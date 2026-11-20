@@ -1,0 +1,6 @@
+# Windows-only companion. The Railway application does not install these dependencies.
+httpx==0.27.2
+pywin32==311; sys_platform == 'win32'
+pypdfium2==4.30.0
+Pillow==13.0.0
+fpdf2==2.8.5
