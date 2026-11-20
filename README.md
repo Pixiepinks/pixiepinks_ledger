@@ -1257,4 +1257,8 @@ remain required; no installer, deployment or live drawer action is claimed.
 
 ### Print Agent HTTPS proxy verification
 
-Railway TLS termination requires explicitly approved proxy peers for the native agent API. See [trusted-proxy deployment, verification and rollback](docs/print-agent-trusted-proxy.md). The Procfile disables automatic Uvicorn forwarded-header rewriting; new exact-peer/public-origin settings default empty and fail closed. This does not activate printing or cash-drawer automation.
+The earlier [exact-proxy policy](docs/print-agent-trusted-proxy.md) remains available only for deployments with verifiable exclusive proxy identities. Railway does not provide those identities for this installation; use the isolated-ingress plan below. The Procfile keeps automatic Uvicorn forwarded-header rewriting disabled. This does not activate printing or cash-drawer automation.
+
+### Railway isolated Print Agent ingress
+
+Railway does not provide the stable exclusive proxy identities required by the earlier IP policy. The selected [isolation-backed ingress plan](docs/print-agent-railway-ingress.md) preserves the current HTTPS address and current Python agent, without buying a code-signing certificate. Its new mode defaults off and **must not be enabled on the current shared private network**. Administrator-approved network isolation and edge sanitation are mandatory. The web entrypoint is now `railway_ingress:app`; no Uvicorn wildcard forwarding trust is introduced.

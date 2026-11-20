@@ -1,5 +1,7 @@
 # Windows Print Agent behind Railway HTTPS
 
+> Railway follow-up: the owner confirms stable exclusive edge IPs are unavailable. Do not populate this allowlist with guessed Railway addresses. Use the separately approved [isolated-ingress plan](print-agent-railway-ingress.md), which defaults off until real network isolation is established. The IP policy below remains only for other deployments with verifiable exact proxy identities.
+
 ## Diagnosis and scope
 
 The reported public HTTPS `/api/print-agent/config` response is a TLS-related 403. The pre-fix Procfile invokes Uvicorn 0.30.6 without explicit proxy configuration. Its `ProxyHeadersMiddleware` trusts `127.0.0.1` by default (or `FORWARDED_ALLOW_IPS` if configured). A Railway TLS-terminating edge forwards HTTP to the container from a different socket peer, so the default middleware leaves `request.url.scheme` as `http`; the native-agent guard rejects the request before authentication. The added regression reproduces that behavior with an HTTP hop, a non-loopback peer and `X-Forwarded-Proto: https`.
