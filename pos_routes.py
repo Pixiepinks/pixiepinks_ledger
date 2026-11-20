@@ -10,6 +10,7 @@ from pos_models import *
 import pos_service as service
 import pos_shopify as remote
 import pos_receipts
+import pos_provisional_receipts
 import retail_service as retail
 from settings import settings
 
@@ -186,6 +187,11 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.post('/api/sales/{rid}/receipt/pdf')
     async def receipt(rid:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
         p=await body(request,['profile','refund_id']);pdf=pos_receipts.generate(db,user,rid,p['profile'],p['refund_id']);return Response(pdf,media_type='application/pdf',headers={'Cache-Control':'private, no-store','Content-Disposition':'inline; filename="pixiepinks-receipt.pdf"'})
+    @router.post('/api/sales/{rid}/provisional/pdf')
+    async def provisional(rid:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        p=await body(request,['confirm_received'])
+        pdf=pos_provisional_receipts.generate(db,user,rid,p['confirm_received'])
+        return Response(pdf,media_type='application/pdf',headers={'Cache-Control':'private, no-store','Content-Disposition':'inline; filename="pixiepinks-provisional-80.pdf"'})
     @router.get('/api/sessions')
     def sessions(db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'reports');rows=db.query(POSSession).filter_by(shop=retail.shop()).order_by(POSSession.opened_at.desc()).limit(100)

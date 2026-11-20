@@ -600,8 +600,9 @@ def operation_view(db,op):
 
 
 def public_sale(db,r):
+    from pos_provisional_receipts import availability
     order=db.get(SalesOrder,r.sales_order_id)
-    return {'id':r.id,'reference':r.reference,'status':r.status,'frozen':r.frozen,'created_at':r.created_at.isoformat()+'Z','completed_at':r.completed_at.isoformat()+'Z' if r.completed_at else None,
+    return {'provisional_receipt':availability(db,r),'id':r.id,'reference':r.reference,'status':r.status,'frozen':r.frozen,'created_at':r.created_at.isoformat()+'Z','completed_at':r.completed_at.isoformat()+'Z' if r.completed_at else None,
         'shopify_order_id':order.shopify_order_id,'shopify_order_name':order.shopify_order_name,
         'payments':[{'id':p.id,'method':p.payment_method,'amount':str(p.amount),'status':p.verification_status,'reference':p.payment_reference} for p in db.query(SalesPayment).filter_by(sales_order_id=order.id)],
         'operations':[operation_view(db,o) for o in db.query(POSOperation).filter_by(checkout_id=r.id)],
