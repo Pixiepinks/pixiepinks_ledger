@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Legacy exact-peer policy for other deployments with verifiable proxy IPs.
     PRINT_AGENT_TRUSTED_PROXY_IPS: str = ""
     PRINT_AGENT_PUBLIC_ORIGIN: str = ""
+    # Pinned end-to-end application encryption; independent of forwarded TLS headers.
+    PRINT_CONNECTOR_ENCRYPTED_ENABLED: bool = False
+    PRINT_CONNECTOR_PRIVATE_KEY: str = Field("", repr=False)
     POS_LOCAL_PRINT_ENABLED: bool = False
     POS_CASH_DRAWER_AUTOMATION_ENABLED: bool = False
     RETAIL_HARDWARE_LABEL_PRINT_ENABLED: bool = False

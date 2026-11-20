@@ -16,7 +16,7 @@ import retail_service as retail
 import retail_labels
 from windows_print_agent.protocol import *
 
-DEFAULT={'receipt_queue':RECEIPT_QUEUE,'label_queue':LABEL_QUEUE,'drawer_queue':'','a4_queue':'','receipt_profile':'80','auto_receipts':False,'auto_cash_movements':False,'drawer_verified':False}
+DEFAULT={'receipt_queue':RECEIPT_QUEUE,'label_queue':LABEL_QUEUE,'drawer_queue':'','a4_queue':'','receipt_profile':'80','auto_receipts':False,'auto_cash_movements':False,'drawer_verified':False,'receipt_only':False,'printing_paused':False}
 
 
 def now():return datetime.utcnow()
@@ -38,10 +38,13 @@ def device(db,did):
     return d
 
 def validate_config(value):
-    if not isinstance(value,dict) or set(value)!=set(DEFAULT):raise HTTPException(422,'Complete device configuration required')
+    if not isinstance(value,dict) or not set(DEFAULT)-{'receipt_only','printing_paused'}<=set(value)<=set(DEFAULT):raise HTTPException(422,'Complete device configuration required')
+    value={**DEFAULT,**value}
+    if value['receipt_only'] is not False and value['receipt_only'] is not True:raise HTTPException(422,'Explicit receipt-only policy required')
+    if value['receipt_only'] and (value['receipt_profile']!='80' or value['drawer_queue'] or value['drawer_verified'] or value['auto_cash_movements'] or value['a4_queue']):raise HTTPException(422,'Receipt-only connector requires 80 mm and no drawer/A4 controls')
     if value['receipt_queue']!=RECEIPT_QUEUE or value['label_queue']!=LABEL_QUEUE:raise HTTPException(422,'Receipt and barcode queues must use their distinct approved profiles')
     if value['drawer_queue'] not in {'',DRAWER_QUEUE} or value['receipt_profile'] not in {'58','80'}:raise HTTPException(422,'Unknown printer profile')
-    for key in ['auto_receipts','auto_cash_movements','drawer_verified']:
+    for key in ['auto_receipts','auto_cash_movements','drawer_verified','printing_paused']:
         if type(value[key]) is not bool:raise HTTPException(422,'Explicit hardware policy required')
     a4=value['a4_queue']
     if not isinstance(a4,str) or len(a4)>150 or any(ord(c)<32 for c in a4) or a4 in {RECEIPT_QUEUE,LABEL_QUEUE,DRAWER_QUEUE}:raise HTTPException(422,'A4 requires a separate suitable printer queue')
@@ -65,12 +68,24 @@ def configure(db,user,did,value):
     if d.status=='REVOKED':raise HTTPException(409,'Revoked devices cannot be reactivated')
     expire_deliveries(db,d)
     if db.query(HardwareJob).filter(HardwareJob.device_id==d.id,HardwareJob.status.in_(['DELIVERED_TO_AGENT','UNKNOWN'])).first():raise HTTPException(409,'Resolve pending/uncertain hardware actions before reconfiguration')
-    d.config=validate_config(value);d.version+=1;d.media='UNKNOWN';d.mode_request=None;d.observation=None
+    value=validate_config(value)
+    if value.get('receipt_only') and value['auto_receipts'] and not d.config.get('auto_receipts'):
+        approved=db.query(HardwareJob).filter_by(device_id=d.id,device_version=d.version,kind='TEST',status='CONFIRMED',queue=RECEIPT_QUEUE).first()
+        if not settings.PRINT_CONNECTOR_ENCRYPTED_ENABLED or not settings.POS_LOCAL_PRINT_ENABLED or d.status!='ACTIVE' or not approved or not d.last_seen or d.last_seen<now()-timedelta(seconds=60) or d.media!='RECEIPT' or not (d.observation or {}).get('local_verified'):raise HTTPException(409,'Active encrypted receipt connector and physically confirmed current-version synthetic test required before automatic enablement')
+        from windows_print_agent.envelope import public_hex
+        from print_agent_security import public_host
+        try:public_hex(settings.PRINT_CONNECTOR_PRIVATE_KEY);public_host(settings.PRINT_AGENT_PUBLIC_ORIGIN)
+        except (ValueError,TypeError):raise HTTPException(409,'Approved encrypted transport configuration required') from None
+    d.config=value;d.version+=1;d.media='UNKNOWN';d.mode_request=None;d.observation=None
     d.enabled_at=now();event(db,d,'CONFIGURATION_CHANGED',user,version=d.version,config=d.config);db.commit();return d
 
 def manage(db,user,did,action):
     require(user,'admin');pos.locked(db);d=device(db,did);code=None
     if d.status=='REVOKED' and action!='revoke':raise HTTPException(409,'Revoked devices require a new enrollment')
+    if action in {'pause','resume'}:
+        if d.status!='ACTIVE':raise HTTPException(409,'Active paired device required')
+        d.config={**DEFAULT,**d.config,'printing_paused':action=='pause'}
+        event(db,d,'PRINTING_'+('PAUSED' if action=='pause' else 'RESUMED'),user);db.commit();return None
     if action=='activate':
         other=db.query(PrintDevice).filter_by(active_register_id=d.register_id).first()
         if other and other.id!=d.id:raise HTTPException(409,'Deactivate the register existing device first')
@@ -79,7 +94,9 @@ def manage(db,user,did,action):
         d.active_register_id=d.register_id;d.status='ACTIVE';d.enabled_at=now();d.media='UNKNOWN'
     elif action in {'deactivate','revoke','rotate'}:
         d.active_register_id=None;d.status='REVOKED' if action=='revoke' else 'PAIRING' if action=='rotate' else 'INACTIVE';d.version+=1;d.media='UNKNOWN';d.mode_request=None
-        if action in {'revoke','rotate'}:d.token_hash=None;d.pair_hash=None;d.pair_expires=None
+        if action in {'revoke','rotate'}:
+            d.token_hash=None;d.pair_hash=None;d.pair_expires=None
+            if d.config.get('receipt_only'):d.config={**d.config,'auto_receipts':False}
         if action=='rotate':code=pair_code(d)
         for j in db.query(HardwareJob).filter(HardwareJob.device_id==d.id,HardwareJob.status.in_(['QUEUED','DELIVERED_TO_AGENT'])):
             j.status='UNKNOWN' if j.attempts else 'FAILED';j.result={'code':'DEVICE_'+action.upper()};event(db,d,'JOB_DEVICE_STOPPED',user,j)
@@ -118,12 +135,13 @@ def authenticate(db,credential):
     return d
 
 def public_device(d):
-    return {'id':d.id,'name':d.name,'register_id':d.register_id,'location':d.location_id,'status':d.status,'version':d.version,'config':d.config,'media':d.media,'mode_request':d.mode_request,
+    return {'id':d.id,'name':d.name,'register_id':d.register_id,'location':d.location_id,'status':d.status,'version':d.version,'config':{**DEFAULT,**d.config},'media':d.media,'mode_request':d.mode_request,
         'connected':bool(d.last_seen and d.last_seen>now()-timedelta(seconds=60)),'last_seen':d.last_seen.isoformat()+'Z' if d.last_seen else None,'observation':d.observation or {}}
 
 def request_mode(db,user,did,mode,confirm):
     require(user,'sell');pos.locked(db);d=device(db,did)
     pos.session(db,user,db.query(POSSession).filter_by(active_register_id=d.register_id).one().id) if db.query(POSSession).filter_by(active_register_id=d.register_id).first() else pos.require(user,'admin')
+    if d.config.get('receipt_only') and mode!='RECEIPT':raise HTTPException(409,'Receipt-only connector cannot use label/A4 media')
     if mode not in MODES or confirm is not True:raise HTTPException(422,'Confirm installed physical media and cleared Windows queues')
     if mode=='A4' and not d.config['a4_queue']:raise HTTPException(409,'No verified A4 printer assigned')
     expire_deliveries(db,d)
@@ -134,8 +152,10 @@ def request_mode(db,user,did,mode,confirm):
 def heartbeat(db,d,body):
     if set(body)!={'version','queues','queues_empty','local_verified','drawer_verified','mode_ack'} or type(body['queues_empty']) is not bool or type(body['local_verified']) is not bool or type(body['drawer_verified']) is not bool:raise HTTPException(422,'Invalid agent status')
     queues=body['queues']
-    if not isinstance(queues,list) or len(queues)>100 or any(not isinstance(q,dict) or set(q)!={'name','state','jobs'} or not isinstance(q['name'],str) or len(q['name'])>150 or q['state'] not in {'READY','OFFLINE','ERROR','UNAVAILABLE'} or type(q['jobs']) is not int or not 0<=q['jobs']<=10000 for q in queues):raise HTTPException(422,'Invalid printer telemetry')
-    required={d.config['receipt_queue'],d.config['label_queue']}|{n for n in [d.config['drawer_queue'],d.config['a4_queue']] if n}
+    if not isinstance(queues,list) or len(queues)>100 or any(not isinstance(q,dict) or not {'name','state','jobs'}<=set(q)<={'name','state','jobs','conditions'} or not isinstance(q['name'],str) or len(q['name'])>150 or q['state'] not in {'READY','OFFLINE','ERROR','UNAVAILABLE'} or type(q['jobs']) is not int or not 0<=q['jobs']<=10000 for q in queues):raise HTTPException(422,'Invalid printer telemetry')
+    conditions={'PAPER_OUT','PAPER_JAM','DOOR_OPEN','PAUSED','USER_INTERVENTION','OFFLINE','ERROR','UNAVAILABLE'}
+    if any(not isinstance(q.get('conditions',[]),list) or len(q.get('conditions',[]))>8 or any(not isinstance(code,str) or code not in conditions for code in q.get('conditions',[])) or (q['state']=='READY' and q.get('conditions')) for q in queues):raise HTTPException(422,'Invalid printer condition evidence')
+    required=({d.config['receipt_queue']} if d.config.get('receipt_only') else {d.config['receipt_queue'],d.config['label_queue']})|{n for n in [d.config['drawer_queue'],d.config['a4_queue']] if n}
     names=[q['name'] for q in queues]
     if len(names)!=len(set(names)) or not required<=set(names):raise HTTPException(422,'Complete unique configured queue telemetry required')
     computed_empty=all(q['jobs']==0 and q['state']=='READY' for q in queues)
@@ -151,6 +171,7 @@ def expire_deliveries(db,d):
         if j.delivered_at<now()-timedelta(minutes=2):j.status='UNKNOWN';j.result={'code':'AGENT_ACK_UNCERTAIN'};event(db,d,'DELIVERY_UNCERTAIN',j=j)
 
 def profile_queue(d,kind,profile):
+    if d.config.get('receipt_only') and (kind not in {'RECEIPT','TEST'} or profile!='80'):raise HTTPException(409,'Receipt-only device cannot dispatch labels, drawers or other paper')
     if kind=='LABEL':return d.config['label_queue'],'LABEL'
     if kind=='DRAWER':return d.config['drawer_queue'],'RECEIPT'
     if profile=='A4':
@@ -171,13 +192,15 @@ def add_job(db,d,kind,key,raw,user=None,checkout=None,label=None,parent=None,pro
     queue,mode=profile_queue(d,kind,profile)
     if len(raw)>MAX_PDF or (kind!='DRAWER' and not raw.startswith(b'%PDF-')):raise HTTPException(422,'Bounded valid PDF required')
     j=HardwareJob(id=str(uuid4()),shop=d.shop,device_id=d.id,register_id=d.register_id,location_id=d.location_id,device_version=d.version,business_key=key,kind=kind,queue=queue,media=mode,actor_id=user.id if user else None,
-        session_id=checkout.session_id if checkout else session_id,checkout_id=checkout.id if checkout else None,label_id=label.id if label else None,parent_id=parent.id if parent else None,detail={'reason':reason,'profile':'RETAIL_LABEL_PDF' if kind=='LABEL' else profile,'label_template':label.template if label else None,'label_copies':label.total if label else None,'automatic':automatic,'physical_resource':'DBL_SHARED' if mode!='A4' else 'A4_EXTERNAL','protocol':VERSION},
+        session_id=checkout.session_id if checkout else session_id,checkout_id=checkout.id if checkout else None,label_id=label.id if label else None,parent_id=parent.id if parent else None,detail={'reason':reason,'profile':'RETAIL_LABEL_PDF' if kind=='LABEL' else profile,'label_template':label.template if label else None,'label_copies':label.total if label else None,'automatic':automatic,'physical_resource':'POS80_RECEIPT_ONLY' if d.config.get('receipt_only') else 'DBL_SHARED' if mode!='A4' else 'A4_EXTERNAL','protocol':VERSION},
         pdf=raw or None,sha256=hashlib.sha256(raw).hexdigest(),size=len(raw),status='QUEUED',expires_at=(min(checkout.completed_at,checkout.created_at)+timedelta(seconds=120)) if automatic and kind=='DRAWER' and checkout else (event_time or now())+timedelta(seconds=120) if kind=='DRAWER' else now()+timedelta(hours=24))
     if not job_enabled(j):raise HTTPException(409,'This hardware workflow is disabled')
     db.add(j);db.flush();event(db,d,'JOB_CREATED',user,j,kind=kind,reference=checkout.reference if checkout else str(label.id) if label else '',reason=reason);return j
 
-def receipt_job(db,user,did,rid,key,profile='80',automatic=False):
+def receipt_job(db,user,did,rid,key,profile='80',automatic=False,parent=None,reason=''):
     require(user);pos.locked(db);d=device(db,did);r=pos.sale(db,user,rid)
+    if d.config.get('receipt_only') and not automatic and (parent is None or not reason):raise HTTPException(409,'Use the inspected original job and controlled reprint approval')
+    if r.reference in {'POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA'}:raise HTTPException(409,'Historical test sales are not customer receipts')
     if r.status!='COMPLETE':raise HTTPException(409,'Verified COMPLETE sale required')
     s=db.get(POSSession,r.session_id)
     if s.register_id!=d.register_id or r.shop!=d.shop or r.frozen['location']!=d.location_id:raise HTTPException(403,'Sale/register/location mismatch')
@@ -185,11 +208,11 @@ def receipt_job(db,user,did,rid,key,profile='80',automatic=False):
     business='receipt:auto:'+r.id if automatic else 'receipt:'+d.id+':'+key
     prior=db.query(HardwareJob).filter_by(business_key=business).one_or_none()
     if prior:
-        if prior.checkout_id!=r.id or prior.detail['profile']!=profile or prior.device_id!=d.id:raise HTTPException(409,'Request key belongs to another receipt')
+        if prior.checkout_id!=r.id or prior.detail['profile']!=profile or prior.device_id!=d.id or prior.parent_id!=(parent.id if parent else None):raise HTTPException(409,'Request key belongs to another receipt')
         return prior
     raw=pos_receipts.generate(db,user,r.id,profile,commit=False,duplicate=not automatic)
-    j=add_job(db,d,'RECEIPT',business,raw,user,r,profile=profile,automatic=automatic)
-    if automatic and any(t['method']=='CASH' and Decimal(t['amount'])>0 for t in r.frozen['tenders']):
+    j=add_job(db,d,'RECEIPT',business,raw,user,r,parent=parent,profile=profile,reason=reason,automatic=automatic)
+    if not d.config.get('receipt_only') and automatic and any(t['method']=='CASH' and Decimal(t['amount'])>0 for t in r.frozen['tenders']):
         if settings.POS_CASH_DRAWER_AUTOMATION_ENABLED and d.config['drawer_verified'] and (d.observation or {}).get('drawer_verified'):
             add_job(db,d,'DRAWER','drawer:sale:'+r.id,b'',user,r,parent=j,reason='Verified cash component',automatic=True)
         else:event(db,d,'CASH_DRAWER_BLOCKED',user,j,reason='Drawer gate or verified isolated driver queue unavailable')
@@ -228,9 +251,14 @@ def public_job(j):return {'id':j.id,'device_id':j.device_id,'kind':j.kind,'statu
 
 def claim(db,d):
     pos.locked(db);expire_deliveries(db,d)
-    if db.query(HardwareJob).filter(HardwareJob.shop==d.shop,HardwareJob.status.in_(['DELIVERED_TO_AGENT','UNKNOWN'])).first():db.commit();return None
+    if d.status!='ACTIVE' or d.active_register_id!=d.register_id or d.config.get('printing_paused'):db.commit();return None
+    blockers=db.query(HardwareJob).filter(HardwareJob.shop==d.shop,HardwareJob.status.in_(['DELIVERED_TO_AGENT','UNKNOWN']))
+    if d.config.get('receipt_only'):blockers=blockers.filter_by(device_id=d.id)
+    if blockers.first():db.commit();return None
     if not d.last_seen or d.last_seen<now()-timedelta(seconds=60) or d.media not in MODES or d.mode_request:db.commit();return None
     for j in db.query(HardwareJob).filter_by(device_id=d.id,status='QUEUED').order_by(HardwareJob.created_at).limit(50):
+        if d.config.get('receipt_only') and (j.kind not in {'RECEIPT','TEST'} or j.queue!=RECEIPT_QUEUE or j.media!='RECEIPT' or j.detail.get('profile')!='80'):
+            j.status='FAILED';j.result={'code':'RECEIPT_ONLY_ISOLATION'};event(db,d,'RECEIPT_ISOLATION_BLOCKED',j=j);continue
         if j.attempts:
             j.status='UNKNOWN';j.result={'code':'PERMANENT_ATTEMPT_FENCE'};event(db,d,'ATTEMPT_FENCE_BLOCKED',j=j);continue
         if j.expires_at<now() or j.device_version!=d.version:
@@ -241,7 +269,7 @@ def claim(db,d):
         try:authorize_actor(db,j)
         except HTTPException:j.status='FAILED';j.result={'code':'ACTOR_PERMISSION_REVOKED'};event(db,d,'JOB_PERMISSION_REVOKED',j=j);continue
         if j.kind=='DRAWER' and (not d.config['drawer_verified'] or not (d.observation or {}).get('drawer_verified')):continue
-        if j.parent_id:
+        if j.parent_id and j.kind=='DRAWER':
             p=db.get(HardwareJob,j.parent_id)
             if p.status not in {'SUBMITTED_TO_PRINTER','CONFIRMED'}:continue
         queues={q['name']:q for q in (d.observation or {}).get('queues',[])}
@@ -293,7 +321,7 @@ def source_valid(db,j):
         except HTTPException:return False
     if j.checkout_id:
         sale=db.get(POSCheckout,j.checkout_id)
-        if not sale or sale.status!='COMPLETE' or sale.shop!=j.shop or sale.frozen['location']!=j.location_id:return False
+        if not sale or sale.reference in {'POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA'} or sale.status!='COMPLETE' or sale.shop!=j.shop or sale.frozen['location']!=j.location_id:return False
     if j.kind=='DRAWER':
         session=db.get(POSSession,j.session_id)
         if not session or session.status!='OPEN' or session.register_id!=j.register_id:return False
@@ -314,7 +342,7 @@ def tick(sessions):
             cutoff=max(d.enabled_at,now()-timedelta(hours=24))
             if d.config['auto_receipts']:
                 done=db.query(HardwareJob.checkout_id).filter_by(shop=d.shop,kind='RECEIPT').filter(HardwareJob.business_key.like('receipt:auto:%'))
-                rows=db.query(POSCheckout).join(POSSession,POSSession.id==POSCheckout.session_id).filter(POSCheckout.shop==d.shop,POSSession.register_id==d.register_id,POSCheckout.status=='COMPLETE',POSCheckout.completed_at>=cutoff,~POSCheckout.id.in_(done.filter(HardwareJob.checkout_id.isnot(None)))).order_by(POSCheckout.completed_at).limit(2).all()
+                rows=db.query(POSCheckout).join(POSSession,POSSession.id==POSCheckout.session_id).filter(POSCheckout.shop==d.shop,POSSession.register_id==d.register_id,POSCheckout.status=='COMPLETE',~POSCheckout.reference.in_(['POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA']),POSCheckout.completed_at>=cutoff,~POSCheckout.id.in_(done.filter(HardwareJob.checkout_id.isnot(None)))).order_by(POSCheckout.completed_at).limit(2).all()
                 for r in rows:
                     user=db.get(User,r.actor_id)
                     try:
@@ -324,7 +352,27 @@ def tick(sessions):
                         # changes the COMPLETE sale, retries automatically, or floods audit on each tick.
                         j=HardwareJob(id=str(uuid4()),shop=d.shop,device_id=d.id,register_id=d.register_id,location_id=d.location_id,device_version=d.version,business_key='receipt:auto:'+r.id,kind='RECEIPT',queue=d.config['receipt_queue'],media='RECEIPT',actor_id=r.actor_id,session_id=r.session_id,checkout_id=r.id,detail={'automatic':True,'reason':'Original generation requires operator review','profile':d.config['receipt_profile']},sha256=hashlib.sha256(b'').hexdigest(),size=0,status='FAILED',expires_at=now()+timedelta(hours=24),result={'code':'RECEIPT_GENERATION_BLOCKED'})
                         db.add(j);db.flush();event(db,d,'AUTO_RECEIPT_BLOCKED',j=j,reference=r.reference)
-            if settings.POS_CASH_DRAWER_AUTOMATION_ENABLED and d.config['auto_cash_movements'] and d.config['drawer_verified']:
+            if not d.config.get('receipt_only') and settings.POS_CASH_DRAWER_AUTOMATION_ENABLED and d.config['auto_cash_movements'] and d.config['drawer_verified']:
                 for m in db.query(POSCashMovement).join(POSSession,POSSession.id==POSCashMovement.session_id).filter(POSSession.register_id==d.register_id,POSCashMovement.kind.in_(['PAID_IN','PAID_OUT']),POSCashMovement.created_at>=max(cutoff,now()-timedelta(seconds=120))).limit(10):
                     add_job(db,d,'DRAWER','drawer:movement:'+str(m.id),b'',db.get(User,m.actor_id),reason='Approved cash movement '+m.reference,automatic=True,session_id=m.session_id,event_time=m.created_at)
         db.commit()
+
+
+def permit_job(db,d,jid,token):
+    j=claimed(db,d,jid,token)
+    if d.config.get('printing_paused'):raise HTTPException(409,'Printing paused; do not dispatch')
+    if j.status!='DELIVERED_TO_AGENT' or j.attempts!=1 or j.device_version!=d.version or j.expires_at<now() or not job_enabled(j) or j.media!=d.media or d.mode_request or not source_valid(db,j):raise HTTPException(409,'Hardware authorization expired; do not dispatch')
+    if d.config.get('receipt_only') and (j.kind not in {'RECEIPT','TEST'} or j.queue!=RECEIPT_QUEUE or j.detail.get('profile')!='80'):raise HTTPException(403,'Receipt-only job required')
+    authorize_actor(db,j)
+    return j
+
+
+def controlled_reprint(db,user,jid,key,reason,confirm):
+    require(user,'sell');pos.locked(db)
+    if confirm is not True:raise HTTPException(422,'Explicit duplicate receipt approval required')
+    parent=db.query(HardwareJob).filter_by(shop=retail.shop(),id=jid,kind='RECEIPT').one_or_none()
+    if not parent or parent.status not in {'CONFIRMED','FAILED'}:raise HTTPException(409,'Inspect and resolve the original outcome before authorizing a reprint')
+    reason=pos.inventory.text(reason,500,True)
+    j=receipt_job(db,user,parent.device_id,parent.checkout_id,key,'80',False,parent,reason)
+    if not db.query(HardwareEvent).filter_by(job_id=j.id,action='REPRINT_AUTHORIZED').first():event(db,device(db,parent.device_id),'REPRINT_AUTHORIZED',user,j,parent_id=parent.id,reason=reason)
+    return j

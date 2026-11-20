@@ -71,3 +71,9 @@ class HardwareRate(Base):
     key=Column(String(64),primary_key=True)
     bucket=Column(Integer,nullable=False)
     count=Column(Integer,nullable=False)
+
+class PrintConnectorNonce(Base):
+    """Short-lived transport replay fence, not a parallel hardware-job queue."""
+    __tablename__='print_connector_nonces'
+    id=Column(String(36),primary_key=True)
+    expires_at=Column(DateTime,nullable=False,index=True)

@@ -2,7 +2,7 @@
 import argparse,getpass,json,os,sys,time
 from pathlib import Path
 from uuid import UUID
-from .transport import Transport,AgentError
+from .transport import Transport,EncryptedTransport,AgentError
 from .windows import WindowsPrinters
 from .engine import Engine
 from .store import Store
@@ -21,7 +21,7 @@ def load(path):
 def confirm(prompt):return input(prompt+' Type YES: ').strip()=='YES'
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('command',choices=['pair','printers','attest','run','status','forget']);parser.add_argument('--server')
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('command',choices=['pair','printers','attest','run','status','forget']);parser.add_argument('--server');parser.add_argument('--public-key',help='Pinned non-secret public key copied from authenticated CRM Admin')
     args=parser.parse_args()
     if os.name!='nt':parser.error('Windows 11 with the configured printer drivers is required')
     root=Path(os.environ['LOCALAPPDATA'])/'PixiePinks'/'PrintAgent';root.mkdir(parents=True,exist_ok=True)
@@ -32,8 +32,8 @@ def main():
             secret.unlink(missing_ok=True);attestation.unlink(missing_ok=True);return 0
         if args.command=='pair':
             if not args.server:raise AgentError('Pairing requires --server https://your-approved-crm-host')
-            transport=Transport(args.server);code=getpass.getpass('One-time CRM pairing code: ');token=transport.pair(code)
-            did=str(UUID(token.split('.',1)[0]));protect(secret,{'server':transport.server,'token':token,'device_id':did});print('Paired securely. Activate the device in CRM, then attest local printer settings.');return 0
+            transport=EncryptedTransport(args.server,args.public_key) if args.public_key else Transport(args.server);code=getpass.getpass('One-time CRM pairing code: ');token=transport.pair(code)
+            did=str(UUID(token.split('.',1)[0]));protect(secret,{'server':transport.server,'token':token,'device_id':did,'public_key':args.public_key});print('Paired securely. Activate the device in CRM, then attest local printer settings.');return 0
         backend=WindowsPrinters()
         if args.command=='printers':
             rows=backend.status(backend.enumerate())
@@ -42,7 +42,15 @@ def main():
                     details=backend.info(row['name']);row.update(driver=details['pDriverName'],port=details['pPortName'],windows_status_mask=details['Status'])
                 except Exception:pass
             print(json.dumps(rows,indent=2));return 0
-        credentials=load(secret);transport=Transport(credentials['server'],credentials['token']);config=transport.config()
+        credentials=load(secret);transport=EncryptedTransport(credentials['server'],credentials['public_key'],credentials['token']) if credentials.get('public_key') else Transport(credentials['server'],credentials['token'])
+        # Startup/network recovery: run retries connectivity without any print retry.
+        if args.command=='run':
+            while True:
+                try:config=transport.config();break
+                except KeyboardInterrupt:return 0
+                except Exception:
+                    print('Connector waiting for verified server/device connectivity; no print attempted.',flush=True);time.sleep(5)
+        else:config=transport.config()
         names=Engine.names(config)
         if args.command=='status':
             bindings=[]
@@ -54,9 +62,9 @@ def main():
         if args.command=='attest':
             with backend.exclusive():
                 if any(q['jobs'] or q['state']!='READY' for q in backend.status(names)):raise AgentError('All configured queues must be empty and ready before attestation')
-                if not backend.shares_port([RECEIPT_QUEUE,LABEL_QUEUE]+([DRAWER_QUEUE] if config['config']['drawer_queue'] else [])):raise AgentError('DBL queues must point to the same verified local USB port')
-                if not confirm('Normal receipt, label and optional A4 queues all have Cash Drawer=None. Confirm in Windows preferences'):return 1
-                if not confirm('Paper geometry and cutter were physically tested; label mode cannot open the drawer'):return 1
+                if not backend.shares_port([RECEIPT_QUEUE] if config['config'].get('receipt_only') else [RECEIPT_QUEUE,LABEL_QUEUE]+([DRAWER_QUEUE] if config['config']['drawer_queue'] else [])):raise AgentError('Configured queues must use their verified local USB port')
+                if not confirm('All queues used by this connector have Cash Drawer=None. Confirm in Windows preferences'):return 1
+                if not confirm('80 mm receipt geometry/feed/cutter were physically tested; Cash Drawer=None' if config['config'].get('receipt_only') else 'Paper geometry and cutter were physically tested; label mode cannot open the drawer'):return 1
                 isolated=False;tested=False;no_replay=False
                 if config['config']['drawer_queue']:
                     if not backend.drawer_safe(DRAWER_QUEUE):raise AgentError('Isolated drawer queue must use direct printing with no document retention')

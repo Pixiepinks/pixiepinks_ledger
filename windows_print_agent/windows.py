@@ -48,8 +48,10 @@ class WindowsPrinters:
                 info=self.info(name);status=info['Status'];attrs=info['Attributes']
                 offline=bool(status & self.print.PRINTER_STATUS_OFFLINE or attrs & self.print.PRINTER_ATTRIBUTE_WORK_OFFLINE)
                 bad=self.print.PRINTER_STATUS_ERROR|self.print.PRINTER_STATUS_PAPER_OUT|self.print.PRINTER_STATUS_PAPER_JAM|self.print.PRINTER_STATUS_DOOR_OPEN|self.print.PRINTER_STATUS_PAUSED|self.print.PRINTER_STATUS_NOT_AVAILABLE|self.print.PRINTER_STATUS_USER_INTERVENTION
-                rows.append({'name':name,'state':'OFFLINE' if offline else 'ERROR' if status & bad else 'READY','jobs':int(info['cJobs'])})
-            except Exception:rows.append({'name':name,'state':'UNAVAILABLE','jobs':0})
+                conditions=[label for label,constant in [('PAPER_OUT','PRINTER_STATUS_PAPER_OUT'),('PAPER_JAM','PRINTER_STATUS_PAPER_JAM'),('DOOR_OPEN','PRINTER_STATUS_DOOR_OPEN'),('PAUSED','PRINTER_STATUS_PAUSED'),('USER_INTERVENTION','PRINTER_STATUS_USER_INTERVENTION'),('ERROR','PRINTER_STATUS_ERROR')] if status & getattr(self.print,constant,0)]
+                if offline:conditions.append('OFFLINE')
+                rows.append({'name':name,'state':'OFFLINE' if offline else 'ERROR' if status & bad else 'READY','jobs':int(info['cJobs']),'conditions':conditions})
+            except Exception:rows.append({'name':name,'state':'UNAVAILABLE','jobs':0,'conditions':['UNAVAILABLE']})
         return rows
     def shares_port(self,names):
         infos=[self.info(name) for name in names]
@@ -73,6 +75,19 @@ class WindowsPrinters:
                     if not ok:raise AgentError('PDF does not match approved physical media')
                 finally:page.close()
         finally:document.close()
+    @staticmethod
+    def validate_receipt80(raw):
+        import pypdfium2 as pdfium
+        document=pdfium.PdfDocument(raw)
+        try:
+            if len(document)!=1:raise AgentError('Receipt-only connector requires one page')
+            page=document[0]
+            try:
+                width,height=page.get_size()
+                if abs(width*25.4/72-80)>.05 or not 20<=height*25.4/72<=1500:raise AgentError('Actual 80 mm receipt geometry required')
+            finally:page.close()
+        finally:document.close()
+
     def submit(self,queue,raw,jid,media,expected_fingerprint,progress=None):
         import pypdfium2 as pdfium
         from PIL import ImageWin
@@ -98,6 +113,10 @@ class WindowsPrinters:
                     physical_w=dc.GetDeviceCaps(110);physical_h=dc.GetDeviceCaps(111);offset_x=dc.GetDeviceCaps(112);offset_y=dc.GetDeviceCaps(113)
                     expected_w=round(wm*dpi_x/25.4);expected_h=round(hm*dpi_x/25.4)
                     if abs(physical_w-expected_w)>max(3,dpi_x*.5/25.4) or abs(physical_h-expected_h)>max(3,dpi_x*.5/25.4):raise AgentError('Driver paper geometry mismatch; do not fit/scale labels')
+                    if media=='RECEIPT':
+                        printable_w=dc.GetDeviceCaps(8);printable_h=dc.GetDeviceCaps(10)
+                        allowance=round(5*dpi_x/25.4)
+                        if min(offset_x,offset_y)<0 or offset_x>allowance or offset_y>allowance or offset_x+printable_w<expected_w-allowance or offset_y+printable_h<expected_h-allowance:raise AgentError('Receipt printable region clips safety margins; no scaling permitted')
                     if media=='LABEL' and (offset_x>dpi_x*.5/25.4 or offset_y>dpi_x*.5/25.4):raise AgentError('Driver margins exceed label safety allowance')
                     render_dpi=dpi_x if media=='LABEL' else min(dpi_x,300);scale=render_dpi/72
                     if width*height*scale*scale>50000000:raise AgentError('Raster memory budget exceeded')

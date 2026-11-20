@@ -9,15 +9,17 @@ class Engine:
     def __init__(self,transport,backend,store,attestation,device_id):
         self.remote=transport;self.backend=backend;self.store=store;self.attestation=attestation;self.device_id=device_id
     @staticmethod
-    def names(config):return list(dict.fromkeys([RECEIPT_QUEUE,LABEL_QUEUE]+[v for v in [config['config']['drawer_queue'],config['config']['a4_queue']] if v]))
+    def names(config):
+        if config['config'].get('receipt_only'):return [RECEIPT_QUEUE]
+        return list(dict.fromkeys([RECEIPT_QUEUE,LABEL_QUEUE]+[v for v in [config['config']['drawer_queue'],config['config']['a4_queue']] if v]))
     def verified(self,config):
         names=self.names(config);saved=self.attestation
         normal=saved.get('normal_drawers_none') is True and saved.get('media_and_cutter_tested') is True
         try:
             base=normal and saved.get('device_id')==self.device_id and all(saved.get('fingerprints',{}).get(name)==self.backend.fingerprint(name) for name in names)
-            base=base and self.backend.shares_port([RECEIPT_QUEUE,LABEL_QUEUE]+([DRAWER_QUEUE] if config['config']['drawer_queue'] else []))
+            base=base and self.backend.shares_port([RECEIPT_QUEUE] if config['config'].get('receipt_only') else [RECEIPT_QUEUE,LABEL_QUEUE]+([DRAWER_QUEUE] if config['config']['drawer_queue'] else []))
         except Exception:base=False
-        try:drawer=base and config['config']['drawer_verified'] and saved.get('drawer_queue_isolated') is True and saved.get('drawer_driver_tested') is True and saved.get('drawer_no_replay_tested') is True and self.backend.drawer_safe(DRAWER_QUEUE) and config['config']['drawer_queue']==DRAWER_QUEUE
+        try:drawer=base and not config['config'].get('receipt_only') and config['config']['drawer_verified'] and saved.get('drawer_queue_isolated') is True and saved.get('drawer_driver_tested') is True and saved.get('drawer_no_replay_tested') is True and self.backend.drawer_safe(DRAWER_QUEUE) and config['config']['drawer_queue']==DRAWER_QUEUE
         except Exception:drawer=False
         return bool(base),bool(drawer)
     def flush_results(self):
@@ -32,12 +34,13 @@ class Engine:
         verified,drawer=self.verified(config);queues=self.backend.status(self.names(config));empty=all(q['jobs']==0 and q['state']=='READY' for q in queues)
         ack=config['mode_request'] if verified and empty else None
         config=self.remote.heartbeat({'version':config['version'],'queues':queues,'queues_empty':empty,'local_verified':verified,'drawer_verified':drawer,'mode_ack':ack})
-        if not verified or not empty or config['media'] not in MODES:return
+        if not verified or not empty or config['media'] not in MODES or config['config'].get('printing_paused'):return
         job=self.remote.claim()
         if not job:return
         try:self.execute(job,config,drawer)
         finally:self.flush_results()
     def execute(self,job,config,drawer):
+        if config['config'].get('receipt_only') and (job.get('kind') not in {'RECEIPT','TEST'} or job.get('queue')!=RECEIPT_QUEUE or job.get('media')!='RECEIPT' or config['config'].get('receipt_profile')!='80'):raise AgentError('Receipt-only connector cannot dispatch barcode/drawer/other paper')
         str(UUID(job['id']))
         identity=self.store.identity(job);prior=self.store.get(job['id'])
         if prior:
@@ -59,6 +62,9 @@ class Engine:
             raw=drawer_slip(job['id'])
         else:raw=self.remote.pdf(job)
         self.backend.validate_pdf(raw,job['media'])
+        if config['config'].get('receipt_only'):
+            from .windows import WindowsPrinters
+            WindowsPrinters.validate_receipt80(raw)
         self.store.intent(job)  # fsync before obtaining the single-use dispatch permit or touching a driver.
         try:
             with self.backend.exclusive():

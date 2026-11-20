@@ -4,3 +4,6 @@ pywin32==311; sys_platform == 'win32'
 pypdfium2==4.30.0
 Pillow==13.0.0
 fpdf2==2.8.5
+
+# Pinned application encryption through untrusted TLS-termination hops.
+cryptography>=44.0.1,<47
