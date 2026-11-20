@@ -1,5 +1,8 @@
 # POS CREATE/read-back incident — 20 November 2026
 
+**Updated production evidence:** See [full-read and reference diagnostic](pos-order-read-transport-diagnostic.md). Sale B was not found in the configured shop; the earlier assumption that A releases B is unverified. Do not use the conditional recovery steps below as authorization. Current A failure is at full Shopify READ, before order verification/local posting.
+
+
 ## Evidence and conclusion
 
 Inspected deployed-compatible main **0fd48c3**, merged Phase 4G PR #183. Live observations are supplied by the owner; this development environment has no authorized Railway/Shopify connector or Railway CLI. No live credentials were requested/copied and no live API verification, financial mutation, reconciliation, print or variable change was performed.
