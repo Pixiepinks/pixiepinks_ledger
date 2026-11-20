@@ -27,11 +27,12 @@ def local_time(value):
 class ReceiptLayout:
     def __init__(self,profile,height):
         self.pdf=pdf=FPDF(unit='mm',format=(210,297) if profile=='A4' else (int(profile),height))
-        margin=12 if profile=='A4' else 4
-        pdf.set_margins(margin,5,margin);pdf.set_auto_page_break(profile=='A4',margin=8)
+        self.profile=profile
+        margin=12 if profile=='A4' else 5 if profile=='80' else 4
+        pdf.set_margins(margin,4 if profile=='80' else 5,margin);pdf.set_auto_page_break(profile=='A4',margin=8)
         pdf.add_font('Noto',fname=str(FONTS/'NotoSans-Regular.ttf'))
         pdf.add_font('Sinhala',fname=str(FONTS/'NotoSansSinhala-Regular.ttf'))
-        pdf.set_font('Noto',size=9);pdf.set_fallback_fonts(['Sinhala']);pdf.set_text_shaping(True)
+        pdf.set_font('Noto',size=9);pdf.set_fallback_fonts(['Sinhala']);pdf.set_text_shaping(True,features={"tnum":True})
         pdf.set_title('PixiePinks POS receipt');pdf.set_creator('PixiePinks POS');pdf.add_page()
         pdf.set_text_color(0);pdf.set_draw_color(0);pdf.set_line_width(.15)
 
@@ -42,22 +43,29 @@ class ReceiptLayout:
     def rule(self):
         pdf=self.pdf
         if pdf.auto_page_break and pdf.get_y()+3>pdf.page_break_trigger:pdf.add_page()
-        pdf.set_y(pdf.get_y()+1.5);pdf.line(pdf.l_margin,pdf.get_y(),pdf.w-pdf.r_margin,pdf.get_y());pdf.set_y(pdf.get_y()+2)
+        before,after=(1,1.5) if self.profile=='80' else (1.5,2)
+        pdf.set_y(pdf.get_y()+before);pdf.line(pdf.l_margin+.1,pdf.get_y(),pdf.w-pdf.r_margin-.1,pdf.get_y());pdf.set_y(pdf.get_y()+after)
 
     def pair(self,label,value,size=9):
-        pdf=self.pdf;pdf.set_font('Noto',size=size)
-        usable=pdf.w-pdf.l_margin-pdf.r_margin;right=pdf.get_string_width(str(value))+1
-        if right>usable:
-            raise HTTPException(422,'Receipt amount cannot fit this paper width; choose A4')
-        left=usable-right-2
-        if left<16:
-            self.text(label,size);self.text(value,size,'R');return
+        """Fixed right anchor/column, measured label wrapping, no financial scaling."""
+        pdf=self.pdf;size=max(size,9) if self.profile=='80' else size
+        pdf.set_font('Noto',size=size)
+        usable=pdf.w-pdf.l_margin-pdf.r_margin
+        column=25 if self.profile=='80' else 22 if self.profile=='58' else 38
+        left=usable-column-3
+        # Oversized values move below their label at the SAME right anchor.
+        # multi_cell splits exceptionally long unbroken values without clipping.
+        if pdf.get_string_width(str(value))>column-2*pdf.c_margin:
+            self.text(label,size)
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(w=usable,h=size*.49,text=str(value),align='R',wrapmode='CHAR',new_x='LMARGIN',new_y='NEXT')
+            return
         height=pdf.multi_cell(w=left,h=size*.49,text=str(label),dry_run=True,output='HEIGHT')
         if pdf.auto_page_break and pdf.get_y()+height>pdf.page_break_trigger:pdf.add_page()
         y=pdf.get_y();pdf.set_x(pdf.l_margin)
         pdf.multi_cell(w=left,h=size*.49,text=str(label),new_x='LMARGIN',new_y='NEXT')
-        pdf.set_xy(pdf.w-pdf.r_margin-right,y)
-        pdf.cell(w=right,h=size*.49,text=str(value),align='R')
+        pdf.set_xy(pdf.w-pdf.r_margin-column,y)
+        pdf.cell(w=column,h=size*.49,text=str(value),align='R')
         pdf.set_xy(pdf.l_margin,y+height)
 
     def draw(self,sale,refund,duplicate,acknowledgement=None):

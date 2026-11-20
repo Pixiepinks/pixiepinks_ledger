@@ -1,0 +1,28 @@
+{
+  "unit": "mm",
+  "nominal_page_width": 80,
+  "new_safe_region": {
+    "left": 5,
+    "right": 75,
+    "top": 4
+  },
+  "production_or_printer_verified": false,
+  "before": {
+    "pages": 1,
+    "width": 79.999,
+    "height": 242.602,
+    "text_left": 4.999,
+    "text_right": 74.964,
+    "footer_ink_to_page_bottom": 6.127,
+    "pdf_bytes": 2226624
+  },
+  "after": {
+    "pages": 1,
+    "width": 79.999,
+    "height": 239.399,
+    "text_left": 6.001,
+    "text_right": 73.962,
+    "footer_ink_to_page_bottom": 5.679,
+    "pdf_bytes": 23547
+  }
+}

@@ -78,7 +78,7 @@ def test_reprint_preserves_identity_and_final_receipt_links_same_checkout(pos):
     service.dispatch_one(pos.sessions,pos.pos)
     with pos.sessions() as db:
         raw=final.generate(db,db.get(User,pos.uid),rid)
-        assert 'Final receipt replaces provisional acknowledgement:' in text(raw)
+        assert 'Final receipt replaces provisional acknowledgement:' in ' '.join(text(raw).split())
         assert 'PPA-'+reference in text(raw) and 'SALES RECEIPT' in text(raw)
         assert db.query(POSCheckout).count()==1 and db.query(SalesPayment).count()==1
         assert db.query(JournalEntry).count()==1

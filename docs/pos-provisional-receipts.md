@@ -122,7 +122,7 @@ sale/payment/audit. Never use either designated test checkout for customer PDFs.
 - Confirm the actual installed POSPrinter POS-80 driver, correct USB/DOT4 binding,
   online state and 80 mm thermal roll. Do not guess a USB port or replace drivers.
 - Use the driver's supported 80 mm roll/custom form, portrait, 100% / Actual size.
-  The PDF is 80 mm wide, 4 mm side margins and measured variable height; do not fit
+  The PDF is 80 mm wide, 5 mm side margins and measured variable height; do not fit
   to A4 or choose a label form. Validate the driver's actual paper-length behavior.
 - Verify the legible provisional qualification under INVOICE; long English/Sinhala names,
   quantities/unit prices, discounts/tax, verified totals, balance, cash/change and
@@ -169,3 +169,6 @@ Railway variable or physical printer command was used during verification.
 
 
 The customer presentation above is updated by [Receipt branding Phase 1](pos-receipt-branding-phase1.md). Internal issuance timestamps, evidence, revision and reprint audits are preserved. Detailed printer alignment remains deferred.
+
+
+[Phase 2 layout/printing](receipt-phase2-layout-printing.md) supersedes the earlier geometry and default color-logo output with a safe 70 mm content area and an original-art 203 dpi monochrome derivative. Phase 1 words and all document/financial safeguards remain.

@@ -25,7 +25,8 @@ def document(methods=('CASH',),duplicate=False):
     return sale,raw
 
 
-def test_exact_original_fairy_is_embedded_with_rgb_and_transparency():
+def test_exact_original_fairy_is_preserved_and_color_fallback_embeds_rgb_alpha(monkeypatch,tmp_path):
+    monkeypatch.setattr(receipt,'THERMAL_LOGO',tmp_path/'missing-thermal.png')
     assert hashlib.sha256(receipt.LOGO.read_bytes()).hexdigest()=='1e7a496e574b9f93d77fbc77b31c83a87e6b60c3634ff07a35c349bf9958685b'
     _,raw=document();reader=PdfReader(io.BytesIO(raw))
     images=[obj.get_object() for obj in reader.pages[0]['/Resources']['/XObject'].get_object().values() if obj.get_object().get('/Subtype')=='/Image']
@@ -68,6 +69,7 @@ def test_mode_lists_only_verified_methods(methods,label):
 
 def test_missing_logo_falls_back_to_store_name_and_reprint_is_visible(monkeypatch,tmp_path):
     monkeypatch.setattr(receipt,'LOGO',tmp_path/'missing.png')
+    monkeypatch.setattr(receipt,'THERMAL_LOGO',tmp_path/'missing-thermal.png')
     _,raw=document(duplicate=True);out=' '.join(text(raw).split())
     assert 'PixiePinks' in out and 'COPY / REPRINT' in out
     assert 'First issued:' not in out and 'revision 2' not in out

@@ -13,6 +13,7 @@ TEST_REFERENCES={'POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA'}
 STATES={'AWAITING_PAYMENT','PAYMENT_READY','QUEUED','REVIEW','UNCERTAIN','CONFLICT'}
 EVENTS={'PROVISIONAL_ISSUED','PROVISIONAL_REPRINTED','PROVISIONAL_UPDATED'}
 LOGO=Path(__file__).parent/'static'/'images'/'login_logo.png'
+THERMAL_LOGO=Path(__file__).parent/'static'/'images'/'receipt_fairy_203dpi.png'
 CONTACTS=('Address: 213/5, Magammana, Homagama','info@pixiepinks.shop','0705755777','www.pixiepinks.shop')
 PAYMENT_LABELS={'CASH':'Cash','CARD_PAYMENT':'Card Payment','BANK_TRANSFER':'Bank Transfer'}
 
@@ -55,22 +56,26 @@ class ProvisionalLayout(ReceiptLayout):
     def draw_acknowledgement(self,sale,meta,paid,total,balance):
         f=sale.frozen;q=f['quote'];policy=f['policy']
         self.pdf.set_title('PixiePinks invoice — provisional, final confirmation pending')
-        if LOGO.is_file():
+        logo=THERMAL_LOGO if THERMAL_LOGO.is_file() else LOGO
+        if logo.is_file():
             try:
                 y=self.pdf.get_y()
-                self.pdf.image(str(LOGO),x=(self.pdf.w-32)/2,y=y,w=32,h=32,keep_aspect_ratio=True)
-                self.pdf.set_y(y+33)
+                from PIL import Image
+                with Image.open(logo) as image:width=26*image.width/image.height
+                self.pdf.image(str(logo),x=(self.pdf.w-width)/2,y=y,w=width,h=26)
+                self.pdf.set_y(y+27)
             except (OSError,ValueError):self.text('PixiePinks',17,'C')
         else:self.text('PixiePinks',17,'C')
-        for contact in CONTACTS:self.text(contact,8,'C')
+        for contact in CONTACTS:self.text(contact,9,'C')
         self.text('INVOICE',15,'C')
-        self.text('PROVISIONAL — FINAL CONFIRMATION PENDING',8,'C')
+        self.text('PROVISIONAL — FINAL CONFIRMATION PENDING',9,'C')
         if meta['duplicate'] or meta['revision']>1:self.text('COPY / REPRINT',8,'C')
         self.rule()
         self.text('Sale recorded: '+local_time(sale.created_at),8)
         self.text('Cashier: '+f['cashier'],8)
         self.text('Customer: '+(f.get('customer_name') or 'Walk-in Customer'),8)
-        self.text('Invoice No: '+sale.reference,9)
+        self.text('Invoice No:',9)
+        self.text(sale.reference,9)
         self.rule();self.text('ITEM / QTY × UNIT PRICE',8);self.text('All amounts in LKR',7,'R')
         for line in q['lines']:
             self.text(line['title'],9.5)
@@ -102,7 +107,7 @@ class ProvisionalLayout(ReceiptLayout):
         self.text('No cash refund.',8,'C')
         self.rule();self.text('Thank you for shopping @ Pixiepinks',9,'C')
         self.rule();self.text('Powered by PRYAMO',8,'C');self.text('0703322111',8,'C')
-        return self.pdf.get_y()+5
+        return self.pdf.get_y()+4.5
 
 
 def render(sale,meta,paid,total,balance):
