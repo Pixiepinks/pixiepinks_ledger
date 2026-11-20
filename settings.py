@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     if DATABASE_URL.startswith("postgres://"):
         DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+    # Empty by default: operator-approved, exact immediate TLS-proxy socket IPs.
+    PRINT_AGENT_TRUSTED_PROXY_IPS: str = ""
+    PRINT_AGENT_PUBLIC_ORIGIN: str = ""
     POS_LOCAL_PRINT_ENABLED: bool = False
     POS_CASH_DRAWER_AUTOMATION_ENABLED: bool = False
     RETAIL_HARDWARE_LABEL_PRINT_ENABLED: bool = False
