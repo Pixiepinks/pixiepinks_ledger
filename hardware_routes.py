@@ -31,6 +31,28 @@ def build_router(get_db,require_user,csrf):
         s.throttle(db,identity,240)
         d=s.authenticate(db,request.headers.get('authorization',''));s.pos.locked(db);return d
 
+    @router.get('/crm/pos/api/hardware/connector-transport')
+    def connector_configuration(db=Depends(get_db),user=Depends(require_user)):
+        s.require(user,'admin')
+        from print_connector_service import public_configuration
+        return out(public_configuration())
+
+    @router.post('/api/print-connector/envelope')
+    async def encrypted_connector(request:Request,db=Depends(get_db)):
+        from print_connector_service import handle
+        from windows_print_agent.envelope import MAX_REQUEST
+        if not settings.PRINT_CONNECTOR_ENCRYPTED_ENABLED or not settings.POS_LOCAL_PRINT_ENABLED:raise HTTPException(404,'Receipt connector disabled')
+        if 'origin' in request.headers:raise HTTPException(403,'Native connector required')
+        raw=bytearray()
+        async for chunk in request.stream():
+            raw.extend(chunk)
+            if len(raw)>MAX_REQUEST:raise HTTPException(413,'Encrypted request too large')
+        identity='connector-peer:'+str(request.client.host if request.client else '')
+        s.throttle(db,identity,240)
+        try:packet=json.loads(raw)
+        except (ValueError,TypeError):raise HTTPException(422,'Encrypted envelope required') from None
+        return out(handle(db,packet))
+
     @router.get('/crm/pos/api/hardware')
     def overview(db=Depends(get_db),user=Depends(require_user)):
         s.require(user);rows=db.query(PrintDevice).filter_by(shop=s.retail.shop()).order_by(PrintDevice.created_at.desc()).limit(100).all()
@@ -67,6 +89,14 @@ def build_router(get_db,require_user,csrf):
     @router.post('/crm/pos/api/hardware/devices/{did}/test')
     async def test(did:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
         p=await body(request,['key']);j=s.printer_test(db,user,did,p['key']);db.commit();return out(s.public_job(j))
+
+    @router.post('/crm/pos/api/hardware/jobs/{jid}/reprint')
+    async def reprint(jid:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        p=await body(request,['key','reason','confirm']);s.require(user,'sell')
+        j=db.query(HardwareJob).filter_by(shop=s.retail.shop(),id=jid).one_or_none()
+        if not j:raise HTTPException(404,'Job not found')
+        scope(db,user,s.device(db,j.device_id))
+        created=s.controlled_reprint(db,user,jid,**p);db.commit();return out(s.public_job(created))
 
     @router.post('/crm/pos/api/hardware/jobs/{jid}/review')
     async def review(jid:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
@@ -113,11 +143,7 @@ def build_router(get_db,require_user,csrf):
     async def claim(request:Request,db=Depends(get_db)):
         d=native(request,db);await body(request,[],False);return out({'job':s.claim(db,d)})
 
-    def permit(db,d,jid,token):
-        j=s.claimed(db,d,jid,token)
-        if j.status!='DELIVERED_TO_AGENT' or j.attempts!=1 or j.device_version!=d.version or j.expires_at<s.now() or not s.job_enabled(j) or j.media!=d.media or d.mode_request or not s.source_valid(db,j):raise HTTPException(409,'Hardware authorization expired; do not dispatch')
-        s.authorize_actor(db,j)
-        return j
+    def permit(db,d,jid,token):return s.permit_job(db,d,jid,token)
 
     @router.get('/api/print-agent/jobs/{jid}/pdf')
     def pdf(jid:str,request:Request,db=Depends(get_db)):
