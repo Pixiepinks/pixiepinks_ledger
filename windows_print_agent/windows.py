@@ -144,7 +144,11 @@ class WindowsPrinters:
                     if image is not None:call('pdf_cleanup',image.close)
                     if bitmap is not None:call('pdf_cleanup',bitmap.close)
                     call('pdf_cleanup',page.close)
-            return int(jobid)
+            with step('gdi_submission_result'):
+                # pywin32 311 PyCDC.StartDoc returns None on success, discarding
+                # the native job ID. EndDoc has completed; do not invent an ID
+                # or turn this documented return value into an uncertain failure.
+                return None if jobid is None else int(jobid)
         except Exception:
             if dc and started:
                 try:call('gdi_abort_doc',dc.AbortDoc)
