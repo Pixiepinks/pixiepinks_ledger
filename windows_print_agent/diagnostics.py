@@ -14,7 +14,7 @@ progress_rpc progress_heartbeat pdf_fetch pdf_validation receipt80_validation
 driver_submission pdf_backend_import pdf_open pdf_page driver_fingerprint
 driver_mode driver_create_dc driver_wrap_dc driver_capabilities driver_geometry
 driver_margins pdf_memory_budget pdf_render pdf_image_conversion gdi_start_doc
-gdi_start_page gdi_draw gdi_end_page gdi_end_doc gdi_abort_doc gdi_release
+gdi_start_page gdi_draw gdi_end_page gdi_end_doc gdi_abort_doc gdi_release gdi_submission_result
 pdf_cleanup'''.split())
 CLASSES = frozenset('''Exception AgentError AttributeError ValueError TypeError
 RuntimeError KeyError MemoryError NotImplementedError OSError PermissionError
