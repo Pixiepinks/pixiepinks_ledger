@@ -7,6 +7,7 @@ from .windows import WindowsPrinters
 from .engine import Engine
 from .store import Store
 from .protocol import *
+from .diagnostics import call
 
 
 def protect(path,value):
@@ -77,14 +78,14 @@ def main():
         if args.command=='run':
             # One process owns the physical device; SQLite action fences survive process/OS restart.
             with backend.exclusive():
-                store=Store(root/'actions.sqlite');proof=load(attestation);engine=Engine(transport,backend,store,proof,credentials['device_id'])
+                store=call('journal_open',Store,root/'actions.sqlite');proof=call('attestation_load',load,attestation);engine=Engine(transport,backend,store,proof,credentials['device_id'])
                 try:
                     while True:
                         try:engine.cycle()
                         except KeyboardInterrupt:break
                         except Exception:print('Agent waiting: connection, printer, authorization or local verification needs review.',flush=True)
                         time.sleep(5)
-                finally:store.close()
+                finally:call('journal_close',store.close)
             return 0
     except KeyboardInterrupt:return 0
     except Exception:

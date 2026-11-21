@@ -3,6 +3,7 @@ import hashlib,json,os
 from contextlib import contextmanager
 from .protocol import *
 from .transport import AgentError
+from .diagnostics import call, step, traced, failure
 
 class WindowsPrinters:
     def __init__(self):
@@ -12,11 +13,13 @@ class WindowsPrinters:
     @contextmanager
     def exclusive(self):
         # Both DBL queues (including drawer control) share one physical resource.
-        handle=self.event.CreateMutex(None,False,'Global\\PixiePinks.DBL.PhysicalPrinter')
-        state=self.event.WaitForSingleObject(handle,0)
-        if state not in {self.event.WAIT_OBJECT_0,self.event.WAIT_ABANDONED}:self.api.CloseHandle(handle);raise AgentError('Another local agent owns the printer')
+        handle=call('dispatch_lock',self.event.CreateMutex,None,False,'Global\\PixiePinks.DBL.PhysicalPrinter')
+        state=call('dispatch_lock',self.event.WaitForSingleObject,handle,0)
+        if state not in {self.event.WAIT_OBJECT_0,self.event.WAIT_ABANDONED}:
+            call('dispatch_lock',self.api.CloseHandle,handle)
+            with step('dispatch_lock'):raise AgentError('Another local agent owns the printer')
         try:yield
-        finally:self.event.ReleaseMutex(handle);self.api.CloseHandle(handle)
+        finally:call('dispatch_lock',self.event.ReleaseMutex,handle);call('dispatch_lock',self.api.CloseHandle,handle)
     def info(self,name):
         handle=self.print.OpenPrinter(name)
         try:
@@ -51,7 +54,9 @@ class WindowsPrinters:
                 conditions=[label for label,constant in [('PAPER_OUT','PRINTER_STATUS_PAPER_OUT'),('PAPER_JAM','PRINTER_STATUS_PAPER_JAM'),('DOOR_OPEN','PRINTER_STATUS_DOOR_OPEN'),('PAUSED','PRINTER_STATUS_PAUSED'),('USER_INTERVENTION','PRINTER_STATUS_USER_INTERVENTION'),('ERROR','PRINTER_STATUS_ERROR')] if status & getattr(self.print,constant,0)]
                 if offline:conditions.append('OFFLINE')
                 rows.append({'name':name,'state':'OFFLINE' if offline else 'ERROR' if status & bad else 'READY','jobs':int(info['cJobs']),'conditions':conditions})
-            except Exception:rows.append({'name':name,'state':'UNAVAILABLE','jobs':0,'conditions':['UNAVAILABLE']})
+            except Exception as exc:
+                failure('printer_status',exc)
+                rows.append({'name':name,'state':'UNAVAILABLE','jobs':0,'conditions':['UNAVAILABLE']})
         return rows
     def shares_port(self,names):
         infos=[self.info(name) for name in names]
@@ -88,55 +93,63 @@ class WindowsPrinters:
             finally:page.close()
         finally:document.close()
 
+    @traced('driver_submission')
     def submit(self,queue,raw,jid,media,expected_fingerprint,progress=None):
-        import pypdfium2 as pdfium
-        from PIL import ImageWin
-        self.validate_pdf(raw,media)
-        doc=pdfium.PdfDocument(raw);dc=None;started=False;jobid=None
+        with step('pdf_backend_import'):
+            import pypdfium2 as pdfium
+            from PIL import ImageWin
+        call('pdf_validation',self.validate_pdf,raw,media)
+        doc=call('pdf_open',pdfium.PdfDocument,raw);dc=None;started=False;jobid=None
         try:
             for index in range(len(doc)):
-                page=doc[index];bitmap=None;image=None
+                page=call('pdf_page',lambda:doc[index]);bitmap=None;image=None
                 try:
-                    if progress:progress()
-                    width,height=page.get_size();wm,hm=width*25.4/72,height*25.4/72
-                    info=self.info(queue)
-                    if self.fingerprint_info(info)!=expected_fingerprint:raise AgentError('Driver settings changed; reattest locally')
-                    dm=info['pDevMode']
-                    if dm is None:raise AgentError('Driver configuration unavailable')
-                    # Only this DC receives public paper settings; never SetPrinter/global preferences.
-                    dm.PaperSize=256;dm.PaperWidth=round(wm*10);dm.PaperLength=round(hm*10);dm.Orientation=1;dm.Copies=1
-                    dm.Fields|=self.con.DM_PAPERSIZE|self.con.DM_PAPERWIDTH|self.con.DM_PAPERLENGTH|self.con.DM_ORIENTATION|self.con.DM_COPIES
-                    if dc is not None:raise AgentError('Mixed or repeated DC setup')
-                    hdc=self.gui.CreateDC('WINSPOOL',queue,dm);dc=self.ui.CreateDCFromHandle(hdc)
-                    dpi_x=dc.GetDeviceCaps(88);dpi_y=dc.GetDeviceCaps(90)
-                    if dpi_x!=dpi_y or not 203<=dpi_x<=1200:raise AgentError('Unsupported printer resolution')
-                    physical_w=dc.GetDeviceCaps(110);physical_h=dc.GetDeviceCaps(111);offset_x=dc.GetDeviceCaps(112);offset_y=dc.GetDeviceCaps(113)
-                    expected_w=round(wm*dpi_x/25.4);expected_h=round(hm*dpi_x/25.4)
-                    if abs(physical_w-expected_w)>max(3,dpi_x*.5/25.4) or abs(physical_h-expected_h)>max(3,dpi_x*.5/25.4):raise AgentError('Driver paper geometry mismatch; do not fit/scale labels')
-                    if media=='RECEIPT':
-                        printable_w=dc.GetDeviceCaps(8);printable_h=dc.GetDeviceCaps(10)
-                        allowance=round(5*dpi_x/25.4)
-                        if min(offset_x,offset_y)<0 or offset_x>allowance or offset_y>allowance or offset_x+printable_w<expected_w-allowance or offset_y+printable_h<expected_h-allowance:raise AgentError('Receipt printable region clips safety margins; no scaling permitted')
-                    if media=='LABEL' and (offset_x>dpi_x*.5/25.4 or offset_y>dpi_x*.5/25.4):raise AgentError('Driver margins exceed label safety allowance')
-                    render_dpi=dpi_x if media=='LABEL' else min(dpi_x,300);scale=render_dpi/72
-                    if width*height*scale*scale>50000000:raise AgentError('Raster memory budget exceeded')
-                    bitmap=page.render(scale=scale);image=bitmap.to_pil().convert('RGB')
+                    if progress:call('progress_callback',progress)
+                    with step('driver_fingerprint'):
+                        width,height=page.get_size();wm,hm=width*25.4/72,height*25.4/72
+                        info=self.info(queue)
+                        if self.fingerprint_info(info)!=expected_fingerprint:raise AgentError('Driver settings changed; reattest locally')
+                    with step('driver_mode'):
+                        dm=info['pDevMode']
+                        if dm is None:raise AgentError('Driver configuration unavailable')
+                        # Only this DC receives public paper settings; never SetPrinter/global preferences.
+                        dm.PaperSize=256;dm.PaperWidth=round(wm*10);dm.PaperLength=round(hm*10);dm.Orientation=1;dm.Copies=1
+                        dm.Fields|=self.con.DM_PAPERSIZE|self.con.DM_PAPERWIDTH|self.con.DM_PAPERLENGTH|self.con.DM_ORIENTATION|self.con.DM_COPIES
+                        if dc is not None:raise AgentError('Mixed or repeated DC setup')
+                    hdc=call('driver_create_dc',self.gui.CreateDC,'WINSPOOL',queue,dm);dc=call('driver_wrap_dc',self.ui.CreateDCFromHandle,hdc)
+                    with step('driver_capabilities'):
+                        dpi_x=dc.GetDeviceCaps(88);dpi_y=dc.GetDeviceCaps(90)
+                        if dpi_x!=dpi_y or not 203<=dpi_x<=1200:raise AgentError('Unsupported printer resolution')
+                    with step('driver_geometry'):
+                        physical_w=dc.GetDeviceCaps(110);physical_h=dc.GetDeviceCaps(111);offset_x=dc.GetDeviceCaps(112);offset_y=dc.GetDeviceCaps(113)
+                        expected_w=round(wm*dpi_x/25.4);expected_h=round(hm*dpi_x/25.4)
+                        if abs(physical_w-expected_w)>max(3,dpi_x*.5/25.4) or abs(physical_h-expected_h)>max(3,dpi_x*.5/25.4):raise AgentError('Driver paper geometry mismatch; do not fit/scale labels')
+                    with step('driver_margins'):
+                        if media=='RECEIPT':
+                            printable_w=dc.GetDeviceCaps(8);printable_h=dc.GetDeviceCaps(10)
+                            allowance=round(5*dpi_x/25.4)
+                            if min(offset_x,offset_y)<0 or offset_x>allowance or offset_y>allowance or offset_x+printable_w<expected_w-allowance or offset_y+printable_h<expected_h-allowance:raise AgentError('Receipt printable region clips safety margins; no scaling permitted')
+                        if media=='LABEL' and (offset_x>dpi_x*.5/25.4 or offset_y>dpi_x*.5/25.4):raise AgentError('Driver margins exceed label safety allowance')
+                    with step('pdf_memory_budget'):
+                        render_dpi=dpi_x if media=='LABEL' else min(dpi_x,300);scale=render_dpi/72
+                        if width*height*scale*scale>50000000:raise AgentError('Raster memory budget exceeded')
+                    bitmap=call('pdf_render',page.render,scale=scale);image=call('pdf_image_conversion',lambda:bitmap.to_pil().convert('RGB'))
                     # A new DC per page retains exact PDF page geometry and cutter-per-page behavior.
                     # StartDoc occurs once per physical page; all pages are one durable agent action.
-                    jobid=dc.StartDoc('PixiePinks '+jid);started=True;dc.StartPage()
+                    jobid=call('gdi_start_doc',dc.StartDoc,'PixiePinks '+jid);started=True;call('gdi_start_page',dc.StartPage)
                     target_w,target_h=(image.width,image.height) if media=='LABEL' else (expected_w,expected_h)
-                    ImageWin.Dib(image).draw(dc.GetHandleOutput(),(-offset_x,-offset_y,target_w-offset_x,target_h-offset_y))
-                    dc.EndPage();dc.EndDoc();started=False;dc.DeleteDC();dc=None
+                    call('gdi_draw',lambda:ImageWin.Dib(image).draw(dc.GetHandleOutput(),(-offset_x,-offset_y,target_w-offset_x,target_h-offset_y)))
+                    call('gdi_end_page',dc.EndPage);call('gdi_end_doc',dc.EndDoc);started=False;call('gdi_release',dc.DeleteDC);dc=None
                 finally:
-                    if image is not None:image.close()
-                    if bitmap is not None:bitmap.close()
-                    page.close()
+                    if image is not None:call('pdf_cleanup',image.close)
+                    if bitmap is not None:call('pdf_cleanup',bitmap.close)
+                    call('pdf_cleanup',page.close)
             return int(jobid)
         except Exception:
             if dc and started:
-                try:dc.AbortDoc()
+                try:call('gdi_abort_doc',dc.AbortDoc)
                 except Exception:pass
             raise
         finally:
-            if dc:dc.DeleteDC()
-            doc.close()
+            if dc:call('gdi_release',dc.DeleteDC)
+            call('pdf_cleanup',doc.close)
