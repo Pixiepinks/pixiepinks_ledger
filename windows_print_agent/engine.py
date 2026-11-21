@@ -4,6 +4,7 @@ from uuid import UUID
 import httpx
 from .protocol import *
 from .transport import AgentError
+from .diagnostics import call, step, traced, failure
 
 class Engine:
     def __init__(self,transport,backend,store,attestation,device_id):
@@ -18,31 +19,33 @@ class Engine:
         try:
             base=normal and saved.get('device_id')==self.device_id and all(saved.get('fingerprints',{}).get(name)==self.backend.fingerprint(name) for name in names)
             base=base and self.backend.shares_port([RECEIPT_QUEUE] if config['config'].get('receipt_only') else [RECEIPT_QUEUE,LABEL_QUEUE]+([DRAWER_QUEUE] if config['config']['drawer_queue'] else []))
-        except Exception:base=False
+        except Exception as exc:failure('attestation_check',exc);base=False
         try:drawer=base and not config['config'].get('receipt_only') and config['config']['drawer_verified'] and saved.get('drawer_queue_isolated') is True and saved.get('drawer_driver_tested') is True and saved.get('drawer_no_replay_tested') is True and self.backend.drawer_safe(DRAWER_QUEUE) and config['config']['drawer_queue']==DRAWER_QUEUE
-        except Exception:drawer=False
+        except Exception as exc:failure('attestation_check',exc);drawer=False
         return bool(base),bool(drawer)
     def flush_results(self):
-        for jid,claim,status,spool in self.store.pending(self.device_id):
-            try:self.remote.result(jid,claim,status,spool);self.store.acked(jid)
+        for jid,claim,status,spool in call('journal_pending',self.store.pending,self.device_id):
+            try:call('outcome_ack',self.remote.result,jid,claim,status,spool);call('journal_ack',self.store.acked,jid)
             except httpx.HTTPStatusError as error:
-                if error.response.status_code==409:self.store.acked(jid)  # Operator already resolved; no resend.
+                if error.response.status_code==409:call('journal_ack',self.store.acked,jid)  # Operator already resolved; no resend.
                 else:raise
+    @traced('poll_cycle')
     def cycle(self):
-        self.flush_results();config=self.remote.config()
+        self.flush_results();config=call('configuration_fetch',self.remote.config)
         if config['id']!=self.device_id or config['status']!='ACTIVE':raise AgentError('Device authorization unavailable')
-        verified,drawer=self.verified(config);queues=self.backend.status(self.names(config));empty=all(q['jobs']==0 and q['state']=='READY' for q in queues)
+        verified,drawer=self.verified(config);queues=call('printer_status',self.backend.status,self.names(config));empty=all(q['jobs']==0 and q['state']=='READY' for q in queues)
         ack=config['mode_request'] if verified and empty else None
-        config=self.remote.heartbeat({'version':config['version'],'queues':queues,'queues_empty':empty,'local_verified':verified,'drawer_verified':drawer,'mode_ack':ack})
+        config=call('heartbeat',self.remote.heartbeat,{'version':config['version'],'queues':queues,'queues_empty':empty,'local_verified':verified,'drawer_verified':drawer,'mode_ack':ack})
         if not verified or not empty or config['media'] not in MODES or config['config'].get('printing_paused'):return
-        job=self.remote.claim()
+        job=call('job_claim',self.remote.claim)
         if not job:return
         try:self.execute(job,config,drawer)
         finally:self.flush_results()
+    @traced('job_execution')
     def execute(self,job,config,drawer):
         if config['config'].get('receipt_only') and (job.get('kind') not in {'RECEIPT','TEST'} or job.get('queue')!=RECEIPT_QUEUE or job.get('media')!='RECEIPT' or config['config'].get('receipt_profile')!='80'):raise AgentError('Receipt-only connector cannot dispatch barcode/drawer/other paper')
         str(UUID(job['id']))
-        identity=self.store.identity(job);prior=self.store.get(job['id'])
+        identity=call('journal_identity',self.store.identity,job);prior=call('journal_read',self.store.get,job['id'])
         if prior:
             if prior[0]!=identity:raise AgentError('Existing action identity changed; manual review required')
             return  # Delivered twice or restarted: never dispatch an existing identity again.
@@ -60,27 +63,28 @@ class Engine:
             # The vendor driver performs its tested cashbox action; no electrical bytes/pulses here.
             from .slip import drawer_slip
             raw=drawer_slip(job['id'])
-        else:raw=self.remote.pdf(job)
-        self.backend.validate_pdf(raw,job['media'])
+        else:raw=call('pdf_fetch',self.remote.pdf,job)
+        call('pdf_validation',self.backend.validate_pdf,raw,job['media'])
         if config['config'].get('receipt_only'):
             from .windows import WindowsPrinters
-            WindowsPrinters.validate_receipt80(raw)
-        self.store.intent(job)  # fsync before obtaining the single-use dispatch permit or touching a driver.
+            call('receipt80_validation',WindowsPrinters.validate_receipt80,raw)
+        call('journal_intent',self.store.intent,job)  # fsync before obtaining the single-use dispatch permit or touching a driver.
         try:
-            with self.backend.exclusive():
-                if any(q['jobs'] or q['state']!='READY' for q in self.backend.status(self.names(config))):
-                    self.store.finish(job['id'],'FAILED');return
+            with step('dispatch_lock'),self.backend.exclusive():
+                if any(q['jobs'] or q['state']!='READY' for q in call('printer_status',self.backend.status,self.names(config))):
+                    call('journal_failed',self.store.finish,job['id'],'FAILED');return
                 valid,drawer_valid=self.verified(config)
-                if not valid or (job['kind']=='DRAWER' and not drawer_valid):self.store.finish(job['id'],'FAILED');return
-                started=time.monotonic();self.remote.permit(job)
-                if time.monotonic()-started>5:raise AgentError('Dispatch permit too old')
+                if not valid or (job['kind']=='DRAWER' and not drawer_valid):call('journal_failed',self.store.finish,job['id'],'FAILED');return
+                started=time.monotonic();call('permit_response',self.remote.permit,job)
+                with step('permit_deadline'):
+                    if time.monotonic()-started>5:raise AgentError('Dispatch permit too old')
                 last_progress=[0.0]
                 def progress():
                     if time.monotonic()-last_progress[0]<15:return
-                    self.remote.progress(job);self.remote.heartbeat({'version':config['version'],'queues':self.backend.status(self.names(config)),'queues_empty':False,'local_verified':self.verified(config)[0],'drawer_verified':self.verified(config)[1],'mode_ack':None})
+                    call('progress_rpc',self.remote.progress,job);call('progress_heartbeat',self.remote.heartbeat,{'version':config['version'],'queues':call('printer_status',self.backend.status,self.names(config)),'queues_empty':False,'local_verified':self.verified(config)[0],'drawer_verified':self.verified(config)[1],'mode_ack':None})
                     last_progress[0]=time.monotonic()
-                spool=self.backend.submit(job['queue'],raw,job['id'],job['media'],self.attestation['fingerprints'][job['queue']],progress)
-                self.store.finish(job['id'],'SUBMITTED_TO_PRINTER',spool)
+                spool=call('driver_submission',self.backend.submit,job['queue'],raw,job['id'],job['media'],self.attestation['fingerprints'][job['queue']],progress)
+                call('journal_submitted',self.store.finish,job['id'],'SUBMITTED_TO_PRINTER',spool)
         except Exception:
-            self.store.finish(job['id'],'UNKNOWN')  # Do not infer whether a physical action occurred.
+            call('journal_unknown',self.store.finish,job['id'],'UNKNOWN')  # Do not infer whether a physical action occurred.
             raise
