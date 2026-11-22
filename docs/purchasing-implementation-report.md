@@ -43,4 +43,6 @@ Remaining requirements before live activation:
 
 Limitations retained intentionally: supplier payments record actual externally made payments in a procurement subledger, not bank/cash/GL postings; supplier payment reversal/returns require separate reviewed workflows. Ambiguous remote outcomes never automatically resend. Present quantity alone cannot prove success or absence of a prior adjustment; manual reconciliation retains Needs Review in purchasing rather than claiming Synced. No guarantee of atomicity across Shopify and PostgreSQL is claimed.
 
+Rollback to pre-purchasing code additionally requires the shared inventory-write gate OFF: old workers cannot recognize the new purchase-specific gate and must not release pending purchase documents. Preserve all new evidence tables.
+
 Full setup, operator steps, acceptance checks, failure handling and rollback: [purchasing-goods-receiving.md](purchasing-goods-receiving.md).
