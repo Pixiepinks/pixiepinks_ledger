@@ -36,7 +36,11 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.get('/api/context')
     def context(db=Depends(get_db),user=Depends(require_user)):
         service.require(user);policy,version=service.cfg(db)
-        return out({'cashier':user.username,'cashier_id':user.id,'checkout_enabled':settings.POS_CHECKOUT_WRITE_ENABLED,'refund_enabled':settings.POS_REFUND_WRITE_ENABLED,
+        recovery=db.query(POSCheckout).join(POSSession,POSSession.id==POSCheckout.session_id).filter(
+            POSCheckout.shop==retail.shop(),POSSession.shop==retail.shop(),POSSession.cashier_id==user.id,
+            POSCheckout.status.notin_(['COMPLETE','CANCELLED'])).order_by(POSCheckout.created_at.desc())
+        return out({'shop':retail.shop(),'recovery_sales':[{'id':r.id,'reference':r.reference,'status':r.status} for r in recovery],
+            'cashier':user.username,'cashier_id':user.id,'checkout_enabled':settings.POS_CHECKOUT_WRITE_ENABLED,'refund_enabled':settings.POS_REFUND_WRITE_ENABLED,
             'daily_operations_enabled':settings.POS_DAILY_OPERATIONS_ENABLED,'daily_registers':[{'register_id':p.register_id,'enabled':bool(p.enabled),'device_id':p.device_id,'device_version':p.device_version} for p in db.query(POSDailyPolicy).filter_by(shop=retail.shop())],
             'config':policy,'config_version':version,'contract':remote.CONTRACT,'currency':'LKR','physical_balance':'PROVISIONAL',
             'registers':[{'id':r.id,'name':r.name,'location':r.location_id} for r in db.query(POSRegister).filter_by(shop=retail.shop())],

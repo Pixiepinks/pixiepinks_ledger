@@ -260,7 +260,10 @@ def test_browser_authorize_normal_checkout_and_separate_receipt_status(connector
         service.dispatch_one(r.sessions,r.pos);r.engine.cycle();r.engine.cycle()
         page.get_by_text('Pilot phase: COMPLETE',exact=False).wait_for()
         page.get_by_text('Automatic Receipt Status: SUBMITTED_TO_PRINTER',exact=False).wait_for()
-        page.reload();page.get_by_text('Pilot phase: COMPLETE',exact=False).wait_for()
+        page.reload();page.locator('#pos-session').filter(has_text='Open').wait_for()
+        assert not page.locator('#pos-modal').evaluate('(e)=>e.open')
+        page.locator('#pos-history').click();page.get_by_role('button',name='Open receipt / status',exact=True).first.click()
+        page.get_by_text('Pilot phase: COMPLETE',exact=False).wait_for()
         assert not errors and len(r.pos.calls)==1 and len(r.backend.calls)==1
         browser.close()
 

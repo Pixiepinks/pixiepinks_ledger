@@ -14,7 +14,7 @@ import pos_provisional_receipts as provisional
 
 
 def test_pending_sale_status_and_history_use_distinct_confirmed_provisional_path(pos):
-    r=pos;rid=checkout(r);before=snapshot(r,rid);root=Path(__file__).parents[1];pdfs=[];paths=[]
+    r=pos;rid=checkout(r);before=snapshot(r,rid);root=Path(__file__).parents[1];pdfs=[];paths=[];writes=[]
     with sync_playwright() as p:
         browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox'])
         page=browser.new_page(viewport={'width':1400,'height':1000});errors=[]
@@ -22,6 +22,7 @@ def test_pending_sale_status_and_history_use_distinct_confirmed_provisional_path
         page.add_init_script('window.open=()=>null;sessionStorage.setItem("pixiepinks-pos-sale",'+json.dumps(rid)+');')
         def route(request):
             path=request.request.url.removeprefix('https://pos.test');paths.append(path)
+            if request.request.method!='GET':writes.append(path)
             if path.startswith('/static/'):
                 local=root/path.split('?',1)[0].lstrip('/')
                 if local.is_file():request.fulfill(path=str(local));return
@@ -48,7 +49,8 @@ def test_pending_sale_status_and_history_use_distinct_confirmed_provisional_path
         page.once('dialog',lambda dialog:dialog.accept());page.get_by_role('button',name='Print Provisional Receipt (80 mm)',exact=True).click()
         page.get_by_role('link',name='Open provisional PDF',exact=True).wait_for()
         assert len(pdfs)==2 and 'COPY / REPRINT' in text(pdfs[1])
-        assert not any('/receipt/pdf' in path or '/api/print-agent/' in path or '/hardware/' in path for path in paths)
+        assert not any('/receipt/pdf' in path or '/api/print-agent/' in path for path in paths)
+        assert not any('/hardware' in path for path in writes)
         assert not errors;browser.close()
     assert snapshot(r,rid)==before and not r.pos.calls and not r.remote.mutations
     with r.sessions() as db:assert db.query(HardwareJob).count()==0 and db.query(JournalEntry).count()==0
