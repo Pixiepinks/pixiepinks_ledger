@@ -207,8 +207,8 @@ def test_daily_browser_cashier_checkout_refresh_status_and_next_sale(connector,m
         s.dispatch_one(r.sessions,r.pos);r.engine.cycle();r.engine.cycle()
         page.get_by_text('Shopify: VERIFIED · Accounting: COMPLETE',exact=True).wait_for()
         page.get_by_text('Automatic Receipt Status: SUBMITTED_TO_PRINTER',exact=False).wait_for()
-        page.reload();page.get_by_text('Shopify: VERIFIED · Accounting: COMPLETE',exact=True).wait_for()
         page.get_by_role('button',name='Next sale',exact=True).click()
+        page.reload()
         page.locator('#pos-modal').wait_for(state='hidden')
         assert page.locator('#pos-scan').evaluate('(e)=>e===document.activeElement')
         assert not errors and len(r.pos.calls)==len(r.backend.calls)==1

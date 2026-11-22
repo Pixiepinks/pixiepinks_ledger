@@ -62,7 +62,8 @@ def test_complete_sale_history_browser_printing_without_agent(pos):
                     assert request.request.headers['x-csrf-token']==r.csrf;pdfs.append(response.content)
                 request.fulfill(status=response.status_code,body=response.content,content_type=response.headers.get('content-type','text/plain'));return
             request.fulfill(status=404,body='')
-        page.route('**/*',route);page.goto('https://pos.test/crm/pos');page.get_by_role('button',name='Print Receipt (80 mm)',exact=True).wait_for()
+        page.route('**/*',route);page.goto('https://pos.test/crm/pos')
+        page.locator('#pos-history').click();page.get_by_role('button',name='Open receipt / status').first.click();page.get_by_role('button',name='Print Receipt (80 mm)',exact=True).wait_for()
         assert page.get_by_label('Receipt format',exact=True).input_value()=='80'
         page.get_by_role('button',name='Print Receipt (80 mm)',exact=True).click();page.get_by_role('link',name='Open receipt PDF',exact=True).wait_for()
         page.screenshot(path='/workspace/scratch/phase4g-browser-receipt.png',full_page=True)
