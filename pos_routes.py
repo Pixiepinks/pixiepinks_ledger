@@ -42,6 +42,26 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
             'sessions':[register_session(db,s) for s in db.query(POSSession).filter_by(shop=retail.shop(),cashier_id=user.id,status='OPEN')],
             'categories':retail.filter_options(db)['categories']})
 
+    @router.get('/api/real-pilot')
+    def pilot_status(db=Depends(get_db),user=Depends(require_user)):
+        import pos_real_sale_pilot as pilot
+        from hardware_models import PrintDevice
+        pilot.require(user);s=pilot.scope(db)
+        return out({'enabled':True,'scope':{'shop':s.shop,'register_id':s.register_id,'device_id':s.device_id,'location_id':s.location_id} if s else None,
+            'devices':[{'id':d.id,'register_id':d.register_id,'name':d.name} for d in db.query(PrintDevice).filter_by(shop=retail.shop(),status='ACTIVE') if d.config.get('receipt_only')]})
+
+    @router.post('/api/real-pilot/scope')
+    async def pilot_scope(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import pos_real_sale_pilot as pilot
+        p=await body(request,['device_id','notes','confirm']);s=pilot.configure(db,user,**p)
+        return out({'shop':s.shop,'register_id':s.register_id,'device_id':s.device_id})
+
+    @router.post('/api/real-pilot/authorize')
+    async def pilot_authorize(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import pos_real_sale_pilot as pilot
+        p=await body(request,['cid','version','key','notes','confirm']);a=pilot.authorize(db,user,**p)
+        return out({'cart_id':a.cart_id,'device_id':a.device_id,'expires_at':a.expires_at.isoformat()+'Z'})
+
     @router.get('/api/capabilities')
     def capabilities(user=Depends(require_user)):
         service.require(user)

@@ -232,6 +232,8 @@ def checkout(db,user,cart_id,version,key,plan,client=None):
         if tenders(plan,Decimal(old.frozen['quote']['grand_total']))!=old.frozen['tenders']:raise HTTPException(409,'Checkout key belongs to different tenders')
         return old
     if c.version!=version:raise HTTPException(409,'Cart changed; reload before checkout')
+    from pos_real_sale_pilot import before_checkout
+    before_checkout(db,user,c)
     if c.status!='DRAFT' or not c.payload['lines']:raise HTTPException(409,'Nonempty active cart required')
     if not isinstance(key,str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,64}',key):raise HTTPException(422,'Stable checkout request ID required')
     s=session(db,user,c.session_id);policy,config_version=cfg(db)
@@ -301,6 +303,9 @@ def verify_bank(db,user,checkout_id,payment_id,key):
 
 def finalize(db,user,checkout_id):
     require(user,'sell');locked(db);r=sale(db,user,checkout_id);session(db,user,r.session_id)
+    from pos_real_sale_pilot import authorization,dispatch_allowed
+    if authorization(db,r) and r.status in {'QUEUED','COMPLETE','REVIEW','UNCERTAIN'}:return r
+    if authorization(db,r) and not dispatch_allowed(db,r):raise HTTPException(409,'Pilot release gate closed')
     if r.status!='PAYMENT_READY':raise HTTPException(409,'Verified tenders and cashier confirmation required')
     r.status='QUEUED';queue_create(db,user,r);audit(db,user,r.reference,'CASHIER_FINALIZE_CONFIRMED');db.commit();return r
 
@@ -325,6 +330,8 @@ def publish_sale(db,r,observed):
     order.shopify_order_id=observed['id'];order.shopify_order_name=observed['name'];order.shopify_lifecycle_status='ORDER_LINKED';order.shopify_financial_status=observed['displayFinancialStatus'];order.shopify_sync_status='SYNCED';order.fulfillment_status='FULFILLED';order.order_status='DELIVERED';order.payment_status='PAID';order.amount_paid=order.grand_total
     order.shopify_total_received=order.grand_total;order.shopify_total_outstanding=0;order.shopify_payment_currency='LKR';order.shopify_order_linked_at=datetime.utcnow()
     r.status='COMPLETE';r.completed_at=datetime.utcnow();audit(db,None,r.reference,'SALE_VERIFIED',shopify_order=observed['id'],journal_id=journal)
+    from pos_real_sale_pilot import reserve_receipt
+    reserve_receipt(db,r,observed)
 
 
 def order_wire(r):
@@ -400,6 +407,9 @@ def dispatch_one(sessions,client=None):
         if (op.kind=='CREATE' and not settings.POS_CHECKOUT_WRITE_ENABLED) or (op.kind=='REFUND' and not settings.POS_REFUND_WRITE_ENABLED):return False
         r=db.get(POSCheckout,op.checkout_id);user=db.get(User,op.actor_id)
         try:
+            if op.kind=='CREATE':
+                from pos_real_sale_pilot import dispatch_allowed
+                if not dispatch_allowed(db,r):return False
             require(user,'sell' if op.kind=='CREATE' else 'refund',op.kind=='REFUND')
             if r.frozen_hash!=digest(r.frozen) or r.frozen['contract']!=remote.CONTRACT or op.attempts:raise HTTPException(409,'POS frozen identity/attempt failure')
             cap=api.capabilities()
@@ -439,6 +449,7 @@ def dispatch_one(sessions,client=None):
             with db.begin_nested():
                 if kind=='CREATE':
                     order=api.read(remote_id);stage='ORDER_VERIFICATION'
+                    if not isinstance(order,dict) or order.get('id')!=remote_id:raise remote.POSRemoteError('Order identity/correlation mismatch')
                     observed=verify_order(r,order);op.outcome={'remote_id':remote_id,'order':observed}
                     stage='LOCAL_POSTING';publish_sale(db,r,observed)
                 else:finish_refund(db,r,op,api,remote_id)
@@ -461,8 +472,12 @@ def reconcile(db,user,operation_id,notes,client=None):
             if op.kind=='CREATE':
                 found=api.find(r.reference)
                 if len(found)!=1:raise HTTPException(409,'Exactly one authoritative matching order required; zero matches never permit a blind retry')
+                known=(op.outcome or {}).get('remote_id')
+                if known and known!=found[0]['id']:raise remote.POSRemoteError('Order identity/correlation mismatch')
                 stage='SHOPIFY_READBACK';order=api.read(found[0]['id'])
-                stage='ORDER_VERIFICATION';observed=verify_order(r,order)
+                stage='ORDER_VERIFICATION'
+                if not isinstance(order,dict) or order.get('id')!=found[0]['id']:raise remote.POSRemoteError('Order identity/correlation mismatch')
+                observed=verify_order(r,order)
                 op.outcome={'remote_id':observed['id'],'order':observed}
                 stage='LOCAL_POSTING';publish_sale(db,r,observed)
             else:
@@ -602,7 +617,8 @@ def operation_view(db,op):
 def public_sale(db,r):
     from pos_provisional_receipts import availability
     order=db.get(SalesOrder,r.sales_order_id)
-    return {'provisional_receipt':availability(db,r),'id':r.id,'reference':r.reference,'status':r.status,'frozen':r.frozen,'created_at':r.created_at.isoformat()+'Z','completed_at':r.completed_at.isoformat()+'Z' if r.completed_at else None,
+    from pos_real_sale_pilot import sale_status
+    return {'pilot':sale_status(db,r),'provisional_receipt':availability(db,r),'id':r.id,'reference':r.reference,'status':r.status,'frozen':r.frozen,'created_at':r.created_at.isoformat()+'Z','completed_at':r.completed_at.isoformat()+'Z' if r.completed_at else None,
         'shopify_order_id':order.shopify_order_id,'shopify_order_name':order.shopify_order_name,
         'payments':[{'id':p.id,'method':p.payment_method,'amount':str(p.amount),'status':p.verification_status,'reference':p.payment_reference} for p in db.query(SalesPayment).filter_by(sales_order_id=order.id)],
         'operations':[operation_view(db,o) for o in db.query(POSOperation).filter_by(checkout_id=r.id)],

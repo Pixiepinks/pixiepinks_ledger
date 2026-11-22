@@ -48,7 +48,8 @@ def test_additive_migration_and_import_does_not_reject_legacy_duplicates(pg):
     from inventory_models import InventoryDocument, InventoryEvent, InventoryObservation, InventoryPolicy, InventoryPolicyEvent
     models += [InventoryDocument, InventoryEvent, InventoryObservation, InventoryPolicy, InventoryPolicyEvent]
     from hardware_models import PrintDevice, HardwareJob, HardwareEvent, HardwareRate, POSReceiptTest
-    models += [PrintDevice, HardwareJob, HardwareEvent, HardwareRate, POSReceiptTest]
+    from pos_models import POSPilotScope,POSPilotAuthorization
+    models += [PrintDevice, HardwareJob, HardwareEvent, HardwareRate, POSReceiptTest,POSPilotScope,POSPilotAuthorization]
     for model in reversed(models):model.__table__.drop(engine)
     cfg=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'));command.stamp(cfg,'20261111_41');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
     with sessions() as db:

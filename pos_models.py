@@ -126,3 +126,32 @@ class POSCustomerBinding(Base):
     actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
     __table_args__=(UniqueConstraint('shop','customer_id',name='uq_pos_customer_binding'),UniqueConstraint('shop','shopify_customer_id',name='uq_pos_shopify_customer_binding'))
+
+
+class POSPilotScope(Base):
+    """Explicit immutable real-sale pilot target; unrelated to general print policy."""
+    __tablename__='pos_pilot_scopes'
+    shop=Column(String(100),primary_key=True)
+    register_id=Column(Integer,ForeignKey('pos_registers.id'),nullable=False)
+    device_id=Column(String(36),ForeignKey('print_devices.id'),nullable=False)
+    location_id=Column(String(100),nullable=False)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    notes=Column(String(1000),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class POSPilotAuthorization(Base):
+    """One immutable administrator authorization per actual cart, before payment."""
+    __tablename__='pos_pilot_authorizations'
+    cart_id=Column(String(36),ForeignKey('pos_carts.id'),primary_key=True)
+    shop=Column(String(100),ForeignKey('pos_pilot_scopes.shop'),nullable=False)
+    request_key=Column(String(64),nullable=False)
+    register_id=Column(Integer,ForeignKey('pos_registers.id'),nullable=False)
+    device_id=Column(String(36),ForeignKey('print_devices.id'),nullable=False)
+    device_version=Column(Integer,nullable=False)
+    cart_hash=Column(String(64),nullable=False)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    notes=Column(String(1000),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    expires_at=Column(DateTime,nullable=False)
+    __table_args__=(UniqueConstraint('shop','request_key',name='uq_pos_pilot_authorization_request'),)
