@@ -2,6 +2,10 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('retail.purchases.view','Purchasing: View','/crm/retail/purchases'),
+    ('retail.purchases.prepare','Purchasing: Prepare bills and receiving','/crm/retail/purchases'),
+    ('retail.purchases.pay','Purchasing: Record supplier payments','/crm/retail/purchases'),
+    ('retail.purchases.approve','Purchasing: Approve and configure','/crm/retail/purchases'),
     ('pos.drawer.open','POS: authorized manual drawer opening','/crm/pos'),
     ('pos.view','POS: view','/crm/pos'),
     ('pos.sell','POS: sell','/crm/pos'),
@@ -48,7 +52,7 @@ def allowed(user, section):
         return settings.POS_ENABLED and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     if isinstance(section,str) and section.startswith('retail.'):
         from settings import settings
-        return settings.RETAIL_ENABLED and (not section.startswith('retail.inventory.') or settings.INVENTORY_ENABLED) and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
+        return settings.RETAIL_ENABLED and (not section.startswith('retail.purchases.') or settings.PURCHASING_ENABLED and settings.INVENTORY_ENABLED) and (not section.startswith('retail.inventory.') or settings.INVENTORY_ENABLED) and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     if section=='ad_analytics':return isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     grants=getattr(user,'section_access',None)
     if grants is None and section=='quick_messages':return user.role in {'ADMIN','SALES_MANAGER'}
@@ -63,7 +67,7 @@ def section_for(path):
     if path=='/crm/pos' or path.startswith('/crm/pos/'):return 'pos.view'
     if path.startswith('/crm/retail/'):
         page=path.split('/')[3]
-        return {'inventory':'retail.inventory.view','products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print','audit':'retail.products.audit','sync':'retail.sync.view','barcode-sync':'retail.barcodes.shopify_sync'}.get(page,'retail.products.view')
+        return {'purchases':'retail.purchases.view','inventory':'retail.inventory.view','products':'retail.products.view','barcodes':'retail.products.view','labels':'retail.barcodes.print','audit':'retail.products.audit','sync':'retail.sync.view','barcode-sync':'retail.barcodes.shopify_sync'}.get(page,'retail.products.view')
     if path=='/crm/notifications' or path.startswith('/crm/notifications/'):return 'whatsapp'
     if path=='/crm/ad-flows' or path.startswith('/crm/ad-flows/'):return 'quick_messages'
     if path=='/crm/ad-assignments' or path.startswith('/crm/ad-assignments/'):return 'ad_analytics'
@@ -97,7 +101,7 @@ def landing(user):
     from settings import settings
     for key,_,path in sorted(SECTIONS,key=lambda row:row[0].startswith('retail.')):
         if key.startswith('pos.') and key!='pos.view':continue
-        if key.startswith('retail.') and key not in {'retail.inventory.view','retail.products.view','retail.products.audit','retail.barcodes.print','retail.sync.view'}:continue
+        if key.startswith('retail.') and key not in {'retail.purchases.view','retail.inventory.view','retail.products.view','retail.products.audit','retail.barcodes.print','retail.sync.view'}:continue
         if key=='sales_orders' and not settings.SALES_ORDERS_ENABLED:continue
         if key=='fulfillments' and not settings.SALES_FULFILLMENT_ENABLED:continue
         if allowed(user,key):return path
