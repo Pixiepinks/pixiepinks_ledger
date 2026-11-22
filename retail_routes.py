@@ -53,7 +53,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         if not permission:raise HTTPException(404,'Retail screen not found')
         service.require(user,permission)
         return templates.TemplateResponse('retail_scanner.html' if screen=='scanner' else 'retail.html',{'request':request,'user':user,'page_title':{'products':'Product Master','scanner':'Barcode Scanner','barcodes':'Barcode Management','labels':'Barcode Label Printing','audit':'Product Audit','sync':'Import & Sync History','barcode-sync':'Shopify Barcode Sync'}[screen],
-            'screen':screen,'csrf':csrf_token(request),'retail_permissions':[p for p in service.PERMISSIONS if user.role=='ADMIN' or isinstance(user.section_access,list) and p in user.section_access]},headers={'Cache-Control':'private, no-store'})
+            'screen':screen,'is_admin':user.role=='ADMIN','csrf':csrf_token(request),'retail_permissions':[p for p in service.PERMISSIONS if user.role=='ADMIN' or isinstance(user.section_access,list) and p in user.section_access]},headers={'Cache-Control':'private, no-store'})
 
     def barcode_response(value):
         return JSONResponse(value,headers={'Cache-Control':'private, no-store'})
@@ -235,6 +235,11 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         service.write_lock(db);row=db.query(RetailVariant).filter_by(shop=service.shop(),id=rid,version=p['version']).one_or_none()
         if not row:raise HTTPException(409,'Variant changed or unavailable')
         service.audit(db,user,'CATEGORY_MAPPED',rid,before=row.category,after=p['category']);row.category=p['category'];row.version+=1;db.commit();return {'ok':True}
+
+    @router.post('/api/products/{rid}/retire-local-barcode')
+    async def retire_local(rid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        p=await body(request,{'version','local_barcode','shopify_barcode','reason','confirm','labels_ack'},{'version','local_barcode','shopify_barcode','reason','confirm','labels_ack'})
+        return service.retire_local_barcode(db,user,rid,p)
 
     @router.post('/api/products/{rid}/approve-alternative')
     async def approve_alternative(rid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):

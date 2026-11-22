@@ -1,5 +1,5 @@
 {% extends 'base.html' %}{% block content %}
-<section id="retail" data-screen="{{ screen }}" data-csrf="{{ csrf }}" data-permissions='{{ retail_permissions|tojson }}'>
+<section id="retail" data-admin="{{ 'true' if is_admin else 'false' }}" data-screen="{{ screen }}" data-csrf="{{ csrf }}" data-permissions='{{ retail_permissions|tojson }}'>
 <div class="card"><h2>{{ page_title }}</h2><p>Catalog imports are read-only. Local assignments preserve Shopify values; controlled barcode synchronization requires a separate reviewed approval.</p>
 <nav class="retail-tabs"><a href="/crm/retail/products">Product Master</a><a href="/crm/retail/scanner">Barcode Scanner</a><a href="/crm/retail/barcodes">Barcode Management</a><a href="/crm/retail/labels">Label Printing</a><a href="/crm/retail/audit">Product Audit</a><a href="/crm/retail/sync">Sync History</a>{% if 'retail.barcodes.shopify_sync' in retail_permissions %}<a href="/crm/retail/barcode-sync">Shopify Barcode Sync</a>{% endif %}</nav>
 <p id="retail-status" role="status" aria-live="polite"></p></div>

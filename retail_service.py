@@ -67,7 +67,10 @@ def audit_context(db):
     checks={}
     for item in db.query(RetailBarcodeItem).join(RetailBarcodeJob).filter(RetailBarcodeJob.shop==shop(),RetailBarcodeItem.checked_at!=None).order_by(RetailBarcodeItem.checked_at.desc(),RetailBarcodeItem.id.desc()):
         checks.setdefault(item.variant_id,{'status':item.status,'code':item.snapshot['code'],'checked_at':item.checked_at.isoformat()+'Z','verified_at':item.verified_at.isoformat()+'Z' if item.verified_at else None})
-    return {'barcode_checks':checks,'sku':skus,'barcode':barcodes,'effective':effective,'products':products,'shared':shared,'total':len(rows)}
+    retired={}
+    for entry in db.query(RetailAudit).filter_by(shop=shop(),action='LOCAL_BARCODE_RETIRED').order_by(RetailAudit.id):
+        retired.setdefault(entry.variant_id,[]).append(entry.detail['local_barcode'])
+    return {'retired_barcodes':retired,'barcode_checks':checks,'sku':skus,'barcode':barcodes,'effective':effective,'products':products,'shared':shared,'total':len(rows)}
 
 
 def issues(row,ctx):
@@ -101,7 +104,7 @@ def issues(row,ctx):
 def public(row,ctx):
     return {'id':row.id,'version':row.version,'product_id':row.product_id,'variant_id':row.variant_id,'title':row.title,'variant_title':row.variant_title,
         'sku':row.sku or '', 'local_sku':row.local_sku or '', 'barcode':row.barcode or '', 'local_barcode':row.local_barcode or '',
-        'shopify_verification':ctx.get('barcode_checks',{}).get(row.id),
+        'retired_local_barcodes':ctx.get('retired_barcodes',{}).get(row.id,[]),'shopify_verification':ctx.get('barcode_checks',{}).get(row.id),
         'effective_barcode':scan_value(row),'category':row.category or '', 'product_type':row.product_type,'vendor':row.vendor,
         'price':str(row.price) if row.price is not None else '', 'currency':row.currency,'image':row.image,
         'compare_at_price':str(row.compare_at_price) if row.compare_at_price is not None else '', 'inventory_item_id':row.inventory_item_id,'inventory_tracked':row.tracked,
@@ -309,3 +312,31 @@ def allocate_commit(db,user,token,confirm):
         audit(db,user,'IDENTIFIER_ALLOCATED',row.id,kind=kind,before=proposed['before'],after=proposed['value'],reason=p['reason'],shopify_write=False)
     counter.value=p['end'];preview.committed=True
     db.flush();return {'count':len(p['rows']),'committed':True,'shopify_write':False}
+
+
+def retire_local_barcode(db,user,rid,payload):
+    """Retire the active pointer only; the immutable allocation remains reserved forever."""
+    require(user,'retail.products.manage')
+    if user.role!='ADMIN':raise HTTPException(403,'Administrator approval required')
+    required={'version','local_barcode','shopify_barcode','reason','confirm','labels_ack'}
+    if not isinstance(payload,dict) or set(payload)!=required or type(payload['version']) is not int or payload['confirm'] is not True or payload['labels_ack'] is not True or not isinstance(payload['reason'],str) or not 10<=len(payload['reason'].strip())<=500:raise HTTPException(422,'Confirm the exact barcodes, give a reason, and acknowledge removing old local labels')
+    write_lock(db)
+    row=db.query(RetailVariant).filter_by(shop=shop(),id=rid,version=payload['version']).one_or_none()
+    if not row or not row.local_barcode or row.local_barcode!=payload['local_barcode'] or row.barcode!=payload['shopify_barcode']:raise HTTPException(409,'Variant or barcodes changed; refresh before retirement')
+    if row.missing or row.product_status!='ACTIVE' or row.stale or row.synced_at<datetime.utcnow()-timedelta(days=7) or not code_valid(row.barcode):raise HTTPException(409,'A fresh active imported Shopify barcode is required')
+    ledger=db.query(RetailIdentifier).filter_by(shop=shop(),variant_id=row.id,kind='barcode',value=row.local_barcode).one_or_none()
+    if ledger is None:raise HTTPException(409,'Committed local allocation could not be verified')
+    items=db.query(RetailBarcodeItem).join(RetailBarcodeJob).filter(RetailBarcodeJob.shop==shop(),RetailBarcodeItem.variant_id==row.id).all()
+    if any(i.status not in {'VERIFIED','PILOT_VERIFIED','CANCELED','SKIPPED','LEGACY_RETIRED'} for i in items) or db.query(RetailBarcodeReservation).filter_by(shop=shop(),variant_id=row.id).first():raise HTTPException(409,'Cancel undispatched barcode jobs or reconcile uncertain outcomes before retirement; no jobs will be changed automatically')
+    from hardware_models import HardwareJob
+    label_ids=[]
+    for job in db.query(RetailPrintJob).filter_by(shop=shop()):
+        if any(l.get('id')==row.id and l.get('barcode')==row.local_barcode for l in job.rows):
+            label_ids.append(job.id)
+            if job.status in {'QUEUED','GENERATING'}:raise HTTPException(409,'Wait for label generation to finish before retirement')
+    if label_ids and db.query(HardwareJob).filter(HardwareJob.shop==shop(),HardwareJob.label_id.in_(label_ids),HardwareJob.status.notin_(['CONFIRMED','FAILED'])).first():raise HTTPException(409,'Review outstanding or uncertain local label hardware jobs before retirement')
+    old=row.local_barcode
+    row.local_barcode=None;row.barcode_source='SHOPIFY';row.barcode_alternative_reason=None;row.version+=1;row.updated_at=datetime.utcnow()
+    audit(db,user,'LOCAL_BARCODE_RETIRED',row.id,local_barcode=old,shopify_barcode=row.barcode,allocation_id=ledger.id,reason=payload['reason'].strip(),labels_ack=True,shopify_write=False,old_scanning_disabled=old!=row.barcode)
+    db.commit()
+    return {'ok':True,'effective_barcode':row.barcode,'retired_barcode':old,'version':row.version,'shopify_write':False}
