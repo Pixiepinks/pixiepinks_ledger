@@ -9,6 +9,11 @@ from .diagnostics import call, step, traced, failure
 class Engine:
     def __init__(self,transport,backend,store,attestation,device_id):
         self.remote=transport;self.backend=backend;self.store=store;self.attestation=attestation;self.device_id=device_id
+    def observe(self,event,**fields):
+        try:
+            monitor=getattr(self,'monitor',None)
+            if monitor:monitor(event,**fields)
+        except Exception:pass  # Diagnostics never affect dispatch or durability.
     @staticmethod
     def names(config):
         if config['config'].get('receipt_only'):return [RECEIPT_QUEUE]
@@ -25,7 +30,7 @@ class Engine:
         return bool(base),bool(drawer)
     def flush_results(self):
         for jid,claim,status,spool in call('journal_pending',self.store.pending,self.device_id):
-            try:call('outcome_ack',self.remote.result,jid,claim,status,spool);call('journal_ack',self.store.acked,jid)
+            try:call('outcome_ack',self.remote.result,jid,claim,status,spool);call('journal_ack',self.store.acked,jid);self.observe('JOB',job_id=jid,job_status='ACKNOWLEDGED')
             except httpx.HTTPStatusError as error:
                 if error.response.status_code==409:call('journal_ack',self.store.acked,jid)  # Operator already resolved; no resend.
                 else:raise
@@ -33,12 +38,18 @@ class Engine:
     def cycle(self):
         self.flush_results();config=call('configuration_fetch',self.remote.config)
         if config['id']!=self.device_id or config['status']!='ACTIVE':raise AgentError('Device authorization unavailable')
+        validator=getattr(self,'validate_runtime_config',None)
+        if validator:validator(config)
         verified,drawer=self.verified(config);queues=call('printer_status',self.backend.status,self.names(config));empty=all(q['jobs']==0 and q['state']=='READY' for q in queues)
         ack=config['mode_request'] if verified and empty else None
         config=call('heartbeat',self.remote.heartbeat,{'version':config['version'],'queues':queues,'queues_empty':empty,'local_verified':verified,'drawer_verified':drawer,'mode_ack':ack})
+        if validator:validator(config)
+        self.observe('CONNECTED')
+        self.observe('READINESS',media=config['media'],printer_ready=bool(verified and empty and config['media'] in MODES and not config['config'].get('printing_paused')))
         if not verified or not empty or config['media'] not in MODES or config['config'].get('printing_paused'):return
         job=call('job_claim',self.remote.claim)
         if not job:return
+        self.observe('JOB',job_id=job.get('id'),job_status='DELIVERED')
         try:self.execute(job,config,drawer)
         finally:self.flush_results()
     @traced('job_execution')
@@ -68,7 +79,8 @@ class Engine:
         if config['config'].get('receipt_only'):
             from .windows import WindowsPrinters
             call('receipt80_validation',WindowsPrinters.validate_receipt80,raw)
-        call('journal_intent',self.store.intent,job)  # fsync before obtaining the single-use dispatch permit or touching a driver.
+        call('journal_intent',self.store.intent,job)
+        self.observe('JOB',job_id=job['id'],job_status='INTENT')  # fsync before obtaining the single-use dispatch permit or touching a driver.
         try:
             with step('dispatch_lock'),self.backend.exclusive():
                 if any(q['jobs'] or q['state']!='READY' for q in call('printer_status',self.backend.status,self.names(config))):
@@ -85,6 +97,8 @@ class Engine:
                     last_progress[0]=time.monotonic()
                 spool=call('driver_submission',self.backend.submit,job['queue'],raw,job['id'],job['media'],self.attestation['fingerprints'][job['queue']],progress)
                 call('journal_submitted',self.store.finish,job['id'],'SUBMITTED_TO_PRINTER',spool)
+                self.observe('JOB',job_id=job['id'],job_status='SUBMITTED_TO_PRINTER')
         except Exception:
-            call('journal_unknown',self.store.finish,job['id'],'UNKNOWN')  # Do not infer whether a physical action occurred.
+            call('journal_unknown',self.store.finish,job['id'],'UNKNOWN')
+            self.observe('JOB',job_id=job['id'],job_status='UNKNOWN')  # Do not infer whether a physical action occurred.
             raise

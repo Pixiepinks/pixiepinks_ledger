@@ -1,13 +1,11 @@
 """Run `python -m windows_print_agent --help` on the paired Windows user account."""
-import argparse,getpass,json,os,sys,time
+import argparse,getpass,json,os,sys
 from pathlib import Path
 from uuid import UUID
 from .transport import Transport,EncryptedTransport,AgentError
 from .windows import WindowsPrinters
 from .engine import Engine
-from .store import Store
 from .protocol import *
-from .diagnostics import call
 
 
 def protect(path,value):
@@ -22,10 +20,12 @@ def load(path):
 def confirm(prompt):return input(prompt+' Type YES: ').strip()=='YES'
 
 def main():
-    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('command',choices=['pair','printers','attest','run','status','forget']);parser.add_argument('--server');parser.add_argument('--public-key',help='Pinned non-secret public key copied from authenticated CRM Admin')
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('command',choices=['pair','printers','attest','run','status','forget','startup-check']);parser.add_argument('--server');parser.add_argument('--public-key',help='Pinned non-secret public key copied from authenticated CRM Admin')
+    parser.add_argument('--autostart-register1',action='store_true',help='Require the approved Register 1 account/install/receipt-only binding')
     args=parser.parse_args()
     if os.name!='nt':parser.error('Windows 11 with the configured printer drivers is required')
-    root=Path(os.environ['LOCALAPPDATA'])/'PixiePinks'/'PrintAgent';root.mkdir(parents=True,exist_ok=True)
+    root=Path(os.environ['LOCALAPPDATA'])/'PixiePinks'/'PrintAgent'
+    if args.command!='startup-check':root.mkdir(parents=True,exist_ok=True)
     secret=root/'credentials.dpapi';attestation=root/'attestation.dpapi'
     try:
         if args.command=='forget':
@@ -35,6 +35,17 @@ def main():
             if not args.server:raise AgentError('Pairing requires --server https://your-approved-crm-host')
             transport=EncryptedTransport(args.server,args.public_key) if args.public_key else Transport(args.server);code=getpass.getpass('One-time CRM pairing code: ');token=transport.pair(code)
             did=str(UUID(token.split('.',1)[0]));protect(secret,{'server':transport.server,'token':token,'device_id':did,'public_key':args.public_key});print('Paired securely. Activate the device in CRM, then attest local printer settings.');return 0
+        if args.command=='run':
+            from .runtime import run
+            return run(root,load,WindowsPrinters,strict=args.autostart_register1,installation=Path(__file__).resolve().parent.parent)
+        if args.command=='startup-check':
+            from .runtime import validate_binding,validate_journal,validate_dependencies,windows_identity,REGISTER1
+            from .diagnostics import call
+            credentials=call('credential_load',load,secret);proof=call('attestation_load',load,attestation);user=windows_identity()[0]
+            call('startup_binding',validate_binding,credentials,proof,Path(__file__).resolve().parent.parent,user)
+            call('startup_journal',validate_journal,root/'actions.sqlite')
+            call('startup_dependencies',validate_dependencies)
+            print(json.dumps({'status':'LOCAL_STARTUP_CHECK_PASSED','device_id':REGISTER1,'windows_user':user,'startup_version':1,'credentials_preserved':True,'attestation_preserved':True,'journal_present':True,'journal_readonly_verified':True,'dependencies_verified':True}));return 0
         backend=WindowsPrinters()
         if args.command=='printers':
             rows=backend.status(backend.enumerate())
@@ -44,14 +55,7 @@ def main():
                 except Exception:pass
             print(json.dumps(rows,indent=2));return 0
         credentials=load(secret);transport=EncryptedTransport(credentials['server'],credentials['public_key'],credentials['token']) if credentials.get('public_key') else Transport(credentials['server'],credentials['token'])
-        # Startup/network recovery: run retries connectivity without any print retry.
-        if args.command=='run':
-            while True:
-                try:config=transport.config();break
-                except KeyboardInterrupt:return 0
-                except Exception:
-                    print('Connector waiting for verified server/device connectivity; no print attempted.',flush=True);time.sleep(5)
-        else:config=transport.config()
+        config=transport.config()
         names=Engine.names(config)
         if args.command=='status':
             bindings=[]
@@ -75,18 +79,7 @@ def main():
                     if not isolated or not tested or not no_replay:return 1
                 value={'device_id':credentials['device_id'],'normal_drawers_none':True,'media_and_cutter_tested':True,'drawer_queue_isolated':isolated,'drawer_driver_tested':tested,'drawer_no_replay_tested':tested and no_replay if config['config']['drawer_queue'] else False,'fingerprints':{name:backend.fingerprint(name) for name in names}}
                 protect(attestation,value);print('Local driver settings attested. This command sent no print or drawer action.');return 0
-        if args.command=='run':
-            # One process owns the physical device; SQLite action fences survive process/OS restart.
-            with backend.exclusive():
-                store=call('journal_open',Store,root/'actions.sqlite');proof=call('attestation_load',load,attestation);engine=Engine(transport,backend,store,proof,credentials['device_id'])
-                try:
-                    while True:
-                        try:engine.cycle()
-                        except KeyboardInterrupt:break
-                        except Exception:print('Agent waiting: connection, printer, authorization or local verification needs review.',flush=True)
-                        time.sleep(5)
-                finally:call('journal_close',store.close)
-            return 0
+
     except KeyboardInterrupt:return 0
     except Exception:
         print('Agent unavailable. Check CRM activation, pairing and local driver attestation. No credentials are logged.',file=sys.stderr);return 1
