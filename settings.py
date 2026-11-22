@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     PRINT_CONNECTOR_ENCRYPTED_ENABLED: bool = False
     PRINT_CONNECTOR_PRIVATE_KEY: str = Field("", repr=False)
     POS_LOCAL_PRINT_ENABLED: bool = False
+    # Non-financial administrator acceptance workflow; never enables sale printing.
+    POS_TEST_CHECKOUT_ENABLED: bool = False
     POS_CASH_DRAWER_AUTOMATION_ENABLED: bool = False
     RETAIL_HARDWARE_LABEL_PRINT_ENABLED: bool = False
     POS_ENABLED: bool = False

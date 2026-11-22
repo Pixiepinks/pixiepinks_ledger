@@ -3,7 +3,7 @@ import hashlib,hmac,json,re
 from datetime import timedelta
 from fastapi import APIRouter,Depends,Request,HTTPException
 from fastapi.responses import JSONResponse,Response
-from hardware_models import PrintDevice,HardwareJob,HardwareEvent
+from hardware_models import PrintDevice,HardwareJob,HardwareEvent,POSReceiptTest
 from pos_models import POSSession
 from settings import settings
 import hardware_service as s
@@ -30,6 +30,32 @@ def build_router(get_db,require_user,csrf):
         identity=hmac.new(settings.SECRET_KEY.encode(),('agent:'+str(request.client.host if request.client else '')).encode(),hashlib.sha256).hexdigest()
         s.throttle(db,identity,240)
         d=s.authenticate(db,request.headers.get('authorization',''));s.pos.locked(db);return d
+
+    @router.get('/crm/pos/api/hardware/test-checkouts')
+    def test_checkouts(db=Depends(get_db),user=Depends(require_user)):
+        import pos_receipt_tests as tests
+        tests.require(user)
+        rows=db.query(POSReceiptTest).filter_by(shop=s.retail.shop()).order_by(POSReceiptTest.created_at.desc()).limit(50)
+        devices=db.query(PrintDevice).filter_by(shop=s.retail.shop(),status='ACTIVE').all()
+        return out({'mode':'TEST','rows':[tests.public(db,r) for r in rows],
+            'devices':[s.public_device(d) for d in devices if d.config.get('receipt_only') and d.config.get('receipt_profile')=='80']})
+
+    @router.post('/crm/pos/api/hardware/test-checkouts')
+    async def create_test_checkout(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import pos_receipt_tests as tests
+        p=await body(request,['device_id','key'])
+        return out(tests.public(db,tests.create(db,user,p['device_id'],p['key'])))
+
+    @router.get('/crm/pos/api/hardware/test-checkouts/{tid}')
+    def test_checkout(tid:str,db=Depends(get_db),user=Depends(require_user)):
+        import pos_receipt_tests as tests
+        return out(tests.public(db,tests.find(db,user,tid)))
+
+    @router.post('/crm/pos/api/hardware/test-checkouts/{tid}/finalize')
+    async def finalize_test_checkout(tid:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import pos_receipt_tests as tests
+        p=await body(request,['confirm'])
+        return out(tests.public(db,tests.finalize(db,user,tid,p['confirm'])))
 
     @router.get('/crm/pos/api/hardware/connector-transport')
     def connector_configuration(db=Depends(get_db),user=Depends(require_user)):

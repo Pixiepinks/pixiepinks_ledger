@@ -1,0 +1,5 @@
+#pos-test-open{border:2px solid #8c5200;background:#fff2ca;color:#512e00}
+#pos-test-dialog{border:3px solid #8c5200;max-width:760px;width:90%;background:#fffaf0}
+#pos-test-dialog header{display:flex;justify-content:space-between;gap:1rem}
+#pos-test-dialog section{border-top:1px solid #b89d6d;padding:1rem 0;overflow-wrap:anywhere}
+#pos-test-dialog button,#pos-test-dialog select{margin:.4rem;padding:.5rem}
