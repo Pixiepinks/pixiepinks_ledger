@@ -34,6 +34,8 @@ class Settings(BaseSettings):
     POS_REFUND_WRITE_ENABLED: bool = False
     RETAIL_ENABLED: bool = False
     INVENTORY_ENABLED: bool = False
+    PURCHASING_ENABLED: bool = False
+    PURCHASE_INVENTORY_SYNC_ENABLED: bool = False
     SHOPIFY_INVENTORY_WRITE_ENABLED: bool = False
     SHOPIFY_PRODUCT_WRITE_ENABLED: bool = False
     RETAIL_BARCODE_SYNC_ENABLED: bool = False

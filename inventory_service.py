@@ -66,8 +66,13 @@ def identity(db,variant_id,version,location):
         'inventory_item_id':row.inventory_item_id,'location_id':location,'title':row.title,'variant_title':row.variant_title,'sku':row.sku,'barcode':retail.scan_value(row)}
 
 
-def assert_identity(db,line):
-    current=identity(db,line['local_id'],line['version'],line['location_id'])
+def assert_identity(db,line,allow_version_refresh=False):
+    version=line['version']
+    if allow_version_refresh:
+        row=db.get(RetailVariant,line['local_id'])
+        if row is None:raise InventoryError('LOCAL_INVENTORY_IDENTITY_CHANGED')
+        version=row.version
+    current=identity(db,line['local_id'],version,line['location_id'])
     if any(current[k]!=line[k] for k in ('variant_id','product_id','inventory_item_id')):raise InventoryError('LOCAL_INVENTORY_IDENTITY_CHANGED')
 
 
@@ -136,7 +141,7 @@ def observe_lines(db,doc,client):
     output=[];deadline=time.monotonic()+20
     for line in doc.payload['lines']:
         if time.monotonic()>deadline:raise InventoryError('DOCUMENT_READ_BUDGET_EXCEEDED')
-        assert_identity(db,line)
+        assert_identity(db,line,allow_version_refresh=bool(doc.payload.get('purchase_receipt_id')))
         observed=client.observe(line)
         if time.monotonic()>deadline:raise InventoryError('DOCUMENT_READ_BUDGET_EXCEEDED')
         output.append({**observed,'read_at':datetime.utcnow().isoformat()+'Z'})
@@ -152,8 +157,9 @@ def observe_count(db,user,document_id,line,quantity):
     event(db,doc,'COUNT_OBSERVED',user,line=line,quantity=quantity);db.commit();return doc
 
 
-def submit(db,user,document_id,client=None):
+def submit(db,user,document_id,client=None,*,commit=True,purchasing=False):
     require(user,'retail.inventory.prepare');client=client or remote.client;retail.write_lock(db);doc=get(db,document_id)
+    if doc.payload.get('purchase_receipt_id') and not purchasing:raise HTTPException(409,'Use the purchase receipt approval workflow')
     if doc.status!='DRAFT':raise HTTPException(409,'Only draft documents can be submitted')
     if digest(doc.payload)!=doc.payload_hash:raise HTTPException(409,'Document integrity failure')
     current=observe_lines(db,doc,client)
@@ -175,11 +181,15 @@ def submit(db,user,document_id,client=None):
             after=before  # Native transfer unavailable: never simulate a two-leg set operation.
         if not 0<=after<=2147483647:raise HTTPException(422,'Resulting on-hand quantity is outside the supported range')
         plan.append({**line,'before':before,'after':after,'available_before':doc.baseline[i]['available']})
-    doc.plan=plan;doc.status='SUBMITTED';event(db,doc,'SUBMITTED',user,plan=plan,baseline=doc.baseline);db.commit();return doc
+    doc.plan=plan;doc.status='SUBMITTED';event(db,doc,'SUBMITTED',user,plan=plan,baseline=doc.baseline)
+    if commit:db.commit()
+    else:db.flush()
+    return doc
 
 
-def approve(db,user,document_id,confirmation):
+def approve(db,user,document_id,confirmation,*,commit=True,purchasing=False):
     require(user,admin=True);retail.write_lock(db);doc=get(db,document_id)
+    if doc.payload.get('purchase_receipt_id') and not purchasing:raise HTTPException(409,'Use the purchase receipt approval workflow')
     if doc.status!='SUBMITTED':raise HTTPException(409,'Only submitted documents can be approved')
     if confirmation!=doc.reference:raise HTTPException(422,'Confirm the exact document reference')
     if doc.contract_version!=remote.CONTRACT_VERSION:raise HTTPException(409,'Document uses an older inventory contract; reject and prepare a newly reviewed document')
@@ -187,11 +197,14 @@ def approve(db,user,document_id,confirmation):
     doc.approved_by=user.id;doc.approval_hash=digest({'payload':doc.payload_hash,'plan':doc.plan,'baseline':doc.baseline,'shop':doc.shop,'contract':doc.contract_version})
     doc.status='TRANSFER_PENDING' if doc.kind=='TRANSFER' else 'APPROVED'
     event(db,doc,'ADMIN_APPROVED',user,approval_hash=doc.approval_hash,reference=doc.reference,write_enabled=bool(settings.SHOPIFY_INVENTORY_WRITE_ENABLED and remote.MUTATION_CONTRACT_VERIFIED))
-    db.commit();return doc
+    if commit:db.commit()
+    else:db.flush()
+    return doc
 
 
 def reject(db,user,document_id,reason):
     require(user,admin=True);retail.write_lock(db);doc=get(db,document_id)
+    if doc.payload.get('purchase_receipt_id'):raise HTTPException(409,'Purchase receipt movements cannot be rejected independently')
     if doc.status not in {'DRAFT','SUBMITTED','APPROVED','TRANSFER_PENDING'}:raise HTTPException(409,'Document cannot be rejected after dispatch')
     doc.status='REJECTED';event(db,doc,'REJECTED',user,reason=text(reason,500,True));db.commit();return doc
 
@@ -232,13 +245,27 @@ def dispatch_one(sessions,client=None):
             running.status='UNCERTAIN';running.error='WORKER_OUTCOME_UNKNOWN';event(db,running,'DISPATCH_INTERRUPTED');db.commit();return True
         if blocked_job(db):return False
         if not settings.SHOPIFY_INVENTORY_WRITE_ENABLED or not remote.MUTATION_CONTRACT_VERIFIED:return False
-        doc=db.query(InventoryDocument).filter_by(shop=retail.shop(),status='APPROVED').order_by(InventoryDocument.created_at).first()
+        from purchasing_models import PurchaseMovement
+        query=db.query(InventoryDocument).filter_by(shop=retail.shop(),status='APPROVED')
+        if not (settings.PURCHASING_ENABLED and settings.PURCHASE_INVENTORY_SYNC_ENABLED):
+            query=query.filter(~InventoryDocument.id.in_(db.query(PurchaseMovement.document_id).filter(PurchaseMovement.document_id.isnot(None))))
+        doc=query.order_by(InventoryDocument.created_at).first()
         if not doc:return False
         try:
+            if doc.payload.get('purchase_receipt_id'):
+                import purchasing_service as purchases
+                receipt=purchases.get(db,doc.payload['purchase_receipt_id'],'RECEIPT')
+                purchases.location(db,doc.payload['lines'][0]['location_id'])
+                if receipt.status!='APPROVED' or not db.query(PurchaseMovement).filter_by(receipt_id=receipt.id,document_id=doc.id).first():raise InventoryError('PURCHASE_APPROVAL_INVALID')
             approver=db.get(User,doc.approved_by);creator=db.get(User,doc.actor_id)
             require(approver,admin=True);require(creator,'retail.inventory.prepare')
             if doc.contract_version!=remote.CONTRACT_VERSION or doc.kind not in KINDS-{'TRANSFER'} or doc.attempts!=0 or digest(doc.payload)!=doc.payload_hash or doc.approval_hash!=digest({'payload':doc.payload_hash,'plan':doc.plan,'baseline':doc.baseline,'shop':doc.shop,'contract':doc.contract_version}):raise InventoryError('APPROVAL_INTEGRITY_FAILED')
             approval=db.query(InventoryEvent).filter_by(document_id=doc.id,action='ADMIN_APPROVED').one()
+            if doc.payload.get('purchase_receipt_id'):
+                renewed=db.query(InventoryEvent).filter_by(document_id=doc.id,action='PURCHASE_RETRY_APPROVED').order_by(InventoryEvent.id.desc()).first()
+                if renewed:
+                    if renewed.actor_id!=doc.approved_by or renewed.detail.get('approval_hash')!=doc.approval_hash:raise InventoryError('APPROVAL_INTEGRITY_FAILED')
+                    approval=renewed
             if approval.created_at<datetime.utcnow()-timedelta(minutes=30):raise InventoryError('APPROVAL_EXPIRED')
             cap=client.capabilities()
             if not all(cap.get(k) for k in ('write_inventory','read_inventory','read_locations','mutation_shape_verified','source_contract_verified')):raise InventoryError('INVENTORY_MUTATION_CONTRACT_UNVERIFIED')

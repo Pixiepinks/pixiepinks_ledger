@@ -3,6 +3,7 @@ import logging
 from settings import settings
 import hardware_service
 import pos_service
+import purchasing_service
 import inventory_service
 import retail_sync
 import retail_labels
@@ -15,6 +16,7 @@ def worker(sessions,stop):
         try:
             sold=pos_service.dispatch_one(sessions) if settings.POS_ENABLED and settings.SHOPIFY_SHOP else False
             if settings.RETAIL_ENABLED and settings.SHOPIFY_SHOP:
+                purchasing_service.prepare_one(sessions)
                 inventoried=inventory_service.dispatch_one(sessions)
                 checked=retail_barcode_sync.check_preview_one(sessions)
                 dispatched=retail_barcode_sync.dispatch_one(sessions)

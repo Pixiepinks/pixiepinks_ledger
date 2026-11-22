@@ -2156,6 +2156,9 @@ def delete_supplier(sup_id: int, db: Session = Depends(get_db), user: User = Dep
     s = db.get(Supplier, sup_id)
     if not s:
         raise HTTPException(status_code=404, detail="Supplier not found")
+    from purchasing_models import PurchaseRecord
+    if db.query(PurchaseRecord).filter_by(supplier_id=sup_id).first():
+        raise HTTPException(409,"Supplier has purchasing history; archive it in Purchasing instead")
     db.delete(s)
     db.commit()
     return RedirectResponse("/suppliers", status_code=303)
@@ -4692,6 +4695,8 @@ from hardware_routes import build_router as build_hardware_router
 app.include_router(build_hardware_router(get_db,require_user,_require_csrf))
 from pos_routes import build_router as build_pos_router
 app.include_router(build_pos_router(get_db,require_user,_require_csrf,_csrf_token,templates))
+from purchasing_routes import build_router as build_purchasing_router
+app.include_router(build_purchasing_router(get_db,require_user,_require_csrf,_csrf_token,templates))
 from inventory_routes import build_router as build_inventory_router
 app.include_router(build_inventory_router(get_db,require_user,_require_csrf,_csrf_token,templates))
 app.include_router(build_retail_router(get_db,require_user,_require_csrf,_csrf_token,templates))
