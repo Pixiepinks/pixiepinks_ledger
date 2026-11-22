@@ -32,7 +32,7 @@ def test_status_offline_spooler_and_usb_unavailable():
 def fake_backend(monkeypatch):
     calls=[];row=info();b=object.__new__(WindowsPrinters);b.info=lambda queue:row
     b.con=SimpleNamespace(DM_PAPERSIZE=1,DM_PAPERWIDTH=2,DM_PAPERLENGTH=4,DM_ORIENTATION=8,DM_COPIES=16)
-    caps={88:203,90:203,110:639,111:400,112:0,113:0}
+    caps={88:203,90:203,110:639,111:400,112:0,113:0,8:639,10:400}
     class DC:
         def GetDeviceCaps(self,key):return caps[key]
         def StartDoc(self,name):calls.append(('StartDoc',name));return 42
@@ -64,7 +64,10 @@ def fake_backend(monkeypatch):
         def __init__(self,image):pass
         def draw(self,handle,rectangle):calls.append(('draw',rectangle))
     monkeypatch.setitem(sys.modules,'pypdfium2',SimpleNamespace(PdfDocument=Document))
-    monkeypatch.setitem(sys.modules,'PIL.ImageWin',SimpleNamespace(Dib=Dib))
+    imagewin=SimpleNamespace(Dib=Dib)
+    monkeypatch.setitem(sys.modules,'PIL.ImageWin',imagewin)
+    import PIL
+    monkeypatch.setattr(PIL,'ImageWin',imagewin,raising=False)
     return b,row,caps,calls
 
 
