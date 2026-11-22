@@ -6,7 +6,7 @@ from decimal import Decimal
 from math import ceil
 from fastapi import HTTPException
 from fpdf import FPDF
-from pos_models import POSRefund,POSAudit
+from pos_models import POSRefund,POSAudit,POSDailySale
 import pos_service as service
 
 FONTS=Path(__file__).parent/'static'/'retail-fonts'
@@ -136,12 +136,15 @@ def render(sale,profile,refund=None,duplicate=False,acknowledgement=None,*,test=
     return bytes(layout.pdf.output())
 
 
-def generate(db,user,checkout_id,profile='80',refund_id=None,*,commit=True,duplicate=False):
+def generate(db,user,checkout_id,profile='80',refund_id=None,*,commit=True,duplicate=False,automated_original=False):
     service.require(user);service.locked(db);r=service.sale(db,user,checkout_id)
     if profile not in {'58','80','A4'}:raise HTTPException(422,'Choose 58, 80 or A4 receipt')
     refund=db.get(POSRefund,refund_id) if refund_id else None
     if refund_id and (not refund or refund.checkout_id!=r.id or refund.status!='PAID_OUT'):raise HTTPException(409,'Verified refund and confirmed payout required')
     if not refund and r.status!='COMPLETE':raise HTTPException(409,'Shopify completion uncertain/unpaid: no finalized receipt can be issued')
+    # Public receipt routes never accept automated_original; only the verified
+    # hardware outbox sets it. Daily duplicate/browser recovery is supervised.
+    if not refund and db.get(POSDailySale,r.id) and not automated_original:service.require(user,'admin')
     ref=refund.id if refund else r.id
     previous=db.query(POSAudit).filter_by(shop=r.shop,reference=ref,action='RECEIPT_GENERATED').count()
     reprint=bool(previous or duplicate)

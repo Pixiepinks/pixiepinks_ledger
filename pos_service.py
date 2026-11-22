@@ -63,6 +63,8 @@ def open_register(db,user,register_id,opening_float):
     require(user,'register_open');locked(db)
     r=db.query(POSRegister).filter_by(shop=retail.shop(),id=register_id).one_or_none()
     if not r:raise HTTPException(404,'Register not found')
+    from pos_daily import opening
+    opening(db,user,r.id)
     prior=db.query(POSSession).filter_by(active_register_id=r.id).one_or_none()
     if prior:
         if prior.cashier_id==user.id:return prior
@@ -234,6 +236,8 @@ def checkout(db,user,cart_id,version,key,plan,client=None):
     if c.version!=version:raise HTTPException(409,'Cart changed; reload before checkout')
     from pos_real_sale_pilot import before_checkout
     before_checkout(db,user,c)
+    from pos_daily import before_checkout as daily_checkout
+    daily_checkout(db,user,c)
     if c.status!='DRAFT' or not c.payload['lines']:raise HTTPException(409,'Nonempty active cart required')
     if not isinstance(key,str) or not re.fullmatch(r'[A-Za-z0-9_-]{16,64}',key):raise HTTPException(422,'Stable checkout request ID required')
     s=session(db,user,c.session_id);policy,config_version=cfg(db)
@@ -275,6 +279,8 @@ def checkout(db,user,cart_id,version,key,plan,client=None):
         payment.source='POS'
         if t['confirmed']:payments.decide_payment(db,order.id,payment.id,approve=True,actor=user.username,idempotency_key='posverify:'+record.id+':'+str(i),commit=False,pos_authorized=True)
         if t['method']=='CASH':db.add(POSCashMovement(session_id=s.id,amount=t['amount'],kind='SALE_TENDER',reference='poscash:'+record.id+':'+str(i),actor_id=user.id,detail={'received':t['received'],'change':t['change'],'sale':record.reference,'authoritative_sale_pending':True}))
+    from pos_daily import capture
+    capture(db,user,record)
     c.status='CHECKOUT';c.version+=1
     if record.status=='QUEUED':queue_create(db,user,record)
     audit(db,user,reference,'CHECKOUT_FROZEN',checkout=record.id,hash=record.frozen_hash);db.commit();return record
@@ -304,6 +310,10 @@ def verify_bank(db,user,checkout_id,payment_id,key):
 def finalize(db,user,checkout_id):
     require(user,'sell');locked(db);r=sale(db,user,checkout_id);session(db,user,r.session_id)
     from pos_real_sale_pilot import authorization,dispatch_allowed
+    from pos_daily import dispatch_allowed as daily_allowed
+    daily_bound=db.get(POSDailySale,r.id) is not None
+    if daily_bound and r.status in {'QUEUED','COMPLETE','REVIEW','UNCERTAIN'}:return r
+    if daily_bound and not daily_allowed(db,r):raise HTTPException(409,'Daily release gate closed')
     if authorization(db,r) and r.status in {'QUEUED','COMPLETE','REVIEW','UNCERTAIN'}:return r
     if authorization(db,r) and not dispatch_allowed(db,r):raise HTTPException(409,'Pilot release gate closed')
     if r.status!='PAYMENT_READY':raise HTTPException(409,'Verified tenders and cashier confirmation required')
@@ -332,6 +342,8 @@ def publish_sale(db,r,observed):
     r.status='COMPLETE';r.completed_at=datetime.utcnow();audit(db,None,r.reference,'SALE_VERIFIED',shopify_order=observed['id'],journal_id=journal)
     from pos_real_sale_pilot import reserve_receipt
     reserve_receipt(db,r,observed)
+    from pos_daily import reserve_receipt as daily_receipt
+    daily_receipt(db,r)
 
 
 def order_wire(r):
@@ -434,6 +446,8 @@ def dispatch_one(sessions,client=None):
             if op.kind=='CREATE':
                 from pos_real_sale_pilot import dispatch_allowed
                 if not dispatch_allowed(db,r):return False
+                from pos_daily import dispatch_allowed as daily_allowed
+                if not daily_allowed(db,r):return False
             require(user,'sell' if op.kind=='CREATE' else 'refund',op.kind=='REFUND')
             if r.frozen_hash!=digest(r.frozen) or r.frozen['contract']!=remote.CONTRACT or op.attempts:raise HTTPException(409,'POS frozen identity/attempt failure')
             cap=api.capabilities()
@@ -642,7 +656,8 @@ def public_sale(db,r):
     from pos_provisional_receipts import availability
     order=db.get(SalesOrder,r.sales_order_id)
     from pos_real_sale_pilot import sale_status
-    return {'pilot':sale_status(db,r),'provisional_receipt':availability(db,r),'id':r.id,'reference':r.reference,'status':r.status,'frozen':r.frozen,'created_at':r.created_at.isoformat()+'Z','completed_at':r.completed_at.isoformat()+'Z' if r.completed_at else None,
+    from pos_daily import sale_status as daily_status
+    return {'daily':daily_status(db,r),'pilot':sale_status(db,r),'provisional_receipt':availability(db,r),'id':r.id,'reference':r.reference,'status':r.status,'frozen':r.frozen,'created_at':r.created_at.isoformat()+'Z','completed_at':r.completed_at.isoformat()+'Z' if r.completed_at else None,
         'shopify_order_id':order.shopify_order_id,'shopify_order_name':order.shopify_order_name,
         'payments':[{'id':p.id,'method':p.payment_method,'amount':str(p.amount),'status':p.verification_status,'reference':p.payment_reference} for p in db.query(SalesPayment).filter_by(sales_order_id=order.id)],
         'operations':[operation_view(db,o) for o in db.query(POSOperation).filter_by(checkout_id=r.id)],

@@ -6,7 +6,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy import select
 from models import User
-from pos_models import POSCheckout,POSRegister,POSSession,POSCashMovement,POSPilotAuthorization
+from pos_models import POSCheckout,POSRegister,POSSession,POSCashMovement,POSPilotAuthorization,POSDailySale
 from hardware_models import PrintDevice,HardwareJob,HardwareEvent,HardwareRate
 from retail_models import RetailPrintJob
 from settings import settings
@@ -181,6 +181,7 @@ def profile_queue(d,kind,profile):
     return d.config['receipt_queue'],'RECEIPT'
 
 def job_enabled(j):
+    if j.detail.get('daily_checkout_id') and not settings.POS_DAILY_OPERATIONS_ENABLED:return False
     if j.detail.get('pilot_cart_id') and not settings.POS_REAL_SALE_PILOT_ENABLED:return False
     if j.kind=='TEST' and j.detail.get('test_checkout_id'):
         return settings.POS_TEST_CHECKOUT_ENABLED and settings.POS_LOCAL_PRINT_ENABLED and settings.PRINT_CONNECTOR_ENCRYPTED_ENABLED
@@ -188,19 +189,19 @@ def job_enabled(j):
     if j.kind=='DRAWER':return settings.POS_LOCAL_PRINT_ENABLED and settings.POS_CASH_DRAWER_AUTOMATION_ENABLED
     return settings.POS_LOCAL_PRINT_ENABLED
 
-def add_job(db,d,kind,key,raw,user=None,checkout=None,label=None,parent=None,profile='80',reason='',automatic=False,session_id=None,event_time=None,*,test_checkout_id=None,pilot_cart_id=None):
+def add_job(db,d,kind,key,raw,user=None,checkout=None,label=None,parent=None,profile='80',reason='',automatic=False,session_id=None,event_time=None,*,test_checkout_id=None,pilot_cart_id=None,daily_checkout_id=None):
     prior=db.query(HardwareJob).filter_by(business_key=key).one_or_none()
     if prior:return prior
     if d.status!='ACTIVE':raise HTTPException(409,'Active paired device required')
     queue,mode=profile_queue(d,kind,profile)
     if len(raw)>MAX_PDF or (kind!='DRAWER' and not raw.startswith(b'%PDF-')):raise HTTPException(422,'Bounded valid PDF required')
     j=HardwareJob(id=str(uuid4()),shop=d.shop,device_id=d.id,register_id=d.register_id,location_id=d.location_id,device_version=d.version,business_key=key,kind=kind,queue=queue,media=mode,actor_id=user.id if user else None,
-        session_id=checkout.session_id if checkout else session_id,checkout_id=checkout.id if checkout else None,label_id=label.id if label else None,parent_id=parent.id if parent else None,detail={'reason':reason,'profile':'RETAIL_LABEL_PDF' if kind=='LABEL' else profile,'label_template':label.template if label else None,'label_copies':label.total if label else None,'automatic':automatic,'physical_resource':'POS80_RECEIPT_ONLY' if d.config.get('receipt_only') else 'DBL_SHARED' if mode!='A4' else 'A4_EXTERNAL','protocol':VERSION,**({'test_checkout_id':test_checkout_id,'test_only':True} if test_checkout_id else {}),**({'pilot_cart_id':pilot_cart_id} if pilot_cart_id else {})},
+        session_id=checkout.session_id if checkout else session_id,checkout_id=checkout.id if checkout else None,label_id=label.id if label else None,parent_id=parent.id if parent else None,detail={'reason':reason,'profile':'RETAIL_LABEL_PDF' if kind=='LABEL' else profile,'label_template':label.template if label else None,'label_copies':label.total if label else None,'automatic':automatic,'physical_resource':'POS80_RECEIPT_ONLY' if d.config.get('receipt_only') else 'DBL_SHARED' if mode!='A4' else 'A4_EXTERNAL','protocol':VERSION,**({'test_checkout_id':test_checkout_id,'test_only':True} if test_checkout_id else {}),**({'pilot_cart_id':pilot_cart_id} if pilot_cart_id else {}),**({'daily_checkout_id':daily_checkout_id} if daily_checkout_id else {})},
         pdf=raw or None,sha256=hashlib.sha256(raw).hexdigest(),size=len(raw),status='QUEUED',expires_at=(min(checkout.completed_at,checkout.created_at)+timedelta(seconds=120)) if automatic and kind=='DRAWER' and checkout else (event_time or now())+timedelta(seconds=120) if kind=='DRAWER' else now()+timedelta(hours=24))
     if not job_enabled(j):raise HTTPException(409,'This hardware workflow is disabled')
     db.add(j);db.flush();event(db,d,'JOB_CREATED',user,j,kind=kind,reference=checkout.reference if checkout else str(label.id) if label else '',reason=reason);return j
 
-def receipt_job(db,user,did,rid,key,profile='80',automatic=False,parent=None,reason='',*,pilot_cart_id=None):
+def receipt_job(db,user,did,rid,key,profile='80',automatic=False,parent=None,reason='',*,pilot_cart_id=None,daily_checkout_id=None):
     require(user);pos.locked(db);d=device(db,did);r=pos.sale(db,user,rid)
     if d.config.get('receipt_only') and not automatic and (parent is None or not reason):raise HTTPException(409,'Use the inspected original job and controlled reprint approval')
     if r.reference in {'POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA'}:raise HTTPException(409,'Historical test sales are not customer receipts')
@@ -213,8 +214,8 @@ def receipt_job(db,user,did,rid,key,profile='80',automatic=False,parent=None,rea
     if prior:
         if prior.checkout_id!=r.id or prior.detail['profile']!=profile or prior.device_id!=d.id or prior.parent_id!=(parent.id if parent else None):raise HTTPException(409,'Request key belongs to another receipt')
         return prior
-    raw=pos_receipts.generate(db,user,r.id,profile,commit=False,duplicate=not automatic)
-    j=add_job(db,d,'RECEIPT',business,raw,user,r,parent=parent,profile=profile,reason=reason,automatic=automatic,pilot_cart_id=pilot_cart_id)
+    raw=pos_receipts.generate(db,user,r.id,profile,commit=False,duplicate=not automatic,automated_original=automatic)
+    j=add_job(db,d,'RECEIPT',business,raw,user,r,parent=parent,profile=profile,reason=reason,automatic=automatic,pilot_cart_id=pilot_cart_id,daily_checkout_id=daily_checkout_id)
     if not d.config.get('receipt_only') and automatic and any(t['method']=='CASH' and Decimal(t['amount'])>0 for t in r.frozen['tenders']):
         if settings.POS_CASH_DRAWER_AUTOMATION_ENABLED and d.config['drawer_verified'] and (d.observation or {}).get('drawer_verified'):
             add_job(db,d,'DRAWER','drawer:sale:'+r.id,b'',user,r,parent=j,reason='Verified cash component',automatic=True)
@@ -318,6 +319,9 @@ def authorize_actor(db,j):
 
 
 def source_valid(db,j):
+    if j.detail.get('daily_checkout_id'):
+        from pos_daily import valid_receipt
+        if not valid_receipt(db,j):return False
     if j.detail.get('pilot_cart_id'):
         from pos_real_sale_pilot import valid_job
         if not valid_job(db,j):return False
@@ -352,7 +356,7 @@ def tick(sessions):
             cutoff=max(d.enabled_at,now()-timedelta(hours=24))
             if d.config['auto_receipts']:
                 done=db.query(HardwareJob.checkout_id).filter_by(shop=d.shop,kind='RECEIPT').filter(HardwareJob.business_key.like('receipt:auto:%'))
-                rows=db.query(POSCheckout).join(POSSession,POSSession.id==POSCheckout.session_id).filter(POSCheckout.shop==d.shop,POSSession.register_id==d.register_id,POSCheckout.status=='COMPLETE',~POSCheckout.cart_id.in_(select(POSPilotAuthorization.cart_id)),~POSCheckout.reference.in_(['POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA']),POSCheckout.completed_at>=cutoff,~POSCheckout.id.in_(done.filter(HardwareJob.checkout_id.isnot(None)))).order_by(POSCheckout.completed_at).limit(2).all()
+                rows=db.query(POSCheckout).join(POSSession,POSSession.id==POSCheckout.session_id).filter(POSCheckout.shop==d.shop,POSSession.register_id==d.register_id,POSCheckout.status=='COMPLETE',~POSCheckout.cart_id.in_(select(POSPilotAuthorization.cart_id)),~POSCheckout.id.in_(select(POSDailySale.checkout_id)),~POSCheckout.reference.in_(['POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA']),POSCheckout.completed_at>=cutoff,~POSCheckout.id.in_(done.filter(HardwareJob.checkout_id.isnot(None)))).order_by(POSCheckout.completed_at).limit(2).all()
                 for r in rows:
                     user=db.get(User,r.actor_id)
                     try:
@@ -382,6 +386,7 @@ def controlled_reprint(db,user,jid,key,reason,confirm):
     if confirm is not True:raise HTTPException(422,'Explicit duplicate receipt approval required')
     parent=db.query(HardwareJob).filter_by(shop=retail.shop(),id=jid,kind='RECEIPT').one_or_none()
     if not parent or parent.status not in {'CONFIRMED','FAILED'}:raise HTTPException(409,'Inspect and resolve the original outcome before authorizing a reprint')
+    if parent.checkout_id and db.get(POSDailySale,parent.checkout_id):require(user,'admin')
     reason=pos.inventory.text(reason,500,True)
     j=receipt_job(db,user,parent.device_id,parent.checkout_id,key,'80',False,parent,reason)
     if not db.query(HardwareEvent).filter_by(job_id=j.id,action='REPRINT_AUTHORIZED').first():event(db,device(db,parent.device_id),'REPRINT_AUTHORIZED',user,j,parent_id=parent.id,reason=reason)

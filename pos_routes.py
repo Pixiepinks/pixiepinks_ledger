@@ -37,10 +37,25 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     def context(db=Depends(get_db),user=Depends(require_user)):
         service.require(user);policy,version=service.cfg(db)
         return out({'cashier':user.username,'cashier_id':user.id,'checkout_enabled':settings.POS_CHECKOUT_WRITE_ENABLED,'refund_enabled':settings.POS_REFUND_WRITE_ENABLED,
+            'daily_operations_enabled':settings.POS_DAILY_OPERATIONS_ENABLED,'daily_registers':[{'register_id':p.register_id,'enabled':bool(p.enabled),'device_id':p.device_id,'device_version':p.device_version} for p in db.query(POSDailyPolicy).filter_by(shop=retail.shop())],
             'config':policy,'config_version':version,'contract':remote.CONTRACT,'currency':'LKR','physical_balance':'PROVISIONAL',
             'registers':[{'id':r.id,'name':r.name,'location':r.location_id} for r in db.query(POSRegister).filter_by(shop=retail.shop())],
             'sessions':[register_session(db,s) for s in db.query(POSSession).filter_by(shop=retail.shop(),cashier_id=user.id,status='OPEN')],
             'categories':retail.filter_options(db)['categories']})
+
+    @router.get('/api/daily')
+    def daily_setup(db=Depends(get_db),user=Depends(require_user)):
+        from hardware_models import PrintDevice
+        service.require(user,'admin')
+        return out({'enabled':settings.POS_DAILY_OPERATIONS_ENABLED,
+            'policies':[{'register_id':p.register_id,'device_id':p.device_id,'device_version':p.device_version,'version':p.version,'enabled':bool(p.enabled)} for p in db.query(POSDailyPolicy).filter_by(shop=retail.shop())],
+            'devices':[{'id':d.id,'name':d.name,'register_id':d.register_id,'location':d.location_id,'version':d.version} for d in db.query(PrintDevice).filter_by(shop=retail.shop(),status='ACTIVE') if d.config.get('receipt_only')]})
+
+    @router.post('/api/daily')
+    async def configure_daily(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import pos_daily
+        p=await body(request,['device_id','enabled','notes','confirm']);row=pos_daily.configure(db,user,**p)
+        return out({'register_id':row.register_id,'device_id':row.device_id,'version':row.version,'enabled':bool(row.enabled)})
 
     @router.get('/api/real-pilot')
     def pilot_status(db=Depends(get_db),user=Depends(require_user)):
