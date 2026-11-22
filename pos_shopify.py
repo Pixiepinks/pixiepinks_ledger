@@ -9,7 +9,7 @@ import inventory_shopify
 
 VERSION='2026-10'
 CONTRACT='pos-order-create-2026-10-v1'
-ORDER_FIELDS='''id name customer { id } sourceIdentifier tags displayFinancialStatus displayFulfillmentStatus cancelledAt
+ORDER_FIELDS='''id name sourceIdentifier tags displayFinancialStatus displayFulfillmentStatus cancelledAt
  totalPriceSet { shopMoney { amount currencyCode } }
  totalTaxSet { shopMoney { amount currencyCode } } totalDiscountsSet { shopMoney { amount currencyCode } }
  totalReceivedSet { shopMoney { amount currencyCode } }
@@ -23,6 +23,7 @@ ORDER_FIELDS='''id name customer { id } sourceIdentifier tags displayFinancialSt
  }
 '''
 READ='query POSOrder($id:ID!) { shop { myshopifyDomain currencyCode } order(id:$id) { '+ORDER_FIELDS+' } }'
+ORDER_CUSTOMER='query POSOrderCustomer($id:ID!) { shop { myshopifyDomain currencyCode } order(id:$id) { id customer { id } } }'
 FIND='query POSFind($query:String!,$after:String) { shop {myshopifyDomain currencyCode} orders(first:50,query:$query,after:$after) {nodes {id sourceIdentifier tags} pageInfo {hasNextPage endCursor}} }'
 CREATE='mutation POSCreate($order:OrderCreateOrderInput!,$options:OrderCreateOptionsInput) { orderCreate(order:$order,options:$options) { order { id } userErrors {field message} } }'
 REFUND='mutation POSRefund($input:RefundInput!,$key:String!) { refundCreate(input:$input) @idempotent(key:$key) { refund {id} userErrors {field message} } }'
@@ -35,7 +36,7 @@ class POSRemoteError(Exception):pass
 
 class POSShopify(ShopifyCatalogClient):
     def request(self,query,variables):
-        if query not in {READ,FIND,CREATE,REFUND,PRODUCT,PROBE,CUSTOMER}:raise POSRemoteError('Unsupported POS operation')
+        if query not in {READ,ORDER_CUSTOMER,FIND,CREATE,REFUND,PRODUCT,PROBE,CUSTOMER}:raise POSRemoteError('Unsupported POS operation')
         if query==CREATE and not settings.POS_CHECKOUT_WRITE_ENABLED:raise POSRemoteError('POS checkout writes disabled')
         if query==REFUND and not settings.POS_REFUND_WRITE_ENABLED:raise POSRemoteError('POS refund writes disabled')
         try:
@@ -93,6 +94,7 @@ class POSShopify(ShopifyCatalogClient):
         return value
 
     def read(self,order_id):return self.request(READ,{'id':order_id}).get('order')
+    def read_customer(self,order_id):return self.request(ORDER_CUSTOMER,{'id':order_id}).get('order')
     def find(self,reference):
         rows=[];cursor=None;seen=set()
         for _ in range(4):

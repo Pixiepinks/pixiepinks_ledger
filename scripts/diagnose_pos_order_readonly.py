@@ -163,17 +163,34 @@ def run(sessions,client,order_id=ORDER_ID,groups=('full',),checkout_id=None):
         result['target_matches_recorded_order']=len(known)==1 and known[0]==order_id
         if checkout_id:
             selected=db.get(POSCheckout,checkout_id);result['browser_checkout_lookup']=row_metadata(db,selected,configured) if selected else {'status':'UUID_NOT_FOUND_IN_THIS_DATABASE_SCHEMA'}
-        result['reads']=[]
+        required_customer=sale is not None and sale.frozen.get('customer_shopify_id') is not None
+        result['customer_association_required']=required_customer if sale is not None else None
+        result['financial_query_includes_customer']=False
+        result['customer_fields_requested_separately']=['id']
+        result['reads']=[];probes={}
+        def probe_group(group):
+            if group not in probes:probes[group]=client.probe(group,order_id)
+            return probes[group]
         for group in groups:
-            probe=client.probe(group,order_id);report=probe.report.copy()
+            probe=probe_group(group);report=probe.report.copy()
+            report['verification_role']='REQUIRED_ASSOCIATION' if group=='customer' and required_customer else 'OPTIONAL_PROTECTED_CUSTOMER' if group=='customer' else 'REQUIRED_FINANCIAL_FIELDS' if group=='full' else 'FIELD_ISOLATION_ONLY'
             if group=='full' and probe.order is not None:
                 if sale is None:report['canonical_verification']='NO_UNAMBIGUOUS_LOCAL_SALE_A'
                 elif not result['target_matches_recorded_order']:report['canonical_verification']='RECORDED_ORDER_MISMATCH'
                 else:
-                    try:service.verify_order(sale,probe.order);report['canonical_verification']='VERIFIED_AGAINST_FROZEN_SALE_A'
+                    try:
+                        order=probe.order
+                        if order.get('id')!=order_id:raise adapter.POSRemoteError('Order identity/correlation mismatch')
+                        if required_customer and 'customer' not in order:
+                            association=probe_group('customer');report['required_customer_read']=association.report.copy()
+                            if association.order is None or 'customer' not in association.order:raise adapter.POSRemoteError('Required customer association unavailable')
+                            if association.order.get('id')!=order_id:raise adapter.POSRemoteError('Order identity/correlation mismatch')
+                            order={**order,'customer':association.order['customer']}
+                        service.verify_order(sale,order);report['canonical_verification']='VERIFIED_AGAINST_FROZEN_SALE_A'
                     except Exception as exc:report.update(canonical_verification='NOT_VERIFIED',failure_code=failure_code('ORDER_VERIFICATION',exc))
             result['reads'].append(report)
-            if report.get('http_status')==429 or any(error.get('code')=='THROTTLED' for error in report.get('graphql_errors',[])):
+            checks=[report,report.get('required_customer_read') or {}]
+            if any(r.get('http_status')==429 or any(e.get('code')=='THROTTLED' for e in r.get('graphql_errors',[])) for r in checks):
                 result['stopped_after_throttle']=True;break
         db.rollback()
     return result
