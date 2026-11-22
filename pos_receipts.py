@@ -68,7 +68,7 @@ class ReceiptLayout:
         pdf.cell(w=column,h=size*.49,text=str(value),align='R')
         pdf.set_xy(pdf.l_margin,y+height)
 
-    def draw(self,sale,refund,duplicate,acknowledgement=None,test=False):
+    def draw(self,sale,refund,duplicate,acknowledgement=None,test=False,shopify_reference=None):
         f=sale.frozen;q=f['quote'];policy=f['policy']
         self.text('PixiePinks',17,'C')
         self.text('TEST — NOT A VALID SALE' if test else 'REFUND RECEIPT' if refund else 'SALES RECEIPT',9,'C')
@@ -77,6 +77,7 @@ class ReceiptLayout:
         if policy.get('shop_contact'):self.text(policy['shop_contact'],8,'C')
         if policy.get('legal_id'):self.text('Legal/tax ID: '+policy['legal_id'],8,'C')
         self.rule();self.text(('Test checkout: ' if test else 'Sale / invoice: ')+sale.reference,9)
+        if shopify_reference and not test:self.text('Shopify order: '+shopify_reference,8)
         if acknowledgement and not refund:self.text('Final receipt replaces provisional acknowledgement: '+acknowledgement,8)
         self.text(local_time(refund.payout_at if refund else sale.created_at),8)
         self.text('Cashier: '+f['cashier'],8)
@@ -123,15 +124,15 @@ class ReceiptLayout:
         return self.pdf.get_y()+5
 
 
-def render(sale,profile,refund=None,duplicate=False,acknowledgement=None,*,test=False):
+def render(sale,profile,refund=None,duplicate=False,acknowledgement=None,*,test=False,shopify_reference=None):
     if profile=='A4':
-        layout=ReceiptLayout(profile,297);layout.draw(sale,refund,duplicate,acknowledgement,test)
+        layout=ReceiptLayout(profile,297);layout.draw(sale,refund,duplicate,acknowledgement,test,shopify_reference)
     else:
         # Same measured layout on both passes: wrap by actual Unicode font metrics,
         # then create a true zero-origin custom page, without a crop/scale transform.
-        measure=ReceiptLayout(profile,10000);height=ceil(measure.draw(sale,refund,duplicate,acknowledgement,test)*10)/10
+        measure=ReceiptLayout(profile,10000);height=ceil(measure.draw(sale,refund,duplicate,acknowledgement,test,shopify_reference)*10)/10
         if height>1500:raise HTTPException(422,'Receipt exceeds supported roll length; choose A4')
-        layout=ReceiptLayout(profile,height);layout.draw(sale,refund,duplicate,acknowledgement,test)
+        layout=ReceiptLayout(profile,height);layout.draw(sale,refund,duplicate,acknowledgement,test,shopify_reference)
     return bytes(layout.pdf.output())
 
 
@@ -145,7 +146,10 @@ def generate(db,user,checkout_id,profile='80',refund_id=None,*,commit=True,dupli
     previous=db.query(POSAudit).filter_by(shop=r.shop,reference=ref,action='RECEIPT_GENERATED').count()
     reprint=bool(previous or duplicate)
     ack=db.query(POSAudit).filter(POSAudit.shop==r.shop,POSAudit.reference==r.id,POSAudit.action.in_(['PROVISIONAL_ISSUED','PROVISIONAL_UPDATED','PROVISIONAL_REPRINTED'])).first() if not refund else None
-    data=render(r,profile,refund,reprint,acknowledgement=(ack.detail or {}).get('document_id')) if ack else render(r,profile,refund,reprint)
+    from models import SalesOrder
+    order=db.get(SalesOrder,r.sales_order_id)
+    shopify_reference=(order.shopify_order_name or order.shopify_order_id) if order else None
+    data=render(r,profile,refund,reprint,acknowledgement=(ack.detail or {}).get('document_id') if ack else None,shopify_reference=shopify_reference)
     # An unsuccessful render must not consume the original receipt/audit identity.
     service.audit(db,user,ref,'RECEIPT_GENERATED',duplicate=reprint,profile=profile,refund=bool(refund))
     db.commit() if commit else db.flush()

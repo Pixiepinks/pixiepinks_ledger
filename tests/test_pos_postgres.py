@@ -66,7 +66,7 @@ def test_pos_additive_migration_from_phase3_preserves_legacy(pg):
     from sqlalchemy import inspect
     engine,sessions,uid=pg
     from hardware_models import HardwareEvent, HardwareJob, HardwareRate, PrintDevice, POSReceiptTest
-    for model in [POSReceiptTest,HardwareEvent,HardwareJob,HardwareRate,PrintDevice]:model.__table__.drop(engine)
+    for model in [POSPilotAuthorization,POSPilotScope,POSReceiptTest,HardwareEvent,HardwareJob,HardwareRate,PrintDevice]:model.__table__.drop(engine)
     for model in [POSCustomerBinding,POSPosting,POSAudit,POSCashMovement,POSRefund,POSOperation,POSCheckout,POSCart,POSSession,POSRegister,POSConfig]:model.__table__.drop(engine)
     with engine.begin() as conn:conn.execute(text('ALTER TABLE sales_orders DROP COLUMN sales_channel'))
     cfg=Config(str(Path(__file__).parents[1]/'alembic.ini'));command.stamp(cfg,'20261119_46');command.upgrade(cfg,'head');command.upgrade(cfg,'head')

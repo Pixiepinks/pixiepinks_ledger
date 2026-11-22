@@ -124,7 +124,7 @@ def test_browser_and_hardware_share_content_audit_and_duplicate_semantics(hardwa
 
 def test_render_failure_does_not_consume_original_audit(pos,monkeypatch):
     r=pos;rid=checkout(r);service.dispatch_one(r.sessions,r.pos)
-    monkeypatch.setattr(receipts,'render',lambda *args:(_ for _ in ()).throw(ValueError('render unavailable')))
+    monkeypatch.setattr(receipts,'render',lambda *args,**kwargs:(_ for _ in ()).throw(ValueError('render unavailable')))
     with r.sessions() as db:
         with pytest.raises(ValueError):receipts.generate(db,db.get(User,r.uid),rid)
         assert db.query(POSAudit).filter_by(action='RECEIPT_GENERATED').count()==0
