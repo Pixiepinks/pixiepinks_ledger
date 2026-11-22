@@ -38,13 +38,13 @@ function Assert-ReceiptInstallation($Paths) {
 function Assert-ReceiptAcl($Paths,$Identity) {
     $trusted = @($Identity.Sid,'S-1-5-18','S-1-5-32-544')
     # Refuse dangerous permissions; do not rewrite application/DPAPI/journal ACLs.
-    $codePaths = @(Get-ChildItem -LiteralPath (Join-Path $Paths.Install '.venv'),(Join-Path $Paths.Install 'windows_print_agent') -Recurse -Force | ForEach-Object {$_.FullName})
-    foreach ($p in @('C:\PixiePinks',$Paths.Install,(Join-Path $Paths.Install '.venv'),(Join-Path $Paths.Install '.venv\Scripts'),$Paths.Python,$Paths.PythonW,(Join-Path $Paths.Install 'windows_print_agent'),(Join-Path $Paths.Install 'windows_print_agent\runtime.py'),$Paths.Root) + $codePaths) {
+    $codePaths = @(Get-ChildItem -LiteralPath (Join-Path $Paths.Install '.venv'),(Join-Path $Paths.Install 'windows_print_agent'),(Join-Path $Paths.Install 'scripts\windows') -Recurse -Force | ForEach-Object {$_.FullName})
+    foreach ($p in @('C:\PixiePinks',$Paths.Install,(Join-Path $Paths.Install '.venv'),(Join-Path $Paths.Install '.venv\Scripts'),$Paths.Python,$Paths.PythonW,(Join-Path $Paths.Install 'windows_print_agent'),(Join-Path $Paths.Install 'windows_print_agent\runtime.py'),(Join-Path $Paths.Install 'scripts'),(Join-Path $Paths.Install 'scripts\windows'),$Paths.Root) + $codePaths) {
         if ((Get-Item -LiteralPath $p -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Code/venv reparse point rejected.' }
         $acl = Get-Acl -LiteralPath $p
         if ($acl.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin $trusted) { throw 'Untrusted startup-path owner; administrator ACL review required.' }
         foreach ($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
-            $write = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+            $write = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
             if ($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $trusted -and ($rule.FileSystemRights -band $write)) { throw 'Another principal can modify a startup path; administrator ACL review required.' }
         }
     }
