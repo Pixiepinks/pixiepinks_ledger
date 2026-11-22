@@ -33,10 +33,30 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.get('/api/purchases/context')
     def context(db=Depends(get_db),user=Depends(require_user)):
         service.require(user)
-        return output({'suppliers':[{'id':s.id,'name':s.name,'email':s.email,'phone':s.phone,**service.supplier_profile(db,s.id)} for s in db.query(Supplier).order_by(Supplier.name)],
-        'locations':[service.public(db,r) for r in db.query(Record).filter_by(shop=retail.shop(),kind='LOCATION')],
+        try:
+            verified={r['id']:r for r in remote.client.locations() if r.get('isActive') is True};location_error=None
+        except InventoryError:
+            verified={};location_error='Location verification unavailable. Retry or ask an administrator to check the Shopify connection.'
+        mapped=[service.public(db,r) for r in db.query(Record).filter_by(shop=retail.shop(),kind='LOCATION')]
+        for row in mapped:
+            gid=row['payload']['location_id'];row['verified_active']=gid in verified
+            row['name']=verified.get(gid,{}).get('name',row['payload'].get('name','Unverified location'))
+        balances={}
+        from decimal import Decimal
+        from pos_money import fmt
+        for bill in db.query(Record).filter_by(shop=retail.shop(),kind='BILL',status='APPROVED'):
+            balances[bill.supplier_id]=balances.get(bill.supplier_id,Decimal(0))+Decimal(bill.payload['total'])
+        for payment in db.query(Record).filter_by(shop=retail.shop(),kind='PAYMENT'):
+            balances[payment.supplier_id]=balances.get(payment.supplier_id,Decimal(0))-Decimal(payment.payload['amount'])
+        return output({'location_error':location_error,'suppliers':[{'id':s.id,'name':s.name,'email':s.email,'phone':s.phone,'balance':fmt(balances.get(s.id,Decimal(0))),**service.supplier_profile(db,s.id)} for s in db.query(Supplier).order_by(Supplier.name)],
+        'locations':mapped,
         'inventory_sync_enabled':bool(settings.PURCHASE_INVENTORY_SYNC_ENABLED and settings.SHOPIFY_INVENTORY_WRITE_ENABLED),
         'permissions':{p:user.role=='ADMIN' or p in (user.section_access or []) for p in service.PERMISSIONS},'administrator':user.role=='ADMIN'})
+
+    @router.post('/api/purchases/preview')
+    async def preview(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,service.PERMISSIONS[1]);data=await body(request)
+        return output(safe(lambda:service.quote(db,{**data,'invoice':data.get('invoice') or 'UNSAVED PREVIEW'},verify_remote=False)))
 
     @router.get('/api/purchases/products')
     def products(q:str='',offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):

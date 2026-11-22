@@ -33,9 +33,12 @@ def supplier_profile(db,sid):
     row=db.query(Record).filter_by(shop=retail.shop(),kind='SUPPLIER',business_key='supplier:'+str(sid)).first()
     return {**row.payload,'version':row.version,'profile_id':row.id} if row else {'archived':False,'version':None}
 
-def location(db,gid):
+def location(db,gid,verify_remote=True):
     row=db.query(Record).filter_by(shop=retail.shop(),kind='LOCATION',business_key='location:'+str(gid)).first()
     if not row or not row.payload['enabled']:raise HTTPException(409,'Configure an enabled shop/warehouse location first')
+    if verify_remote:
+        active={r['id'] for r in remote.client.locations() if r.get('isActive') is True}
+        if gid not in active:raise HTTPException(409,'Destination is no longer an active verified Shopify location')
     return row
 
 def put_directory(db,user,kind,data):
@@ -52,9 +55,9 @@ def put_directory(db,user,kind,data):
         payload.update(credit_days=inventory.amount(data.get('credit_days',0),0,3650),archived=data.get('archived') is True)
         key='supplier:'+str(supplier.id)
     else:
-        gid=data.get('location_id');active={r['id'] for r in remote.client.locations() if r.get('isActive') is True}
+        gid=data.get('location_id');active={r['id']:r for r in remote.client.locations() if r.get('isActive') is True}
         if gid not in active or data.get('type') not in {'SHOP','WAREHOUSE'}:raise HTTPException(422,'Select an actual active Shopify location and SHOP/WAREHOUSE type')
-        payload={'location_id':gid,'type':data['type'],'enabled':data.get('enabled') is True};key='location:'+gid;supplier=None
+        payload={'location_id':gid,'name':active[gid]['name'],'type':data['type'],'enabled':data.get('enabled') is True};key='location:'+gid;supplier=None
     row=db.query(Record).filter_by(shop=retail.shop(),business_key=key).one_or_none()
     if row:
         if data.get('version')!=row.version:raise HTTPException(409,'Directory changed; reload before saving')
@@ -63,10 +66,10 @@ def put_directory(db,user,kind,data):
         before=None;row=Record(id=str(uuid4()),shop=retail.shop(),kind=kind,supplier_id=supplier.id if supplier else None,client_key=uuid4().hex,business_key=key,request_hash=inventory.digest(payload),payload=payload,status='ACTIVE',actor_id=user.id);db.add(row)
     audit(db,user,'DIRECTORY_CHANGED',row,before=before,after=payload);db.commit();return row
 
-def quote(db,data):
+def quote(db,data,verify_remote=True):
     sid=inventory.amount(data.get('supplier_id'),1);supplier=db.get(Supplier,sid)
     if not supplier or supplier_profile(db,sid).get('archived'):raise HTTPException(422,'Choose an active existing supplier')
-    loc=data.get('location_id');location(db,loc)
+    loc=data.get('location_id');location(db,loc,verify_remote=verify_remote)
     try:day=date.fromisoformat(data.get('date',''))
     except (ValueError,TypeError):raise HTTPException(422,'Invoice date required') from None
     if day>datetime.now(ZoneInfo('Asia/Colombo')).date():raise HTTPException(422,'Future invoice date not permitted')
@@ -95,7 +98,7 @@ def quote(db,data):
         taxes+=tax;total+=Decimal(line['total'])
     charges=money(data.get('charges','0'));charge_tax=money(data.get('charge_tax','0'));total+=charges+charge_tax
     money(total,Decimal('999999999999.99'))
-    return {'supplier_id':sid,'supplier_name':supplier.name,'invoice':inventory.text(data.get('invoice'),120,True),'date':day.isoformat(),'location_id':loc,'due_date':(day+timedelta(days=supplier_profile(db,sid).get('credit_days',0))).isoformat(),'currency':'LKR','tax_mode':mode,'lines':lines,'discount_total':fmt(header+sum(Decimal(l['line_discount']) for l in lines)),'tax_total':fmt(taxes+charge_tax),'charges':fmt(charges),'charge_tax':fmt(charge_tax),'total':fmt(total),'notes':inventory.text(data.get('notes',''),2000)}
+    return {'supplier_id':sid,'supplier_name':supplier.name,'invoice':inventory.text(data.get('invoice'),120,True),'date':day.isoformat(),'location_id':loc,'due_date':(day+timedelta(days=supplier_profile(db,sid).get('credit_days',0))).isoformat(),'currency':'LKR','tax_mode':mode,'lines':lines,'quantity_total':sum(l['quantity'] for l in lines),'subtotal':fmt(sum(Decimal(l['gross']) for l in lines)),'line_discount_total':fmt(sum(Decimal(l['line_discount']) for l in lines)),'invoice_discount':fmt(header),'taxable_amount':fmt(sum(nets)-header-taxes if mode=='INCLUSIVE' else sum(nets)-header),'discount_total':fmt(header+sum(Decimal(l['line_discount']) for l in lines)),'line_tax_total':fmt(taxes),'tax_total':fmt(taxes+charge_tax),'charges':fmt(charges),'charge_tax':fmt(charge_tax),'total':fmt(total),'notes':inventory.text(data.get('notes',''),2000)}
 
 def create(db,user,kind,data):
     require(user,PERMISSIONS[2] if kind=='PAYMENT' else PERMISSIONS[1]);retail.write_lock(db)
@@ -179,6 +182,9 @@ def action(db,user,rid,action,confirmation=None):
 def public(db,row):
     result={k:getattr(row,k) for k in ('id','kind','parent_id','supplier_id','payload','status','version','actor_id','approved_by')}
     if row.kind=='BILL':
+        # Display additions for existing frozen invoices; never update their JSON or totals.
+        p=row.payload;lines=p['lines']
+        result['payload']={**p,'quantity_total':sum(l['quantity'] for l in lines),'subtotal':fmt(sum((Decimal(l['gross']) for l in lines),Decimal(0))),'line_discount_total':fmt(sum((Decimal(l['line_discount']) for l in lines),Decimal(0))),'invoice_discount':fmt(sum((Decimal(l['header_discount']) for l in lines),Decimal(0))),'line_tax_total':fmt(sum((Decimal(l['tax']) for l in lines),Decimal(0)))}
         paid=sum((Decimal(r.payload['amount']) for r in db.query(Record).filter_by(parent_id=row.id,kind='PAYMENT')),Decimal(0))
         result['payments']=[{'id':p.id,**p.payload,'actor_id':p.actor_id} for p in db.query(Record).filter_by(parent_id=row.id,kind='PAYMENT').order_by(Record.created_at)]
         result['receipts']=[{'id':p.id,'status':p.status,'lines':p.payload['lines']} for p in db.query(Record).filter_by(parent_id=row.id,kind='RECEIPT').order_by(Record.created_at)]

@@ -322,3 +322,71 @@ def test_payment_reference_cannot_be_recorded_twice_with_new_key(purchase):
         u=db.get(User,r.uid);svc.create(db,u,'PAYMENT',data)
         with pytest.raises(HTTPException):svc.create(db,u,'PAYMENT',{**data,'client_key':uuid4().hex})
         assert svc.public(db,svc.get(db,bid))['paid']=='500.00'
+
+def test_context_verified_destination_names_and_inactive_filter(purchase):
+    r=purchase;url='/crm/retail/api/purchases/context';v=r.client.get(url).json()
+    assert {l['name'] for l in v['locations']}=={'Shop','Warehouse'} and all(l['verified_active'] for l in v['locations'])
+    r.remote.locations=lambda:[{'id':LOCATION,'name':'Magammana West','isActive':False}]
+    v=r.client.get(url).json();assert not any(l['verified_active'] for l in v['locations'])
+    with r.sessions() as db:
+        with pytest.raises(HTTPException):svc.create(db,db.get(User,r.uid),'BILL',bill_data(r))
+
+def test_location_verification_failure_is_not_empty_success(purchase):
+    r=purchase
+    def unavailable():raise InventoryError('READ_UNAVAILABLE')
+    r.remote.locations=unavailable
+    v=r.client.get('/crm/retail/api/purchases/context').json();assert v['location_error'] and not any(l['verified_active'] for l in v['locations'])
+
+def test_preview_reuses_exact_quote_without_persistence(purchase):
+    r=purchase;d=bill_data(r);d['lines'][0].update(tax_rate='18');d['discount']={'type':'PERCENT','value':'5'}
+    response=r.client.post('/crm/retail/api/purchases/preview',json=d,headers={'X-CSRF-Token':r.csrf});assert response.status_code==200
+    q=response.json();assert q['subtotal']=='2000.00' and q['total']=='2242.00' and q['quantity_total']==20
+    with r.sessions() as db:assert db.query(Record).filter_by(kind='BILL').count()==0 and db.query(InventoryDocument).count()==0
+    assert not r.remote.mutations
+
+def test_preview_permission_and_csrf(purchase):
+    r=purchase;url='/crm/retail/api/purchases/preview'
+    assert r.client.post(url,json=bill_data(r)).status_code==403
+    with r.sessions() as db:
+        u=db.get(User,r.uid);u.role='STAFF';u.section_access=['retail.purchases.view'];db.commit()
+    assert r.client.post(url,json=bill_data(r),headers={'X-CSRF-Token':r.csrf}).status_code==403
+    v=r.client.get('/crm/retail/api/purchases/context').json();assert not v['administrator']
+
+def test_distinct_variants_with_shared_sku_not_collapsed(purchase):
+    r=purchase;d=bill_data(r)
+    with r.sessions() as db:
+        for p in r.products[:2]:db.get(stock.RetailVariant,p['id']).sku='SUPPLIER-SHARED'
+        db.commit();d['lines']=[{**d['lines'][0],'variant_id':p['id'],'version':p['version']} for p in r.products[:2]]
+        q=svc.quote(db,d);assert len(q['lines'])==2 and q['total']=='4000.00'
+        d['lines'][1]=dict(d['lines'][0])
+        with pytest.raises(HTTPException):svc.quote(db,d)
+
+def test_preview_does_not_repeat_shopify_location_queries(purchase):
+    r=purchase;d=bill_data(r)
+    def unavailable():raise InventoryError('READ_UNAVAILABLE')
+    r.remote.locations=unavailable
+    response=r.client.post('/crm/retail/api/purchases/preview',json=d,headers={'X-CSRF-Token':r.csrf})
+    assert response.status_code==200  # Local mapped preview only; save must reverify.
+    with r.sessions() as db:
+        with pytest.raises(InventoryError):svc.create(db,db.get(User,r.uid),'BILL',d)
+
+def test_destination_context_is_scoped_to_configured_shop(purchase):
+    r=purchase
+    with r.sessions() as db:
+        db.add(Record(id=str(uuid4()),shop='different-shop',kind='LOCATION',client_key=uuid4().hex,business_key='location:foreign',request_hash='0'*64,payload={'location_id':'gid://shopify/Location/999','type':'SHOP','enabled':True},status='ACTIVE',actor_id=r.uid));db.commit()
+    v=r.client.get('/crm/retail/api/purchases/context').json();assert len(v['locations'])==2
+    assert all(l['payload']['location_id']!='gid://shopify/Location/999' for l in v['locations'])
+
+def test_existing_snapshot_display_enrichment_never_rewrites_bill(purchase):
+    import copy
+    r=purchase;bid=make_bill(r,approved=False)
+    with r.sessions() as db:
+        row=svc.get(db,bid)
+        row.payload={k:v for k,v in row.payload.items() if k not in {'quantity_total','subtotal','line_discount_total','invoice_discount','line_tax_total','taxable_amount'}};db.commit();before=copy.deepcopy(row.payload)
+    response=r.client.get('/crm/retail/api/purchases/'+bid);assert response.json()['payload']['subtotal']=='2000.00'
+    with r.sessions() as db:assert svc.get(db,bid).payload==before
+
+def test_charge_tax_is_separate_from_product_tax(purchase):
+    r=purchase;d=bill_data(r);d.update(charges='100',charge_tax='18')
+    with r.sessions() as db:
+        q=svc.quote(db,d);assert q['line_tax_total']=='0.00' and q['charge_tax']=='18.00' and q['tax_total']=='18.00' and q['total']=='2118.00'
