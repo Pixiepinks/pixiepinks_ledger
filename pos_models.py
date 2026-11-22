@@ -155,3 +155,30 @@ class POSPilotAuthorization(Base):
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
     expires_at=Column(DateTime,nullable=False)
     __table_args__=(UniqueConstraint('shop','request_key',name='uq_pos_pilot_authorization_request'),)
+
+
+class POSDailyPolicy(Base):
+    """Administrator's register-level release; every revision is audited."""
+    __tablename__='pos_daily_policies'
+    register_id=Column(Integer,ForeignKey('pos_registers.id'),primary_key=True)
+    shop=Column(String(100),nullable=False)
+    device_id=Column(String(36),ForeignKey('print_devices.id'),nullable=False)
+    device_version=Column(Integer,nullable=False)
+    version=Column(Integer,nullable=False,default=1)
+    enabled=Column(Integer,nullable=False,default=0)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    notes=Column(String(1000),nullable=False)
+    updated_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class POSDailySale(Base):
+    """Immutable receipt target captured once for a genuine daily checkout."""
+    __tablename__='pos_daily_sales'
+    checkout_id=Column(String(36),ForeignKey('pos_checkouts.id'),primary_key=True)
+    shop=Column(String(100),nullable=False)
+    register_id=Column(Integer,ForeignKey('pos_registers.id'),nullable=False)
+    policy_version=Column(Integer,nullable=False)
+    device_id=Column(String(36),ForeignKey('print_devices.id'),nullable=False)
+    device_version=Column(Integer,nullable=False)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)

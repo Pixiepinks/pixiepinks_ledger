@@ -4,7 +4,7 @@ from datetime import timedelta
 from fastapi import APIRouter,Depends,Request,HTTPException
 from fastapi.responses import JSONResponse,Response
 from hardware_models import PrintDevice,HardwareJob,HardwareEvent,POSReceiptTest
-from pos_models import POSSession
+from pos_models import POSSession,POSDailySale
 from settings import settings
 import hardware_service as s
 from print_agent_security import require_native_https
@@ -86,7 +86,7 @@ def build_router(get_db,require_user,csrf):
             registers={r.register_id for r in db.query(POSSession).filter_by(shop=s.retail.shop(),cashier_id=user.id,status='OPEN')};rows=[d for d in rows if d.register_id in registers]
         ids=[d.id for d in rows]
         jobs=db.query(HardwareJob).filter(HardwareJob.device_id.in_(ids)).order_by(HardwareJob.created_at.desc()).limit(50).all()
-        return out({'devices':[s.public_device(d) for d in rows],'jobs':[s.public_job(j) for j in jobs],'gates':{'receipts':settings.POS_LOCAL_PRINT_ENABLED,'drawer':settings.POS_CASH_DRAWER_AUTOMATION_ENABLED,'labels':settings.RETAIL_HARDWARE_LABEL_PRINT_ENABLED}})
+        return out({'devices':[s.public_device(d) for d in rows],'jobs':[{**s.public_job(j),'daily_sale':bool(j.checkout_id and db.get(POSDailySale,j.checkout_id))} for j in jobs],'gates':{'receipts':settings.POS_LOCAL_PRINT_ENABLED,'drawer':settings.POS_CASH_DRAWER_AUTOMATION_ENABLED,'labels':settings.RETAIL_HARDWARE_LABEL_PRINT_ENABLED}})
 
     @router.post('/crm/pos/api/hardware/devices')
     async def enroll(request:Request,db=Depends(get_db),user=Depends(require_user)):
