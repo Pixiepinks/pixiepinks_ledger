@@ -353,9 +353,33 @@ def order_wire(r):
     return wire
 
 
+def read_order_for_verification(api,r,order_id):
+    """Required finance first; protected association only for an explicit binding.
+
+    No GraphQL errors/partial data are ignored and no missing customer is invented.
+    A legacy/full response that actually supplies customer evidence is still checked.
+    """
+    order=api.read(order_id)
+    if not isinstance(order,dict) or order.get('id')!=order_id:raise remote.POSRemoteError('Order identity/correlation mismatch')
+    if r.frozen.get('customer_shopify_id') is not None and 'customer' not in order:
+        try:association=api.read_customer(order_id)
+        except Exception:raise remote.POSRemoteError('Required customer association unavailable') from None
+        if not isinstance(association,dict) or association.get('id')!=order_id:raise remote.POSRemoteError('Order identity/correlation mismatch')
+        if 'customer' not in association:raise remote.POSRemoteError('Required customer association unavailable')
+        order={**order,'customer':association['customer']}
+    return order
+
+
 def verify_order(r,order):
     if not isinstance(order,dict) or not inventory.remote.gid(order.get('id'),'Order') or order.get('sourceIdentifier')!=r.reference or 'pixiepinks-pos-'+r.reference not in order.get('tags',[]) or order.get('cancelledAt'):raise remote.POSRemoteError('Order identity/correlation mismatch')
-    if (order.get('customer') or {}).get('id')!=r.frozen.get('customer_shopify_id'):raise remote.POSRemoteError('Customer association mismatch')
+    expected_customer=r.frozen.get('customer_shopify_id')
+    if expected_customer is not None:
+        if 'customer' not in order:raise remote.POSRemoteError('Required customer association unavailable')
+        if not inventory.remote.gid(expected_customer,'Customer') or not isinstance(order['customer'],dict) or order['customer'].get('id')!=expected_customer:raise remote.POSRemoteError('Customer association mismatch')
+    elif 'customer' in order and order['customer'] is not None:
+        # Explicit unexpected association remains a mismatch. Omitted optional data
+        # is not evidence that Shopify has no customer and is never stored as null.
+        raise remote.POSRemoteError('Customer association mismatch')
     def amount(field):
         v=(order.get(field) or {}).get('shopMoney') or {}
         if v.get('currencyCode')!='LKR':raise remote.POSRemoteError('Order currency mismatch')
@@ -448,7 +472,7 @@ def dispatch_one(sessions,client=None):
         try:
             with db.begin_nested():
                 if kind=='CREATE':
-                    order=api.read(remote_id);stage='ORDER_VERIFICATION'
+                    order=read_order_for_verification(api,r,remote_id);stage='ORDER_VERIFICATION'
                     if not isinstance(order,dict) or order.get('id')!=remote_id:raise remote.POSRemoteError('Order identity/correlation mismatch')
                     observed=verify_order(r,order);op.outcome={'remote_id':remote_id,'order':observed}
                     stage='LOCAL_POSTING';publish_sale(db,r,observed)
@@ -474,7 +498,7 @@ def reconcile(db,user,operation_id,notes,client=None):
                 if len(found)!=1:raise HTTPException(409,'Exactly one authoritative matching order required; zero matches never permit a blind retry')
                 known=(op.outcome or {}).get('remote_id')
                 if known and known!=found[0]['id']:raise remote.POSRemoteError('Order identity/correlation mismatch')
-                stage='SHOPIFY_READBACK';order=api.read(found[0]['id'])
+                stage='SHOPIFY_READBACK';order=read_order_for_verification(api,r,found[0]['id'])
                 stage='ORDER_VERIFICATION'
                 if not isinstance(order,dict) or order.get('id')!=found[0]['id']:raise remote.POSRemoteError('Order identity/correlation mismatch')
                 observed=verify_order(r,order)

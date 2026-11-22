@@ -18,7 +18,7 @@ REFERENCES=['POS-851C4716B015DF1B0E79','POS-5AB126C311C38CDBD5FA']
 
 class ReadOnlyClient(adapter.POSShopify):
     def request(self,query,variables):
-        if query not in {adapter.READ,adapter.FIND}:raise adapter.POSRemoteError('Diagnostic permits order reads/search only')
+        if query not in {adapter.READ,adapter.ORDER_CUSTOMER,adapter.FIND}:raise adapter.POSRemoteError('Diagnostic permits order reads/search only')
         return super().request(query,variables)
     def create(self,*args,**kwargs):raise adapter.POSRemoteError('Diagnostic mutations forbidden')
     def refund(self,*args,**kwargs):raise adapter.POSRemoteError('Diagnostic mutations forbidden')
@@ -73,7 +73,7 @@ def run(sessions,client,references):
             session=db.get(POSSession,r.session_id);config=db.get(POSConfig,shop)
             summary['local']={'grand_total':q['grand_total'],'frozen_hash_valid':service.digest(r.frozen)==r.frozen_hash,'accounts_exist':all(db.get(Account,a) is not None for a,_,_ in entries),'posting_balanced':sum((d-c for _,d,c in entries),Decimal(0))==0,'existing_posting':posting is not None,'journal_memo_count':db.query(JournalEntry).filter_by(memo='POS-sale:'+r.id).count(),'payment_accounting_link_count':sum(p.accounting_entry_id is not None for p in payments),'payment_links_match_posting':all(p.accounting_entry_id==posting.entry_id for p in payments) if posting else None,'existing_posting_matches':normalize(actual)==normalize(expected) if posting else None,'payment_count':len(payments),'verified_amount':str(sum((Decimal(p.amount) for p in payments if p.verification_status=='VERIFIED'),Decimal(0))),'all_tenders_verified':bool(payments) and all(p.verification_status=='VERIFIED' for p in payments),'session_status':session.status if session else None,'policy_version_matches':bool(config and config.version==r.frozen['config_version'])}
             known=(create.outcome or {}).get('remote_id') if create else None
-            summary['remote']={'recorded_order_id':known if order_gid(known) else None}
+            summary['remote']={'recorded_order_id':known if order_gid(known) else None,'customer_association_required':r.frozen.get('customer_shopify_id') is not None,'financial_read_includes_customer':False}
             matches=None
             try:
                 matches=client.find(ref);summary['remote']['search_match_count']=len(matches)
@@ -83,7 +83,7 @@ def run(sessions,client,references):
             if order_gid(target):
                 stage='SHOPIFY_READBACK'
                 try:
-                    observed=client.read(target);stage='ORDER_VERIFICATION'
+                    observed=service.read_order_for_verification(client,r,target);stage='ORDER_VERIFICATION'
                     if not isinstance(observed,dict) or observed.get('id')!=target:raise adapter.POSRemoteError('Order identity/correlation mismatch')
                     service.verify_order(r,observed)
                     summary['remote'].update(readback_status='VERIFIED_AGAINST_FROZEN_SALE',verified_order_id=target)

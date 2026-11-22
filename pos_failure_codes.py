@@ -7,6 +7,7 @@ VERIFICATION_CODES={
  'Exactly one authoritative matching order required; zero matches never permit a blind retry':'ORDER_MATCH_COUNT_NOT_ONE',
  'Order identity/correlation mismatch':'ORDER_IDENTITY_MISMATCH',
  'Customer association mismatch':'CUSTOMER_ASSOCIATION_MISMATCH',
+ 'Required customer association unavailable':'CUSTOMER_ASSOCIATION_UNAVAILABLE',
  'Order currency mismatch':'ORDER_CURRENCY_MISMATCH',
  'Order financial outcome not verified':'ORDER_PAYMENT_OR_TOTAL_MISMATCH',
  'Tax or Shopify-native discount outcome mismatch':'ORDER_TAX_OR_DISCOUNT_MISMATCH',
