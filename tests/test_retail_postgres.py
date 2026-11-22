@@ -47,8 +47,8 @@ def test_additive_migration_and_import_does_not_reject_legacy_duplicates(pg):
     # Reconstruct the pre-retail schema in dependency order, including additive Phase 3 tables.
     from inventory_models import InventoryDocument, InventoryEvent, InventoryObservation, InventoryPolicy, InventoryPolicyEvent
     models += [InventoryDocument, InventoryEvent, InventoryObservation, InventoryPolicy, InventoryPolicyEvent]
-    from hardware_models import PrintDevice, HardwareJob, HardwareEvent, HardwareRate
-    models += [PrintDevice, HardwareJob, HardwareEvent, HardwareRate]
+    from hardware_models import PrintDevice, HardwareJob, HardwareEvent, HardwareRate, POSReceiptTest
+    models += [PrintDevice, HardwareJob, HardwareEvent, HardwareRate, POSReceiptTest]
     for model in reversed(models):model.__table__.drop(engine)
     cfg=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'));command.stamp(cfg,'20261111_41');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
     with sessions() as db:

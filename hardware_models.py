@@ -1,6 +1,6 @@
 """Downstream hardware intent and audit; never a financial or stock ledger."""
 from datetime import datetime
-from sqlalchemy import Column,String,Integer,DateTime,JSON,ForeignKey,LargeBinary
+from sqlalchemy import Column,String,Integer,DateTime,JSON,ForeignKey,LargeBinary,UniqueConstraint
 from database import Base
 
 class PrintDevice(Base):
@@ -77,3 +77,20 @@ class PrintConnectorNonce(Base):
     __tablename__='print_connector_nonces'
     id=Column(String(36),primary_key=True)
     expires_at=Column(DateTime,nullable=False,index=True)
+
+class POSReceiptTest(Base):
+    """Synthetic acceptance checkout; deliberately has no sale/payment/session FK."""
+    __tablename__='pos_receipt_tests'
+    id=Column(String(36),primary_key=True)
+    shop=Column(String(100),nullable=False)
+    request_key=Column(String(64),nullable=False)
+    device_id=Column(String(36),ForeignKey('print_devices.id'),nullable=False)
+    device_version=Column(Integer,nullable=False)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    frozen=Column(JSON,nullable=False)
+    frozen_hash=Column(String(64),nullable=False)
+    status=Column(String(20),nullable=False,default='DRAFT')
+    job_id=Column(String(36),ForeignKey('hardware_jobs.id'),unique=True)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    finalized_at=Column(DateTime)
+    __table_args__=(UniqueConstraint('shop','request_key',name='uq_pos_receipt_test_request'),)

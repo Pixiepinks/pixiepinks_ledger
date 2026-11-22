@@ -181,18 +181,20 @@ def profile_queue(d,kind,profile):
     return d.config['receipt_queue'],'RECEIPT'
 
 def job_enabled(j):
+    if j.kind=='TEST' and j.detail.get('test_checkout_id'):
+        return settings.POS_TEST_CHECKOUT_ENABLED and settings.POS_LOCAL_PRINT_ENABLED and settings.PRINT_CONNECTOR_ENCRYPTED_ENABLED
     if j.kind=='LABEL':return settings.RETAIL_HARDWARE_LABEL_PRINT_ENABLED
     if j.kind=='DRAWER':return settings.POS_LOCAL_PRINT_ENABLED and settings.POS_CASH_DRAWER_AUTOMATION_ENABLED
     return settings.POS_LOCAL_PRINT_ENABLED
 
-def add_job(db,d,kind,key,raw,user=None,checkout=None,label=None,parent=None,profile='80',reason='',automatic=False,session_id=None,event_time=None):
+def add_job(db,d,kind,key,raw,user=None,checkout=None,label=None,parent=None,profile='80',reason='',automatic=False,session_id=None,event_time=None,*,test_checkout_id=None):
     prior=db.query(HardwareJob).filter_by(business_key=key).one_or_none()
     if prior:return prior
     if d.status!='ACTIVE':raise HTTPException(409,'Active paired device required')
     queue,mode=profile_queue(d,kind,profile)
     if len(raw)>MAX_PDF or (kind!='DRAWER' and not raw.startswith(b'%PDF-')):raise HTTPException(422,'Bounded valid PDF required')
     j=HardwareJob(id=str(uuid4()),shop=d.shop,device_id=d.id,register_id=d.register_id,location_id=d.location_id,device_version=d.version,business_key=key,kind=kind,queue=queue,media=mode,actor_id=user.id if user else None,
-        session_id=checkout.session_id if checkout else session_id,checkout_id=checkout.id if checkout else None,label_id=label.id if label else None,parent_id=parent.id if parent else None,detail={'reason':reason,'profile':'RETAIL_LABEL_PDF' if kind=='LABEL' else profile,'label_template':label.template if label else None,'label_copies':label.total if label else None,'automatic':automatic,'physical_resource':'POS80_RECEIPT_ONLY' if d.config.get('receipt_only') else 'DBL_SHARED' if mode!='A4' else 'A4_EXTERNAL','protocol':VERSION},
+        session_id=checkout.session_id if checkout else session_id,checkout_id=checkout.id if checkout else None,label_id=label.id if label else None,parent_id=parent.id if parent else None,detail={'reason':reason,'profile':'RETAIL_LABEL_PDF' if kind=='LABEL' else profile,'label_template':label.template if label else None,'label_copies':label.total if label else None,'automatic':automatic,'physical_resource':'POS80_RECEIPT_ONLY' if d.config.get('receipt_only') else 'DBL_SHARED' if mode!='A4' else 'A4_EXTERNAL','protocol':VERSION,**({'test_checkout_id':test_checkout_id,'test_only':True} if test_checkout_id else {})},
         pdf=raw or None,sha256=hashlib.sha256(raw).hexdigest(),size=len(raw),status='QUEUED',expires_at=(min(checkout.completed_at,checkout.created_at)+timedelta(seconds=120)) if automatic and kind=='DRAWER' and checkout else (event_time or now())+timedelta(seconds=120) if kind=='DRAWER' else now()+timedelta(hours=24))
     if not job_enabled(j):raise HTTPException(409,'This hardware workflow is disabled')
     db.add(j);db.flush();event(db,d,'JOB_CREATED',user,j,kind=kind,reference=checkout.reference if checkout else str(label.id) if label else '',reason=reason);return j
@@ -295,6 +297,7 @@ def acknowledge(db,d,jid,secret,status,spool_id=None):
 def review_job(db,user,jid,confirm,reason,agent_stopped):
     require(user);pos.locked(db);j=db.query(HardwareJob).filter_by(shop=retail.shop(),id=jid).one_or_none()
     if not j:raise HTTPException(404,'Job not found')
+    if j.detail.get('test_checkout_id'):require(user,'admin')
     d=device(db,j.device_id);expire_deliveries(db,d)
     if j.kind=='LABEL':retail.require(user,'retail.barcodes.print')
     if j.kind=='DRAWER':pos.require(user,'drawer.open')
@@ -314,6 +317,9 @@ def authorize_actor(db,j):
 
 
 def source_valid(db,j):
+    if j.detail.get('test_checkout_id'):
+        from pos_receipt_tests import valid_source
+        if not valid_source(db,j):return False
     if j.label_id:
         label=db.query(RetailPrintJob).filter_by(id=j.label_id,shop=j.shop,status='GENERATED').one_or_none()
         if not label:return False

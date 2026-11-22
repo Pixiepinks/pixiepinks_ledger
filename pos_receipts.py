@@ -68,13 +68,15 @@ class ReceiptLayout:
         pdf.cell(w=column,h=size*.49,text=str(value),align='R')
         pdf.set_xy(pdf.l_margin,y+height)
 
-    def draw(self,sale,refund,duplicate,acknowledgement=None):
+    def draw(self,sale,refund,duplicate,acknowledgement=None,test=False):
         f=sale.frozen;q=f['quote'];policy=f['policy']
-        self.text('PixiePinks',17,'C');self.text('REFUND RECEIPT' if refund else 'SALES RECEIPT',9,'C')
+        self.text('PixiePinks',17,'C')
+        self.text('TEST — NOT A VALID SALE' if test else 'REFUND RECEIPT' if refund else 'SALES RECEIPT',9,'C')
+        if test:self.text('SIMULATED CHECKOUT / NO PAYMENT RECEIVED',8,'C')
         if duplicate:self.text('DUPLICATE / REPRINT',10,'C')
         if policy.get('shop_contact'):self.text(policy['shop_contact'],8,'C')
         if policy.get('legal_id'):self.text('Legal/tax ID: '+policy['legal_id'],8,'C')
-        self.rule();self.text('Sale / invoice: '+sale.reference,9)
+        self.rule();self.text(('Test checkout: ' if test else 'Sale / invoice: ')+sale.reference,9)
         if acknowledgement and not refund:self.text('Final receipt replaces provisional acknowledgement: '+acknowledgement,8)
         self.text(local_time(refund.payout_at if refund else sale.created_at),8)
         self.text('Cashier: '+f['cashier'],8)
@@ -115,20 +117,21 @@ class ReceiptLayout:
                     self.pair('Cash received',lkr(tender['received']),8)
                     self.pair('Change',lkr(tender['change']),9)
                 if tender.get('reference'):self.text('Payment reference: '+tender['reference'],8)
-            self.text('Payment: PAID / Shopify verified',8,'C')
+            self.text('TEST ONLY — NOT SHOPIFY VERIFIED' if test else 'Payment: PAID / Shopify verified',8,'C')
+            if test:self.text('No order, stock movement or accounting posting.',8,'C')
         self.rule();self.text('Thank you for shopping with PixiePinks.',8,'C')
         return self.pdf.get_y()+5
 
 
-def render(sale,profile,refund=None,duplicate=False,acknowledgement=None):
+def render(sale,profile,refund=None,duplicate=False,acknowledgement=None,*,test=False):
     if profile=='A4':
-        layout=ReceiptLayout(profile,297);layout.draw(sale,refund,duplicate,acknowledgement)
+        layout=ReceiptLayout(profile,297);layout.draw(sale,refund,duplicate,acknowledgement,test)
     else:
         # Same measured layout on both passes: wrap by actual Unicode font metrics,
         # then create a true zero-origin custom page, without a crop/scale transform.
-        measure=ReceiptLayout(profile,10000);height=ceil(measure.draw(sale,refund,duplicate,acknowledgement)*10)/10
+        measure=ReceiptLayout(profile,10000);height=ceil(measure.draw(sale,refund,duplicate,acknowledgement,test)*10)/10
         if height>1500:raise HTTPException(422,'Receipt exceeds supported roll length; choose A4')
-        layout=ReceiptLayout(profile,height);layout.draw(sale,refund,duplicate,acknowledgement)
+        layout=ReceiptLayout(profile,height);layout.draw(sale,refund,duplicate,acknowledgement,test)
     return bytes(layout.pdf.output())
 
 
