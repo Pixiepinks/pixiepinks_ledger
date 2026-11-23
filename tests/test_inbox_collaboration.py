@@ -177,6 +177,7 @@ def test_sharing_browser_notes_and_revoke(assignments):
                 route.fulfill(status=response.status_code,body=response.content,headers={k:value for k,value in response.headers.items() if k not in {'content-length','content-encoding','set-cookie'}})
             admin=browser.new_page();admin.route('**/*',serve)
             admin.goto(f'https://admin.inbox.test/crm/whatsapp?conversation={cid}')
+            api.expect(admin.locator('#team-notes-customer')).to_contain_text('Quick customer')
             admin.locator('#team-notes-open').click()
             api.expect(admin.locator('#collaboration-panel')).to_be_visible()
             api.expect(admin.locator('#share-user option')).not_to_have_count(0)

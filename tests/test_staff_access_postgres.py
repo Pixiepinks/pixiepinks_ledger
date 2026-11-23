@@ -38,6 +38,9 @@ def test_postgres_migrates_legacy_users_and_fences_simultaneous_admin_updates(mo
             row=conn.execute(text('SELECT section_access,is_active,session_version,password_hash FROM users')).one()
             assert row==(None,True,0,password)
         Base.metadata.create_all(engine)
+        # The legacy-access assertion above remains scoped to revision 22;
+        # exercise current application models only after all additive upgrades.
+        command.upgrade(config,'head')
         sessions=sessionmaker(bind=engine)
         with sessions() as db:
             target=User(username='pg-staff',password_hash=password,role='STAFF',section_access=['whatsapp'])

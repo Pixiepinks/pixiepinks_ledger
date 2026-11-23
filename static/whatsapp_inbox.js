@@ -52,13 +52,15 @@
     if(c.work?.status==='FOLLOW_UP_LATER')meta.append(badge('Follow up '+inboxTime(c.work.due_at,true)));
     if(c.work?.window_closed)meta.append(badge('Window closed'));
     button.append(line, preview, meta); button.onclick = () => openConversation(c.id, true, true);
-    return button;
+    const wrapper=document.createElement('div');wrapper.className='conversation-entry';wrapper.dataset.manualConversationId=String(c.id);wrapper.append(button);
+    wrapper.append(window.CRMManualUnread.controls(c,()=>{renderChatList(document.getElementById('search').value);loadList(true);if(selected===c.id)openConversation(c.id,false);}));
+    return wrapper;
   }
   let chatRows=[], chatHasMore=false, chatQuery="";
   const pageSize=50;
   function renderChatList(search) {
-    const top=list.scrollTop, anchor=[...list.querySelectorAll('.conversation-row')].find(row=>row.offsetTop>=top);
-    const anchorId=anchor?.dataset.conversationId, anchorOffset=anchor ? anchor.getBoundingClientRect().top : 0;
+    const top=list.scrollTop, anchor=[...list.querySelectorAll('.conversation-entry')].find(row=>row.getBoundingClientRect().bottom>=list.getBoundingClientRect().top);
+    const anchorId=anchor?.dataset.manualConversationId, anchorOffset=anchor ? anchor.getBoundingClientRect().top : 0;
     list.replaceChildren(...chatRows.map(conversationRow));
     if (!chatRows.length) {const empty=document.createElement('div');empty.className='empty';text(empty,search?'No search results.':'No WhatsApp conversations.');list.append(empty);}
     if(chatHasMore) {
@@ -66,14 +68,15 @@
       more.onclick=()=>loadList(false,true);list.append(more);
     }
     list.scrollTop=top;
-    const retained=anchorId && list.querySelector(`[data-conversation-id="${CSS.escape(anchorId)}"]`);
+    const retained=anchorId && list.querySelector(`.conversation-entry[data-manual-conversation-id="${CSS.escape(anchorId)}"]`);
     if(retained)list.scrollTop+=retained.getBoundingClientRect().top-anchorOffset;
   }
   async function loadList(force = false, append = false) {
     const search=document.getElementById('search').value;
-    let query=`filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}&reply_queue=${replyQueue}${inboxFilters ? `&unread=${inboxFilters.unread}&mode=${encodeURIComponent(inboxFilters.mode || "")}&payment_required=${inboxFilters.payment}&owner_id=${encodeURIComponent(inboxFilters.ownerId || "")}&lead_status=${encodeURIComponent(inboxFilters.leadStatus || "")}` : ""}`;
+    let query=`filter=${encodeURIComponent(filter)}&search=${encodeURIComponent(search)}&mailbox=${mailbox}&reply_queue=${replyQueue}${inboxFilters ? `&marked_unread=${inboxFilters.markedUnread}&unread=${inboxFilters.unread}&mode=${encodeURIComponent(inboxFilters.mode || "")}&payment_required=${inboxFilters.payment}&owner_id=${encodeURIComponent(inboxFilters.ownerId || "")}&lead_status=${encodeURIComponent(inboxFilters.leadStatus || "")}` : ""}`;
     const params=new URLSearchParams(query);['mode','owner_id','lead_status'].forEach(key=>{if(!params.get(key))params.delete(key);});query=params.toString();
     const changed=query!==chatQuery;
+    if(!force&&!changed&&list.querySelector('.manual-unread-menu[open]'))return;
     if ((listLoading && !force && !changed) || document.hidden || (append && (!chatHasMore || changed))) return;
     const generation=++listGeneration;listLoading=true;
     const target=changed ? pageSize : Math.max(pageSize,chatRows.length);
@@ -393,6 +396,8 @@
       currentConversationData = data;
       document.getElementById("send-button").disabled=data.conversation.work?.window_closed===true;
       renderOwner(data.conversation);
+      const manualHeader=document.getElementById('chat-manual-unread'),manualSignature=JSON.stringify([id,data.conversation.manual_unread]);
+      if(manualHeader.dataset.signature!==manualSignature){manualHeader.dataset.signature=manualSignature;manualHeader.replaceChildren(window.CRMManualUnread.controls(data.conversation,()=>{manualHeader.dataset.signature='';loadList(true);openConversation(id,false);}));}
       window.CRMWorkActions?.buttons(document.getElementById('conversation-work-actions'),{id,name:data.conversation.customer_name,work:data.conversation.work,can_manage:data.conversation.can_manage},()=>{});
       root.dispatchEvent(new CustomEvent("inbox-conversation-data", {detail: {id, conversation: data.conversation}}));
       text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));

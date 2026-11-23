@@ -11,7 +11,7 @@ from alembic import command
 from alembic.config import Config
 import database
 import conversation_access as access
-from models import User,WhatsAppConversation,ConversationAssignmentAudit
+from models import Base,User,WhatsAppConversation,ConversationAssignmentAudit
 
 
 def exercise(engine,monkeypatch):
@@ -19,6 +19,9 @@ def exercise(engine,monkeypatch):
     new={'assigned_to_user_id','assigned_by_user_id','assigned_at','assignment_version'}
     old=Table('whatsapp_conversations',metadata,*[c.copy() for c in WhatsAppConversation.__table__.columns if c.name not in new])
     metadata.create_all(engine)
+    # Later migrations also inspect commerce tables; retain the legacy conversation
+    # table above while supplying the rest of the current base schema.
+    Base.metadata.create_all(engine)
     with engine.begin() as conn:
         conn.execute(users.insert(),[{'username':'admin','password_hash':'preserved-admin-hash','role':'ADMIN','section_access':None},
                                     {'username':'staff','password_hash':'preserved-staff-hash','role':'STAFF','section_access':['whatsapp']}])

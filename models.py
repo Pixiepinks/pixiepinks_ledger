@@ -85,6 +85,7 @@ class User(Base):
     username = Column(String(100), unique=True, nullable=False, index=True)
     password_hash = Column(String(255), nullable=False)
     role = Column(String(30), nullable=False, default="STAFF", server_default="STAFF", index=True)
+    unread_indicator_colour = Column(String(16), nullable=False, default='blue', server_default='blue')
     section_access = Column(JSON, nullable=True)  # NULL preserves pre-existing role behavior.
     is_active = Column(Boolean, nullable=False, default=True, server_default='1')
     session_version = Column(Integer, nullable=False, default=0, server_default='0')
@@ -620,6 +621,23 @@ class WhatsAppConversation(Base):
     bicycle_size = Column(Integer)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ConversationManualUnread(Base):
+    __tablename__='conversation_manual_unread'
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id'),primary_key=True)
+    staff_id=Column(Integer,ForeignKey('users.id'),primary_key=True,index=True)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+
+class ConversationManualUnreadAudit(Base):
+    __tablename__='conversation_manual_unread_audits'
+    id=Column(Integer,primary_key=True)
+    conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id'),nullable=False,index=True)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    staff_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    action=Column(String(16),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
 
 
 class ConversationAssignmentAudit(Base):

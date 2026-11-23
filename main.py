@@ -167,6 +167,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["settings"] = settings
 import staff_access
+import manual_unread
 import conversation_access
 templates.env.globals['can_access_section']=staff_access.allowed
 
@@ -2222,7 +2223,7 @@ def _inbox_lead_status(lead) -> dict:
 def _conversation_payload(db: Session, conversation: WhatsAppConversation,
                           payment_phones: set[str] | None = None,
                           latest_messages: dict[str, WhatsAppConversationMessage] | None = None,
-                          linked_leads: dict | None = None, owner_users: dict | None = None) -> dict:
+                          linked_leads: dict | None = None, owner_users: dict | None = None, manual_marks: dict | None = None) -> dict:
     latest = (latest_messages or {}).get(conversation.phone_number)
     if latest_messages is None:
         latest = db.query(WhatsAppConversationMessage).filter(
@@ -2233,6 +2234,7 @@ def _conversation_payload(db: Session, conversation: WhatsAppConversation,
             db.query(Lead.id,Lead.status).filter_by(whatsapp_conversation_id=conversation.id).one_or_none())
     return {
         **_inbox_lead_status(linked),
+        "manual_unread": (manual_marks if manual_marks is not None else manual_unread.snapshots(db,[conversation.id])).get(conversation.id,[]),
         "id": conversation.id,
         'owner':conversation_access.owner_data(db,conversation,owner_users),
         'assignment_version':conversation.assignment_version,
@@ -2269,7 +2271,7 @@ def whatsapp_inbox(request: Request, conversation: int | None = None, edit_order
 @app.get("/crm/whatsapp/api/conversations")
 def whatsapp_conversations(response: Response, search: str = "", filter: str = "all", limit: int = 50,
                            mailbox: str | None = None, reply_queue: str = "all", offset: int = Query(0,ge=0),
-                           unread: bool = False, mode: str | None = None, payment_required: bool = False,
+                           marked_unread: bool = False, unread: bool = False, mode: str | None = None, payment_required: bool = False,
                            owner_id: int | None = Query(None,ge=1), lead_status: str | None = None,
                            db: Session = Depends(get_db), user: User = Depends(require_user)):
     response.headers["Cache-Control"] = "private, no-store"
@@ -2297,6 +2299,9 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
     if mode is not None:
         if mode not in {'AI','HUMAN'}:raise HTTPException(422,'Choose AI or HUMAN mode')
         query=query.filter(WhatsAppConversation.mode==mode)
+    if marked_unread:
+        from models import ConversationManualUnread
+        query=query.filter(db.query(ConversationManualUnread.conversation_id).filter(ConversationManualUnread.conversation_id==WhatsAppConversation.id).exists())
     if unread:query=query.filter(WhatsAppConversation.unread_count>0)
     term = search.strip()
     if term:
@@ -2347,10 +2352,11 @@ def whatsapp_conversations(response: Response, search: str = "", filter: str = "
     for message in recent_messages:
         latest_messages.setdefault(message.phone_number, message)
     unread_total = conversation_access.unread(db,user)
+    manual_marks=manual_unread.snapshots(db,[row.id for row in rows])
     work_states=conversation_work_service.snapshots(db,rows)
     owner_users=conversation_access.owners(db,rows)
     linked_leads={row.whatsapp_conversation_id:row for row in db.query(Lead.id,Lead.status,Lead.whatsapp_conversation_id).filter(Lead.whatsapp_conversation_id.in_([item.id for item in rows] or [-1])).all()}
-    return {"conversations": [{**_conversation_payload(db, row, payment_phones, latest_messages, linked_leads,owner_users), **queue_payloads[row.id],"work":work_states[row.id]} for row in rows],
+    return {"conversations": [{**_conversation_payload(db, row, payment_phones, latest_messages, linked_leads,owner_users,manual_marks), **queue_payloads[row.id],"work":work_states[row.id]} for row in rows],
             "unread_total": unread_total,"has_more":has_more,"next_offset":offset+len(rows) if has_more else None}
 
 
@@ -2642,6 +2648,9 @@ def whatsapp_message_media(conversation_id: int, message_id: int, request: Reque
         return Response(content=partial, status_code=206, media_type=safe_mime, headers=headers)
     headers["Content-Length"] = str(size)
     return Response(content=content, media_type=safe_mime, headers=headers)
+
+
+app.include_router(manual_unread.build_router(get_db,require_user,_require_csrf))
 
 
 @app.post("/crm/whatsapp/api/conversations/{conversation_id}/read")

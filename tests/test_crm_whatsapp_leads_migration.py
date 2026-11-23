@@ -44,8 +44,10 @@ def test_additive_link_migration_and_concurrent_management(tmp_path,monkeypatch,
         Base.metadata.create_all(engine)
         with sessions() as db:
             if orm_first:db.add(Lead(id=901,lead_no='LD-legacy',customer_name='Retained CRM customer',mobile='44770000000',status='INTERESTED',notes='Retain original notes'))
-            db.add(User(username='crm-staff',password_hash=hash_password('password'),role='STAFF'))
-            db.add_all([WhatsAppConversation(id=10,phone_number='94770012301',customer_name='WhatsApp customer',mode='HUMAN'),WhatsAppConversation(id=11,phone_number='94770012302',mode='AI')])
+            staff=User(username='crm-staff',password_hash=hash_password('password'),role='STAFF')
+            db.add(staff);db.flush()
+            # Both synthetic chats must be explicitly visible to this staff account.
+            db.add_all([WhatsAppConversation(id=10,phone_number='94770012301',customer_name='WhatsApp customer',mode='HUMAN',assigned_to_user_id=staff.id),WhatsAppConversation(id=11,phone_number='94770012302',mode='AI',assigned_to_user_id=staff.id)])
             db.flush();db.add(LeadNote(lead_id=901,note='Retain note history'));db.add(LeadTask(lead_id=901,status='PENDING',note='Retain task history'));db.commit()
         monkeypatch.setattr(database,'engine',engine)
         config=Config(str(Path(__file__).resolve().parents[1]/'alembic.ini'))
@@ -75,9 +77,20 @@ def test_additive_link_migration_and_concurrent_management(tmp_path,monkeypatch,
             assert db.query(Lead).count()==2 and db.query(Lead).filter_by(whatsapp_conversation_id=10).count()==1
             assert db.query(LeadNote).one().note=='Retain note history' and db.query(LeadTask).one().note=='Retain task history'
         if backend=='sqlite':
-            with pytest.raises(RuntimeError,match='Retain the additive lead link'):command.downgrade(config,'20261025_15')
+            # Exercise this historical migration's deliberate guard directly;
+            # traversing unrelated later batch downgrades can partially remove
+            # their tables before SQLite refuses a referenced-parent rebuild.
+            import importlib.util
+            from alembic.migration import MigrationContext
+            from alembic.operations import Operations
+            spec=importlib.util.spec_from_file_location('lead_link_migration',Path(__file__).parents[1]/'alembic/versions/20261026_16_whatsapp_crm_leads.py')
+            migration=importlib.util.module_from_spec(spec);spec.loader.exec_module(migration)
+            with engine.begin() as connection:
+                with Operations.context(MigrationContext.configure(connection)):
+                    with pytest.raises(RuntimeError,match='Retain the additive lead link'):migration.downgrade()
         else:command.downgrade(config,'20261025_15')
         with engine.connect() as connection:
+            if backend=='sqlite':assert connection.exec_driver_sql('PRAGMA foreign_key_check').all()==[]
             assert connection.execute(text('SELECT count(*) FROM leads')).scalar()==2
             assert connection.execute(text('SELECT note FROM lead_notes')).scalar()=='Retain note history'
             assert connection.execute(text('SELECT note FROM lead_tasks')).scalar()=='Retain task history'
