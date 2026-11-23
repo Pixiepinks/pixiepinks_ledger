@@ -20,8 +20,10 @@ def inbox(tmp_path, monkeypatch):
     sessions = sessionmaker(bind=engine)
     monkeypatch.setattr(main, "SessionLocal", sessions)
     with sessions() as db:
-        db.add(User(username="media-staff", password_hash=hash_password("password"), role="STAFF"))
-        conversation = WhatsAppConversation(phone_number="94770000000", mode="HUMAN", unread_count=2)
+        staff=User(username="media-staff", password_hash=hash_password("password"), role="STAFF")
+        db.add(staff);db.flush()
+        # Existing Inbox policy requires explicit assignment for a non-admin viewer.
+        conversation = WhatsAppConversation(phone_number="94770000000", mode="HUMAN", unread_count=2, assigned_to_user_id=staff.id)
         other = WhatsAppConversation(phone_number="94771111111", mode="AI")
         message = WhatsAppConversationMessage(phone_number="94770000000", direction="inbound", message_text="Image message")
         other_message = WhatsAppConversationMessage(phone_number="94771111111", direction="inbound", message_text="Other")

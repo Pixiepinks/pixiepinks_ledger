@@ -47,7 +47,7 @@ def enforce_path(db,user,path,params,method="GET"):
         row=require_visible(db,user,cid)
         if method not in {'GET','HEAD'}:
             suffix=path.rsplit('/',1)[-1]
-            if suffix in {'notes','read'}:return
+            if suffix in {'notes','read'} or re.fullmatch(r'/crm/whatsapp/api/conversations/[0-9]+/manual-unread(?:/[0-9]+)?',path):return
             # A shared reply grant permits sends, not ownership, lead edits or AI mode changes.
             if suffix.startswith('send') or '/collection-batches' in path:
                 require_owned(db,user,cid)

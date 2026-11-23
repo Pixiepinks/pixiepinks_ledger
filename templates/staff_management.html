@@ -13,6 +13,7 @@
 </div></fieldset><button type="submit" class="btn btn-primary">Create staff account</button></form></section>
 <section class="card"><h2>Accounts</h2>
 {% for member in staff %}<article class="staff-account" data-staff-id="{{ member.id }}"><details {% if loop.first %}open{% endif %}><summary><h3>{{ member.username }} · {{ member.role }} · {{ 'Active' if member.is_active else 'Inactive' }}</h3></summary>
+<form method="post" action="/admin/staff/{{ member.id }}/unread-colour" class="unread-colour-form"><input type="hidden" name="csrf_token" value="{{ csrf }}"><input type="hidden" name="expected_colour" value="{{ member.unread_indicator_colour }}"><label>Unread Indicator Colour for {{ member.username }}<select name="colour">{% for key,hex in unread_palette.items() %}<option value="{{ key }}" {% if member.unread_indicator_colour==key %}selected{% endif %}>{{ key|capitalize }}</option>{% endfor %}</select></label><button type="submit" class="btn btn-secondary">Save unread colour</button></form>
 {% if member.role=='ADMIN' %}<p>Administrator — full access. Protected from changes here.</p>{% else %}
 <form method="post" action="/admin/staff/{{ member.id }}"><input type="hidden" name="csrf_token" value="{{ csrf }}">
 <input type="hidden" name="expected_version" value="{{ member.session_version }}">

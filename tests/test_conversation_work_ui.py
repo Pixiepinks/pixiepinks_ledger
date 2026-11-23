@@ -39,8 +39,8 @@ def test_desktop_mobile_individual_status_actions_and_dashboard(inbox):
         page.goto('https://work.test/crm/whatsapp')
         def clean_list():
             assert page.locator('#work-bulk,#work-select-visible,#work-clear,#work-selected-count,#work-bulk-resolve,.work-select-row,#conversation-list input[type=checkbox]').count()==0
-            assert page.locator('.inbox-search').evaluate('el=>el.nextElementSibling.id')=='conversation-list'
-            assert page.locator('#conversation-list > .conversation-row').count()==2
+            assert page.locator('.inbox-search').evaluate('el=>{let next=el.nextElementSibling;while(next?.hidden)next=next.nextElementSibling;return next?.id}')=='conversation-list'
+            assert page.locator('#conversation-list > .conversation-entry > .conversation-row').count()==2
             assert page.locator('.conversation-row').first.locator('.conversation-line strong,time').count()==2
             assert page.locator('.conversation-row').first.locator('p,.conversation-meta').count()==2
             gap=page.locator('.conversation-panel').evaluate('el=>el.querySelector("#conversation-list").getBoundingClientRect().top-el.querySelector(".inbox-search").getBoundingClientRect().bottom')

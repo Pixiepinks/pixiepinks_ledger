@@ -4,11 +4,12 @@ window.createInboxFilters = (root,onChange) => {
   const open=document.getElementById('inbox-filters-open'), owner=document.getElementById('inbox-filter-owner'), lead=document.getElementById('inbox-filter-lead');
   const extras=document.getElementById('active-extra-filters'), feedback=document.getElementById('inbox-filters-feedback');
   const left=document.getElementById('filter-scroll-left'),right=document.getElementById('filter-scroll-right');
-  const admin=root.dataset.admin==='true', defaults=()=>({mailbox:admin?'all':'accessible',replyQueue:'all',unread:false,mode:'',payment:false,ownerId:'',ownerLabel:'',leadStatus:''});
+  const admin=root.dataset.admin==='true', defaults=()=>({mailbox:admin?'all':'accessible',replyQueue:'all',markedUnread:false,unread:false,mode:'',payment:false,ownerId:'',ownerLabel:'',leadStatus:''});
   const params=new URLSearchParams(location.search), legacy=params.get('filter');
   let state=defaults(),clearDraft=false,openGeneration=0;
   if(['mine','shared',...(admin?['all','unassigned']:['accessible'])].includes(params.get('mailbox')))state.mailbox=params.get('mailbox');
   if(['needs_reply','waiting_customer','follow_up_later','followups_due','resolved','window_expired'].includes(params.get('reply_queue')))state.replyQueue=params.get('reply_queue');
+  state.markedUnread=params.get('marked_unread')==='true';
   state.unread=legacy==='unread'||params.get('unread')==='true';state.payment=legacy==='payment'||params.get('payment_required')==='true';
   state.mode=legacy==='ai'?'AI':legacy==='human'?'HUMAN':['AI','HUMAN'].includes(params.get('mode'))?params.get('mode'):'';
   if(admin && /^\d+$/.test(params.get('owner_id')||'')){state.ownerId=params.get('owner_id');state.ownerLabel='Assigned staff';}
@@ -32,10 +33,11 @@ window.createInboxFilters = (root,onChange) => {
   function commit(){
     render();
     const url=new URL(location.href);
-    ['filter','mailbox','reply_queue','unread','mode','payment_required','owner_id','lead_status'].forEach(k=>url.searchParams.delete(k));
+    ['filter','mailbox','reply_queue','marked_unread','unread','mode','payment_required','owner_id','lead_status'].forEach(k=>url.searchParams.delete(k));
     const d=defaults();
     if(state.mailbox!==d.mailbox)url.searchParams.set('mailbox',state.mailbox);
     if(state.replyQueue!=='all')url.searchParams.set('reply_queue',state.replyQueue);
+    if(state.markedUnread)url.searchParams.set('marked_unread','true');
     if(state.unread)url.searchParams.set('unread','true');if(state.mode)url.searchParams.set('mode',state.mode);
     if(state.payment)url.searchParams.set('payment_required','true');if(state.ownerId)url.searchParams.set('owner_id',state.ownerId);
     if(state.leadStatus)url.searchParams.set('lead_status',state.leadStatus);

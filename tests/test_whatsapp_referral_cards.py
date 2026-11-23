@@ -25,8 +25,10 @@ def inbox(tmp_path, monkeypatch):
     monkeypatch.setattr(main, 'SessionLocal', sessions)
     monkeypatch.setattr(main.settings, 'SALES_ORDERS_ENABLED', False)
     with sessions() as db:
-        db.add(User(username='referral-reader', password_hash=hash_password('password'), role='STAFF'))
-        conversation = WhatsAppConversation(phone_number='94770000000', mode='HUMAN', unread_count=4)
+        staff=User(username='referral-reader', password_hash=hash_password('password'), role='STAFF')
+        db.add(staff);db.flush()
+        # Referral display tests require an explicitly accessible staff conversation.
+        conversation = WhatsAppConversation(phone_number='94770000000', mode='HUMAN', unread_count=4, assigned_to_user_id=staff.id)
         other = WhatsAppConversation(phone_number='94771111111', mode='AI')
         db.add_all([conversation, other]); db.commit()
         ids = conversation.id, other.id

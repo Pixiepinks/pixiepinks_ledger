@@ -52,6 +52,9 @@ def test_mobile_chat_history_space_controls_and_desktop_restore(assignments):
             page.locator('#message-input').fill('Line one\nLine two\nLine three\nLine four\nLine five')
             assert page.locator('#message-input').bounding_box()['height']<=96
             page.set_viewport_size({'width':390,'height':430})
+            # The existing resize listener updates the visual-viewport CSS value
+            # asynchronously; wait for that state before measuring the composer.
+            page.wait_for_function("Math.abs(parseFloat(getComputedStyle(document.body).getPropertyValue('--mobile-chat-height'))-430)<1")
             assert page.locator('#messages').bounding_box()['height']>150
             composer=page.locator('#composer').bounding_box();assert composer['y']+composer['height']<=431
             page.set_viewport_size({'width':390,'height':812})

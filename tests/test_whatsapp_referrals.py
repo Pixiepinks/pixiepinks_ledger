@@ -251,8 +251,10 @@ def test_private_referral_fields_are_not_exposed_in_inbox_api_and_requires_signe
     assert calls == {"ai": [], "sent": [], "image": []}
     assert client.post("/webhook", json=payload()).status_code == 200
     with sessions() as db:
-        db.add(User(username="referral-staff", password_hash=hash_password("password"))); db.commit()
-        conversation_id = db.query(WhatsAppConversation).one().id
+        staff=User(username="referral-staff", password_hash=hash_password("password"))
+        db.add(staff);db.flush()
+        conversation=db.query(WhatsAppConversation).one();conversation.assigned_to_user_id=staff.id
+        db.commit();conversation_id=conversation.id
     assert client.post("/login", data={"username": "referral-staff", "password": "password"}).status_code == 200
     response = client.get(f"/crm/whatsapp/api/conversations/{conversation_id}")
     assert response.status_code == 200
