@@ -41,9 +41,11 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         if not row:raise HTTPException(404,'Label profile not found')
         return row.config
     async def print_payload(request,db,user):
-        p=await body(request,{'selection','profile','default_copies','copies','confirm','preview_token'}, {'selection','profile'})
+        p=await body(request,{'selection','profile','default_copies','copies','confirm','preview_token','barcode_source'}, {'selection','profile'})
         c=profile(db,p['profile'])
-        rows,total=labels.print_rows(db,user,p['selection'],p.get('default_copies',1),p.get('copies'),require_lkr=labels.is_compact(c))
+        source=p.get('barcode_source','effective')
+        if (labels.is_shopify_compact(c) or p['profile']==labels.SHOPIFY_LARGE) and source!='shopify':raise HTTPException(422,'Select Original Shopify barcode for the Shopify-original compact profile')
+        rows,total=labels.print_rows(db,user,p['selection'],p.get('default_copies',1),p.get('copies'),require_lkr=labels.is_compact(c) or labels.is_shopify_compact(c),barcode_source=source)
         return p,rows,total,c
 
     @router.get('/{screen}',include_in_schema=False)
@@ -312,7 +314,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.post('/api/labels/preview')
     async def preview_labels(request:Request,db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.barcodes.print');p,rows,total,c=await print_payload(request,db,user)
-        if labels.is_compact(c):labels.validate_rows(rows,c)
+        labels.validate_rows(rows,c)
         raw=labels.backend.render(labels.labels(rows,limit=5),c)
         preview=RetailPreview(token=secrets.token_hex(16),shop=service.shop(),actor_id=user.id,kind='PRINT',payload={'rows':rows,'total':total,'config':c},expires_at=datetime.utcnow()+timedelta(minutes=10))
         db.add(preview);db.commit()
@@ -325,6 +327,17 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         preview=service.preview_record(db,user,p.get('preview_token'),'PRINT')
         if preview.payload!={'rows':rows,'total':total,'config':c}:raise HTTPException(409,'Products, copies or label profile changed after preview. Preview again.')
         row=labels.create_job(db,user,rows,total,c);result=job_public(row);db.commit();return result
+
+    @router.get('/api/labels/scan')
+    def scan_original_label(code:str=Query(...,min_length=1,max_length=100),db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'retail.barcodes.print');service.require(user,'retail.products.view')
+        if not service.code_valid(code):raise HTTPException(422,'Unsupported Code 128 value; use printable ASCII without changing the barcode')
+        found=db.query(RetailVariant).filter_by(shop=service.shop(),barcode=code).all()
+        if not found:raise HTTPException(404,'No original Shopify barcode match. Import the latest catalogue; local barcodes are not substituted.')
+        if len(found)!=1:raise HTTPException(409,'Duplicate Shopify barcode. Resolve the exact variant mapping in Product Master before printing.')
+        row=found[0];labels.original_barcode(db,row)
+        if row.missing or row.product_status!='ACTIVE':raise HTTPException(409,'This Shopify variant is inactive or missing; refresh/reconcile the catalogue')
+        return JSONResponse({'row':service.public(row,service.audit_context(db))},headers={'Cache-Control':'private, no-store'})
 
     @router.get('/api/labels/jobs')
     def print_history(offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):

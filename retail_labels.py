@@ -38,7 +38,16 @@ COMPACT_SKU_PRICE='30x15-compact-sku-price'
 COMPACT_LAYOUT='compact_sku_price'
 PRESETS[COMPACT_SKU_PRICE]={**preset(30,15),'content_layout':COMPACT_LAYOUT,'margin_mm':.625,
     'barcode_height_mm':5,'show_sku':True,'show_price':True}
-PRESET_TITLES={COMPACT_SKU_PRICE:'30x15 Compact — SKU & Price'}
+SHOPIFY_COMPACT='30x15-shopify-original'
+SHOPIFY_LAYOUT='shopify_original_compact'
+SHOPIFY_LARGE='50x30-shopify-original'
+PRESETS[SHOPIFY_LARGE]={**preset(50,30),'show_price':True}
+PRESETS[SHOPIFY_COMPACT]={**preset(30,15),'content_layout':SHOPIFY_LAYOUT,'margin_mm':.625,
+    'barcode_height_mm':5,'show_brand':True,'show_variant':False,'show_sku':True,'show_price':True}
+PRESET_TITLES={SHOPIFY_LARGE:'50x30 Shopify Original — SKU & Price',COMPACT_SKU_PRICE:'30x15 Compact — SKU & Price',SHOPIFY_COMPACT:'30x15 Compact — SKU & Price (Shopify original)','30x15':'30x15 Standard — 203 dpi'}
+
+
+def is_shopify_compact(config):return config.get('content_layout')==SHOPIFY_LAYOUT
 
 
 def is_compact(config):return config.get('content_layout')==COMPACT_LAYOUT
@@ -46,7 +55,7 @@ def is_compact(config):return config.get('content_layout')==COMPACT_LAYOUT
 
 def validate_config(config):
     if not isinstance(config,dict) or set(config) not in [set(preset()),set(preset())|{'content_layout'}]:raise HTTPException(422,'Provide all label profile settings')
-    if 'content_layout' in config and config['content_layout']!=COMPACT_LAYOUT:raise HTTPException(422,'Unknown label content layout')
+    if 'content_layout' in config and (not isinstance(config['content_layout'],str) or config['content_layout'] not in {COMPACT_LAYOUT,SHOPIFY_LAYOUT}):raise HTTPException(422,'Unknown label content layout')
     limits={'width_mm':(20,210),'height_mm':(12,297),'margin_mm':(.5,10),'barcode_height_mm':(5,60),
         'font_pt':(5,14),'max_name_chars':(5,200),'labels_per_row':(1,8),'module_dots':(2,6),'gap_mm':(0,10),
         'offset_x_mm':(-2,2),'offset_y_mm':(-2,2),'density':(0,15)}
@@ -65,6 +74,12 @@ def validate_config(config):
         fixed={'width_mm':30,'height_mm':15,'font_pt':5,'barcode_height_mm':5,'show_brand':False,'show_variant':False,'show_sku':True,'show_price':True}
         if any(config[key]!=value for key,value in fixed.items()) or not .5<=config['margin_mm']<=.75:
             raise HTTPException(422,'30x15 Compact — SKU & Price requires 30×15 mm, 5 pt name, adaptive bold price, 5 mm barcode, SKU/price visible, no brand/variant line and 0.5–0.75 mm margins')
+    if is_shopify_compact(config):
+        expected=PRESETS[SHOPIFY_COMPACT]
+        fixed=('width_mm','height_mm','font_pt','barcode_height_mm','show_brand','show_variant','show_sku','show_price','labels_per_row','layout')
+        if any(config[k]!=expected[k] for k in fixed) or not .5<=config['margin_mm']<=.75:
+            raise HTTPException(422,'Shopify compact requires a single 30×15 mm roll label, 5 mm barcode and all required fields')
+        if any(abs(config[k])>config['margin_mm']-.5 for k in ('offset_x_mm','offset_y_mm')):raise HTTPException(422,'Shopify compact calibration must retain at least 0.5 mm physical margins')
     return dict(config)
 
 
@@ -89,11 +104,11 @@ def pattern(value):
 def symbol_geometry(value,config):
     bits=pattern(value);module=DOT*config['module_dots'];width=(len(bits)+20)*module
     if width>config['width_mm']-2*config['margin_mm']:
-        raise HTTPException(422,f'Barcode {value} cannot fit this label at 203 dpi with 2+ dot modules and quiet zones. Choose a larger label; assigned values are never shortened.')
+        raise HTTPException(422,f'Barcode too long for this label profile: {value} cannot fit this label at 203 dpi with 2+ dot modules and quiet zones. Choose a larger label; assigned values are never shortened.')
     return bits,module,width
 
 def add_compact_price_font(pdf,config):
-    if is_compact(config):pdf.add_font('NotoPrice',fname=str(FONT_DIR/'NotoSans-Bold.ttf'))
+    if is_compact(config) or is_shopify_compact(config):pdf.add_font('NotoPrice',fname=str(FONT_DIR/'NotoSans-Bold.ttf'))
 
 
 @lru_cache(maxsize=1)
@@ -216,9 +231,10 @@ def draw_compact(pdf,label,config,x,y):
 
 def validate_rows(rows,config):
     config=validate_config(config)
-    pdf=label_pdf(config) if is_compact(config) else None
+    pdf=label_pdf(config) if is_compact(config) or is_shopify_compact(config) else None
     for row in rows:
-        if pdf is not None:compact_plan(pdf,Label(**{key:row[key] for key in ['barcode','title','variant','sku','price','currency']}),config)
+        if is_shopify_compact(config):shopify_compact_plan(pdf,Label(**{key:row[key] for key in ['barcode','title','variant','sku','price','currency']}),config)
+        elif pdf is not None:compact_plan(pdf,Label(**{key:row[key] for key in ['barcode','title','variant','sku','price','currency']}),config)
         else:symbol_geometry(row['barcode'],config)
 
 
@@ -237,6 +253,10 @@ class PDFBackend:
             slot=count%(columns*rows)
             if slot==0:pdf.add_page()
             x=(slot%columns)*w+c['offset_x_mm'];y=(slot//columns)*(h+c['gap_mm'])+c['offset_y_mm']
+            if is_shopify_compact(c):
+                draw_shopify_compact(pdf,label,c,x,y);count+=1
+                if count>settings.RETAIL_MAX_LABELS:raise HTTPException(422,'Print job exceeds configured label limit')
+                continue
             if is_compact(c):
                 draw_compact(pdf,label,c,x,y)
                 count+=1
@@ -284,22 +304,37 @@ class PDFBackend:
 backend:LabelBackend=PDFBackend()
 
 
-def print_rows(db,user,selection_token,default_copies=1,copies=None,require_lkr=False):
+def print_rows(db,user,selection_token,default_copies=1,copies=None,require_lkr=False,barcode_source='effective'):
+    if not isinstance(barcode_source,str) or barcode_source not in {'effective','shopify'}:raise HTTPException(422,'Choose effective or original Shopify barcode')
     selected=service.preview_record(db,user,selection_token,'SELECTION');copies=copies or {}
     if type(default_copies) is not int or not 1<=default_copies<=1000 or not isinstance(copies,dict) or len(copies)>10000:raise HTTPException(422,'Copies must be 1–1000 per variant')
     if set(copies)-{str(i) for i in selected.payload['ids']}:raise HTTPException(422,'Copy overrides include unselected variants')
     ctx=service.audit_context(db);result=[];total=0
     for row in db.query(RetailVariant).filter(RetailVariant.shop==service.shop(),RetailVariant.id.in_(selected.payload['ids'])).order_by(RetailVariant.id).yield_per(250):
-        value=service.scan_value(row);flags=service.issues(row,ctx)
-        if row.missing or row.product_status!='ACTIVE' or not service.code_valid(value) or 'SCAN_CONFLICT' in flags or 'BARCODE_RECONCILIATION' in flags:raise HTTPException(409,'Selection contains inactive, missing, invalid or conflicting scan identifiers. Review the Product Audit.')
+        value=original_barcode(db,row) if barcode_source=='shopify' else service.scan_value(row);flags=service.issues(row,ctx)
+        if row.missing or row.product_status!='ACTIVE' or not service.code_valid(value) or (barcode_source=='effective' and ('SCAN_CONFLICT' in flags or 'BARCODE_RECONCILIATION' in flags)):raise HTTPException(409,'Selection contains inactive, missing, invalid or conflicting scan identifiers. Review the Product Audit.')
         if require_lkr and row.currency!='LKR':raise HTTPException(422,'Compact label requires a confirmed Shopify variant price currency of LKR')
         count=copies.get(str(row.id),default_copies)
         if type(count) is not int or not 1<=count<=1000:raise HTTPException(422,'Copies must be 1–1000 per variant')
         total+=count
         if total>settings.RETAIL_MAX_LABELS:raise HTTPException(422,'Too many labels; split the print job')
         result.append({'id':row.id,'copies':count,'barcode':value,'title':row.title,'variant':row.variant_title,
-            'sku':service.sku_value(row),'price':str(row.price) if row.price is not None else '', 'currency':row.currency or 'LKR'})
+            'sku':row.sku if barcode_source=='shopify' else service.sku_value(row),'price':str(row.price) if row.price is not None else '', 'currency':row.currency or 'LKR',**({'barcode_source':'shopify','variant_id':row.variant_id} if barcode_source=='shopify' else {})})
     return result,total
+
+
+def original_barcode(db,row):
+    if row.stale or row.synced_at<datetime.utcnow()-timedelta(days=7):raise HTTPException(409,'Catalogue is stale. Import current Shopify barcode and selling price before printing.')
+    if not service.code_valid(row.barcode):raise HTTPException(422,'Original Shopify barcode is missing or unsupported; import/reconcile it. A local code will never be substituted.')
+    collision=db.query(RetailVariant.id).filter(RetailVariant.shop==row.shop,RetailVariant.id!=row.id,service.or_(RetailVariant.barcode==row.barcode,RetailVariant.local_barcode==row.barcode)).first()
+    if collision:raise HTTPException(409,'Shopify barcode is duplicated or ambiguous across variants. Reconcile it in Product Master before printing.')
+    if not isinstance(row.sku,str) or not row.sku.strip():raise HTTPException(422,'Original Shopify label requires the existing Shopify SKU')
+    if any(unicodedata.category(c) in {'Cc','Zl','Zp'} for c in row.sku):raise HTTPException(422,'Original Shopify SKU must be a single line')
+    try:
+        price=Decimal(str(row.price))
+        if not price.is_finite() or price<0 or price.as_tuple().exponent < -2 or row.currency!='LKR':raise ValueError()
+    except (InvalidOperation,ValueError,TypeError):raise HTTPException(422,'Original Shopify label requires a current imported LKR selling price') from None
+    return row.barcode
 
 
 def labels(rows,limit=None):
@@ -364,5 +399,60 @@ def ensure_reprint_safe(db,job):
     current_rows={row.id:row for row in db.query(RetailVariant).filter(RetailVariant.shop==service.shop(),RetailVariant.id.in_([item['id'] for item in job.rows])).yield_per(250)}
     for row in job.rows:
         current=current_rows.get(row['id'])
+        if row.get('barcode_source')=='shopify':
+            if current is None or current.missing or current.product_status!='ACTIVE' or current.variant_id!=row['variant_id'] or original_barcode(db,current)!=row['barcode'] or current.sku!=row['sku'] or str(current.price)!=row['price'] or current.currency!=row['currency']:
+                raise HTTPException(409,'Original Shopify barcode, SKU or price changed. Scan and preview a new label batch.')
+            continue
         if current is None or current.missing or current.product_status!='ACTIVE' or service.scan_value(current)!=row['barcode'] or any(flag in service.issues(current,ctx) for flag in ['SCAN_CONFLICT','BARCODE_RECONCILIATION']):
             raise HTTPException(409,'Retained barcode is no longer safe to reprint. Review current variants and generate a new batch.')
+
+
+def shopify_compact_plan(pdf,label,config):
+    """Fixed minimum text sizes; exact identifiers and 2-dot vector symbols or reject."""
+    bits,module,width=symbol_geometry(label.barcode,config)
+    usable=30-2*config['margin_mm']
+    if not label.sku or any(unicodedata.category(c) in {'Cc','Zl','Zp'} for c in label.sku):raise HTTPException(422,'Shopify compact requires a single-line original SKU')
+    if label.currency!='LKR':raise HTTPException(422,'Shopify compact requires an LKR selling price')
+    try:
+        price=Decimal(label.price)
+        if not price.is_finite() or price<0 or price.as_tuple().exponent < -2:raise ValueError()
+    except (InvalidOperation,ValueError,TypeError):raise HTTPException(422,'Shopify compact requires a valid current selling price') from None
+    pdf.set_font('Noto',size=4.5)
+    name=short_name(pdf,label.title,usable,config['max_name_chars'])
+    if pdf.get_string_width(label.barcode)>usable:raise HTTPException(422,'Human-readable barcode cannot fit at 4.5 pt; choose a larger label')
+    sku='SKU: '+label.sku;sku_width=pdf.get_string_width(sku)
+    price_text=f'Rs. {price:,.2f}';price_space=usable-sku_width-.8
+    units,bounds=price_font_metrics();ascent=max(bounds[c][3] for c in price_text if c in bounds);descent=min(bounds[c][1] for c in price_text if c in bounds)
+    pdf.set_text_shaping(False)
+    try:
+        for size in [v/100 for v in range(700,499,-1)]:
+            pdf.set_font('NotoPrice',size=size)
+            price_width=pdf.get_string_width(price_text);scale=size*25.4/72/units
+            if price_width<=price_space and (ascent-descent)*scale<=2.25:
+                return {'name':name,'sku':sku,'price':price_text,'price_size':size,'price_width':price_width,'ascent':ascent*scale,'descent':descent*scale,'bits':bits,'module':module,'width':width}
+    finally:pdf.set_text_shaping(True)
+    raise HTTPException(422,'SKU and selling price cannot fit at minimum 4.5/5 pt. Choose a larger label; values are never truncated.')
+
+
+def draw_shopify_compact(pdf,label,c,x,y):
+    p=shopify_compact_plan(pdf,label,c);m=c['margin_mm'];usable=30-2*m
+    def cell(value,size,top,height,align='C'):
+        pdf.set_font('Noto',size=size);pdf.set_xy(x+m,y+top);pdf.cell(w=usable,h=height,text=value,align=align)
+    cell('PIXIEPINKS',4.5,m,1.7)
+    cell(p['name'],4.5,m+1.7,1.9)
+    barcode_y=round((y+m+3.85)/DOT)*DOT
+    left=round((x+(30-p['width'])/2)/DOT)*DOT+10*p['module'];bits=p['bits'];i=0
+    while i<len(bits):
+        if bits[i]=='0':i+=1;continue
+        end=i+1
+        while end<len(bits) and bits[end]=='1':end+=1
+        pdf.rect(left+i*p['module'],barcode_y,(end-i)*p['module'],5,style='F');i=end
+    cell(label.barcode,4.5,barcode_y-y+5+.2,1.9)
+    bottom_top=barcode_y+5+.2+1.9+.25;bottom=y+15-m
+    if bottom_top+p['ascent']-p['descent']>bottom:raise HTTPException(422,'Compact content cannot fit safe vertical clearances; choose a larger label')
+    cell(p['sku'],4.5,bottom_top-y,bottom-bottom_top,'L')
+    pdf.set_font('NotoPrice',size=p['price_size'])
+    baseline=(bottom_top+bottom+p['ascent']+p['descent'])/2
+    pdf.set_text_shaping(False)
+    try:pdf.text(x+30-m-p['price_width'],baseline,p['price'])
+    finally:pdf.set_text_shaping(True)
