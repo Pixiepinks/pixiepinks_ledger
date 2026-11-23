@@ -75,8 +75,8 @@ def normalize(node,currency):
     def text(value,limit):
         if value is not None and (not isinstance(value,str) or len(value)>limit):raise ValueError('Invalid catalogue field')
         return value
-    image=(node.get('image') or product.get('featuredImage') or {}).get('url')
-    if image and not re.fullmatch(r'https://cdn\.shopify\.com/[^\s]+',image):image=None
+    candidates=[(node.get('image') or {}).get('url'),(product.get('featuredImage') or {}).get('url')]
+    image=next((url for url in candidates if isinstance(url,str) and re.fullmatch(r'https://cdn\.shopify\.com/[^\s]+',url)),None)
     return {'variant_id':node['id'],'product_id':product['id'],'inventory_item_id':inventory.get('id'),
         'title':text(product['title'],500),'variant_title':text(node['title'],500),'sku':text(node.get('sku'),500),
         'barcode':text(node.get('barcode'),500),'product_status':product['status'],'product_type':text(product.get('productType'),200),

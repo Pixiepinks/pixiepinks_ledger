@@ -34,6 +34,7 @@ READ='''query RetailScannerAvailable($id:ID!,$after:String,$inventory:Boolean!,$
   }
  }
 }'''
+DETAIL_READ=READ.replace('names:["available"]','names:["available","on_hand","reserved","committed"]')
 TTL=20
 FAILURE_TTL=5
 MAX_SECONDS=12
@@ -84,7 +85,7 @@ class InventoryClient(ShopifyCatalogClient):
         self.elapsed=clock;self.lock=threading.Lock();self.cache=OrderedDict();self.probes={}
 
     def _read(self,query,variables):
-        if query not in {PROBE,READ}:raise InventoryError('UNSUPPORTED_READ')
+        if query not in {PROBE,READ,DETAIL_READ}:raise InventoryError('UNSUPPORTED_READ')
         try:
             response=self.http.post(f'{self.base_url}/admin/api/{API_VERSION}/graphql.json',
                 headers={'X-Shopify-Access-Token':self.get_token()},json={'query':query,'variables':variables},
@@ -119,9 +120,9 @@ class InventoryClient(ShopifyCatalogClient):
             self.probes[key]=(self.elapsed()+120,result)
         return result
 
-    def lookup(self,snapshot):
+    def lookup(self,snapshot,detailed=False):
         # Full identity + app + local version prevents cross-shop/reimport cache reuse.
-        key=(settings.SHOPIFY_SHOP,settings.SHOPIFY_CLIENT_ID,*[snapshot.get(k) for k in ('shop','variant_id','product_id','inventory_item_id','version')])
+        key=(settings.SHOPIFY_SHOP,settings.SHOPIFY_CLIENT_ID,detailed,*[snapshot.get(k) for k in ('shop','variant_id','product_id','inventory_item_id','version')])
         with self.lock:
             cached=self.cache.get(key)
             if cached and self.elapsed()<cached[0]:
@@ -133,10 +134,10 @@ class InventoryClient(ShopifyCatalogClient):
             if snapshot.get('shop')!=(settings.SHOPIFY_SHOP or '').lower():raise InventoryError('SHOP_IDENTITY_UNVERIFIED')
             if not re.fullmatch(r'gid://shopify/ProductVariant/[0-9]+',snapshot.get('variant_id') or '') or not re.fullmatch(r'gid://shopify/Product/[0-9]+',snapshot.get('product_id') or ''):raise InventoryError('PRODUCT_IDENTITY_UNVERIFIED')
             cap=self.capabilities();deadline=self.elapsed()+MAX_SECONDS
-            after=None;cursors=set();levels=[];seen=set();identity=None
+            after=None;cursors=set();levels=[];seen=set();seen_locations=set();identity=None
             for _ in range(MAX_PAGES):
                 if self.elapsed()>deadline:raise InventoryError('READ_BUDGET_EXCEEDED')
-                data=self._read(READ,{'id':snapshot['variant_id'],'after':after,'inventory':cap['inventory'],'locations':cap['locations']})
+                data=self._read(DETAIL_READ if detailed else READ,{'id':snapshot['variant_id'],'after':after,'inventory':cap['inventory'],'locations':cap['locations']})
                 if self.elapsed()>deadline:raise InventoryError('READ_BUDGET_EXCEEDED')
                 row=data.get('productVariant');item=row.get('inventoryItem') if isinstance(row,dict) else None
                 product=row.get('product') if isinstance(row,dict) else None
@@ -150,7 +151,9 @@ class InventoryClient(ShopifyCatalogClient):
                 stamp=datetime.now(timezone.utc).isoformat()
                 if item['tracked'] is False:
                     value={'status':'UNTRACKED','message':'Inventory is not tracked','tracked':False,'available':None,'locations':[],
-                        'read_at':stamp,'cached':False,'age_seconds':0,'valid_for_seconds':TTL};break
+                        'read_at':stamp,'cached':False,'age_seconds':0,'valid_for_seconds':TTL}
+                    if detailed:value['active_available']=None
+                    break
                 if not cap['inventory']:
                     value=unavailable('INVENTORY_SCOPE_UNAVAILABLE');value.update(tracked=True);break
                 connection=item.get('inventoryLevels')
@@ -160,18 +163,27 @@ class InventoryClient(ShopifyCatalogClient):
                 for node in nodes:
                     if not isinstance(node,dict) or not isinstance(node.get('id'),str) or not node['id'] or node['id'] in seen:raise InventoryError('INCOMPLETE_INVENTORY')
                     seen.add(node['id']);qty=node.get('quantities')
-                    if not isinstance(qty,list) or len(qty)!=1 or qty[0].get('name')!='available' or type(qty[0].get('quantity')) is not int:raise InventoryError('AVAILABLE_QUANTITY_UNVERIFIED')
+                    if not isinstance(qty,list) or not qty or (not detailed and len(qty)!=1):raise InventoryError('AVAILABLE_QUANTITY_UNVERIFIED')
+                    quantities={}
+                    for q in qty:
+                        if not isinstance(q,dict) or q.get('name') not in {'available','on_hand','reserved','committed'} or q['name'] in quantities or type(q.get('quantity')) is not int:raise InventoryError('AVAILABLE_QUANTITY_UNVERIFIED')
+                        quantities[q['name']]=q['quantity']
+                    if 'available' not in quantities:raise InventoryError('AVAILABLE_QUANTITY_UNVERIFIED')
                     location=None
                     if cap['locations']:
                         location=node.get('location')
                         if not isinstance(location,dict) or not isinstance(location.get('id'),str) or not isinstance(location.get('name'),str) or type(location.get('isActive')) is not bool:raise InventoryError('LOCATION_UNVERIFIED')
                         location={k:location[k] for k in ('id','name','isActive')}
-                    levels.append({'level_id':node['id'],'location':location,'available':qty[0]['quantity']})
+                        if detailed and location['id'] in seen_locations:raise InventoryError('DUPLICATE_LOCATION')
+                        seen_locations.add(location['id'])
+                    levels.append({'level_id':node['id'],'location':location,'available':quantities['available'],**({k:quantities.get(k) for k in ('on_hand','reserved','committed')} if detailed else {})})
                     if len(levels)>MAX_LEVELS:raise InventoryError('READ_BUDGET_EXCEEDED')
                 if not page['hasNextPage']:
                     value={'status':'VERIFIED','message':'Available across returned Shopify inventory levels','tracked':True,
                         'available':sum(v['available'] for v in levels),'locations':levels,'locations_accessible':cap['locations'],
-                        'read_at':stamp,'cached':False,'age_seconds':0,'valid_for_seconds':TTL};break
+                        'read_at':stamp,'cached':False,'age_seconds':0,'valid_for_seconds':TTL}
+                    if detailed:value['active_available']=sum(v['available'] for v in levels if v['location']['isActive']) if cap['locations'] else None
+                    break
                 cursor=page['endCursor']
                 if not nodes or not isinstance(cursor,str) or not cursor or len(cursor)>2048 or cursor in cursors:raise InventoryError('INCOMPLETE_PAGINATION')
                 cursors.add(cursor);after=cursor

@@ -124,11 +124,23 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
         return barcode_response({'row':service.public(row,service.audit_context(db))})
 
     @router.get('/api/scanner/products/{rid}/inventory')
-    def scanner_inventory(rid:int,version:int=Query(...,ge=1),db=Depends(get_db),user=Depends(require_user)):
+    def scanner_inventory(rid:int,version:int=Query(...,ge=1),details:bool=False,db=Depends(get_db),user=Depends(require_user)):
         service.require(user,'retail.products.view');row=service.scanner_row(db,rid,version)
         expected=(row.version,row.product_id,row.variant_id,row.inventory_item_id,row.product_status,row.missing)
         if row.missing or row.product_status!='ACTIVE':return barcode_response(retail_inventory.unavailable('PRODUCT_INACTIVE'))
-        result=retail_inventory.client.lookup({'shop':row.shop,'version':row.version,'product_id':row.product_id,'variant_id':row.variant_id,'inventory_item_id':row.inventory_item_id})
+        snapshot={'shop':row.shop,'version':row.version,'product_id':row.product_id,'variant_id':row.variant_id,'inventory_item_id':row.inventory_item_id}
+        result=retail_inventory.client.lookup(snapshot,detailed=True) if details else retail_inventory.client.lookup(snapshot)
+        if details and result.get('status')=='VERIFIED':
+            from purchasing_models import PurchaseRecord
+            from pos_models import POSRegister
+            kinds={r.location_id:'SHOP' for r in db.query(POSRegister).filter_by(shop=row.shop)}
+            for mapping in db.query(PurchaseRecord).filter_by(shop=row.shop,kind='LOCATION'):
+                config=mapping.payload
+                if isinstance(config,dict) and config.get('enabled') is True and config.get('type') in {'SHOP','WAREHOUSE'} and isinstance(config.get('location_id'),str) and config['location_id']:
+                    kinds[config['location_id']]=config['type']
+            for level in result['locations']:
+                if level.get('location'):level['location']['kind']=kinds.get(level['location']['id'],'OTHER')
+            result['by_type']={k:sum(v['available'] for v in result['locations'] if v.get('location') and v['location']['isActive'] and v['location']['kind']==k) if any(v.get('location') and v['location']['isActive'] and v['location']['kind']==k for v in result['locations']) else None for k in ('SHOP','WAREHOUSE','OTHER')}
         db.expire_all();current=service.scanner_row(db,rid,version)
         if expected!=(current.version,current.product_id,current.variant_id,current.inventory_item_id,current.product_status,current.missing):raise HTTPException(409,'Catalog changed. Scan again.')
         return barcode_response(result)
