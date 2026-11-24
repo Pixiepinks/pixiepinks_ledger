@@ -7,10 +7,13 @@ import purchasing_service
 import inventory_service
 import retail_sync
 import retail_labels
+import loyalty_events
 import retail_barcode_sync
 
 def worker(sessions,stop):
     while not stop.is_set():
+        try:loyalty_events.process_one(sessions)
+        except Exception:logging.getLogger(__name__).error('Loyalty local recalculation unavailable')
         try:hardware_service.tick(sessions)
         except Exception:logging.getLogger(__name__).error('Hardware queue unavailable; financial workflow remains independent')
         try:

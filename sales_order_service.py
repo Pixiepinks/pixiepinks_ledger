@@ -164,6 +164,10 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str, *
         ))
     db.add(order)
     try:
+        if payload.get('_loyalty_managed'):
+            db.flush()
+            from loyalty_service import save_order_pricing
+            save_order_pricing(db,order,payload,actor)
         db.commit() if commit else db.flush()
     except IntegrityError:
         if not commit:raise
@@ -187,6 +191,7 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
     # Reuse creation validation without committing a second order.
     totals = calculate_order(payload.get("lines"), payload.get("order_discount", 0),
                              payload.get("shipping_total", 0), payload.get("tax_total", 0), payload.get("service_total", order.service_total or 0))
+    if 'customer_id' in payload:order.customer_id=payload['customer_id']
     order.customer_name = _required_text(payload, "customer_name", 255)
     order.whatsapp_phone = _validate_phone(payload.get("whatsapp_phone", ""))
     for field in ("alternative_phone", "delivery_contact_person", "delivery_address", "city",
@@ -210,6 +215,10 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
     order.service_total = totals.service_total
     order.shipping_total, order.tax_total, order.grand_total = totals.shipping_total, totals.tax_total, totals.grand_total
     order.updated_at = datetime.utcnow()
+    if payload.get('_loyalty_managed'):
+        db.flush()
+        from loyalty_service import save_order_pricing
+        save_order_pricing(db,order,payload,actor)
     db.commit(); db.refresh(order)
     return order
 
@@ -220,6 +229,11 @@ def transition_order(db: Session, order: SalesOrder, new_status: str, actor: str
     target = str(new_status or "").upper()
     if target not in ORDER_STATUSES or target not in TRANSITIONS.get(order.order_status, set()):
         raise InvalidOrderTransition(f"Cannot transition {order.order_status} to {target or 'empty status'}")
+    if target=='CONFIRMED' and order.customer_id:
+        from loyalty_service import ensure_confirmation_pricing
+        from fastapi import HTTPException
+        try:ensure_confirmation_pricing(db,order,actor)
+        except HTTPException as exc:raise InvalidOrderTransition(str(exc.detail)) from None
     previous = order.order_status
     order.order_status = target
     order.updated_at = datetime.utcnow()

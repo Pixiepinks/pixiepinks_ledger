@@ -394,6 +394,9 @@ def _claim_failed_event(db: Session, event_id: int, actor: str) -> str:
 def create_shopify_draft(db: Session, order: SalesOrder, actor: str,
                          client: ShopifyCatalogClient | None = None) -> tuple[SalesOrder, bool]:
     """Create at most one remote draft, reconciling by a deterministic Ledger tag first."""
+    from loyalty_models import LoyaltyPricing
+    pricing=db.get(LoyaltyPricing,order.id) if order.customer_id and order.sales_channel!='POS' else None
+    if pricing and not pricing.frozen:raise ShopifyDraftSyncError('Confirm and freeze loyalty pricing before Shopify synchronization')
     client = client or ShopifyCatalogClient()
     if order.shopify_draft_order_id:
         return order, False

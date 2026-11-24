@@ -167,6 +167,8 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 templates.env.globals["settings"] = settings
 import staff_access
+import loyalty_models
+import loyalty_events
 import manual_unread
 import conversation_access
 templates.env.globals['can_access_section']=staff_access.allowed
@@ -3212,9 +3214,11 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
 
 
 def _sales_order_payload(order: SalesOrder) -> dict:
+    from loyalty_service import public_order
     return {
+        'loyalty':public_order(order),
         "id": order.id, "internal_order_number": order.internal_order_number,
-        "customer_name": order.customer_name, "whatsapp_phone": order.whatsapp_phone,
+        "customer_id":order.customer_id, "customer_name": order.customer_name, "whatsapp_phone": order.whatsapp_phone,
         "alternative_phone": order.alternative_phone,
         "delivery_contact_person": order.delivery_contact_person,
         "delivery_address": order.delivery_address, "city": order.city,
@@ -3271,7 +3275,7 @@ def _verify_sales_order_products(payload: object) -> dict:
         verified_lines.append({
             "shopify_product_id": product["id"], "shopify_variant_id": product["variant_id"],
             "sku": product.get("sku"), "product_name": product["title"],
-            "variant_name": product.get("variant_title"), "unit_price": str(product["price"]),
+            "variant_name": product.get("variant_title"), "unit_price": str(product["price"]), "currency":product.get("currency"),
             "product_image_url": product.get("image"), "product_url": product.get("url"),
             "quantity": raw.get("quantity"), "discount_amount": raw.get("discount_amount", 0),
             "tax_amount": raw.get("tax_amount", 0), "inventory_item_id": raw.get("inventory_item_id"),
@@ -3337,6 +3341,8 @@ async def create_sales_order(request: Request, db: Session = Depends(get_db),
             order, created = existing, False
         else:
             payload = _verify_sales_order_products(payload)
+            from loyalty_service import prepare_order
+            payload=prepare_order(db,payload,actor=user.username)
             order, created = create_draft(db, payload, user.username, key)
     except SalesOrderValidationError as exc:
         raise HTTPException(422, str(exc)) from None
@@ -3356,6 +3362,8 @@ async def update_sales_order(order_id: int, request: Request, db: Session = Depe
         _require_sales_permission(user, "approve_discount")
     try:
         payload = _verify_sales_order_products(payload)
+        from loyalty_service import prepare_order
+        payload=prepare_order(db,payload,order,user.username)
         order = update_draft(db, order, payload, user.username)
     except SalesOrderValidationError as exc: raise HTTPException(422, str(exc)) from None
     return {"order": _sales_order_payload(order)}
@@ -3370,6 +3378,13 @@ async def transition_sales_order(order_id: int, request: Request, db: Session = 
     try: payload = await request.json()
     except ValueError: raise HTTPException(400, "Invalid JSON") from None
     if not isinstance(payload, dict): raise HTTPException(400, "Invalid request")
+    from loyalty_models import LoyaltyPricing
+    if order.sales_channel!='POS' and db.get(LoyaltyPricing,order.id) and payload.get('status')=='CONFIRMED':
+        import loyalty_service
+        loyalty_service.config(db,True)
+        order=db.query(SalesOrder).filter_by(id=order.id).populate_existing().with_for_update().one()
+        current=_verify_sales_order_products({'lines':[{'shopify_product_id':l.shopify_product_id,'shopify_variant_id':l.shopify_variant_id,'quantity':str(l.quantity)} for l in order.lines]})
+        loyalty_service.freeze_order(db,order,current['lines'],user.username)
     try: order = transition_order(db, order, payload.get("status"), user.username, payload.get("reason"))
     except InvalidOrderTransition as exc: raise HTTPException(409, str(exc)) from None
     return {"order": _sales_order_payload(order)}
@@ -4725,3 +4740,13 @@ def _start_retail_worker():
 def _stop_retail_worker():
     _retail_stop.set()
     if _retail_thread:_retail_thread.join(timeout=2)
+
+
+# Loyalty management is local-only and disabled by its database programme switch.
+def _loyalty_crm_access(user,write=False):
+    _require_sales_orders_enabled()
+    if not staff_access.allowed(user,'sales_orders'):raise HTTPException(403,'Sales Orders access required')
+    if write and not {'create','edit'} & staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS):raise HTTPException(403,'CRM order editing permission required')
+
+from loyalty_routes import build_router as build_loyalty_router
+app.include_router(build_loyalty_router(get_db,require_user,_require_csrf,_csrf_token,templates,_verify_sales_order_products,_loyalty_crm_access))

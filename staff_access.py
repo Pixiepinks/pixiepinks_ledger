@@ -2,6 +2,19 @@
 from fastapi import HTTPException
 
 SECTIONS = (
+    ('loyalty.dashboard','Loyalty: View dashboard','/crm/loyalty/dashboard'),
+    ('loyalty.members.view','Loyalty: View members','/crm/loyalty/members'),
+    ('loyalty.members.manage','Loyalty: Manage memberships and identity','/crm/loyalty/members'),
+    ('loyalty.products.manage','Loyalty: Manage loyalty products','/crm/loyalty/products'),
+    ('loyalty.exceptions.approve','Loyalty: Approve profitability exceptions','/crm/loyalty/products'),
+    ('loyalty.redemptions.view','Loyalty: View redemptions','/crm/loyalty/redemptions'),
+    ('loyalty.reports.profit','Loyalty: View profitability reports','/crm/loyalty/reports'),
+    ('loyalty.reports.export','Loyalty: Export loyalty reports','/crm/loyalty/reports'),
+    ('loyalty.migration.preview','Loyalty: Preview historical migration','/crm/loyalty/migration'),
+    ('loyalty.migration.execute','Loyalty: Approve and execute historical migration','/crm/loyalty/migration'),
+    ('loyalty.settings.manage','Loyalty: Manage settings','/crm/loyalty/settings'),
+    ('loyalty.programme.enable','Loyalty: Enable/disable programme','/crm/loyalty/settings'),
+
     ('retail.purchases.view','Purchasing: View','/crm/retail/purchases'),
     ('retail.purchases.prepare','Purchasing: Prepare bills and receiving','/crm/retail/purchases'),
     ('retail.purchases.pay','Purchasing: Record supplier payments','/crm/retail/purchases'),
@@ -47,6 +60,8 @@ KEYS={key for key,_,_ in SECTIONS}
 def allowed(user, section):
     if user is None or getattr(user,'is_active',True) is False:return False
     if user.role=='ADMIN':return True
+    if isinstance(section,str) and section.startswith('loyalty.'):
+        return isinstance(getattr(user,'section_access',None),list) and section in user.section_access
     if isinstance(section,str) and section.startswith('pos.'):
         from settings import settings
         return settings.POS_ENABLED and isinstance(getattr(user,'section_access',None),list) and section in user.section_access
@@ -88,6 +103,9 @@ def enforce(user,path):
     if path.startswith('/crm/retail/'):
         if not any(allowed(user,key) for key in KEYS if key.startswith('retail.')):raise HTTPException(403,'Retail access has not been granted')
         return  # Every retail endpoint enforces its granular permission.
+    if path=='/crm/loyalty' or path.startswith('/crm/loyalty/'):
+        if not any(allowed(user,key) for key in KEYS if key.startswith('loyalty.')):raise HTTPException(403,'Loyalty access has not been granted')
+        return  # Every loyalty endpoint checks its granular permission.
     section=section_for(path)
     if section is None or not allowed(user,section):raise HTTPException(403,'Your administrator has not granted access to this section')
     extra=('quick_messages' if path=='/crm/whatsapp/api/quick-messages' else

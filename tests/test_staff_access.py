@@ -164,9 +164,9 @@ def test_all_mapped_section_routes_include_the_shared_access_dependency():
     assert not missing,missing
 
 
-# Retail and POS action grants intentionally require companion view permissions.
+# Retail, POS and loyalty action grants require companion view permissions.
 # Their combinations are exercised in their dedicated feature tests.
-@pytest.mark.parametrize('key,label,path',[row for row in access.SECTIONS if not row[0].startswith(('retail.','pos.'))])
+@pytest.mark.parametrize('key,label,path',[row for row in access.SECTIONS if not row[0].startswith(('retail.','pos.','loyalty.'))])
 def test_each_section_can_be_granted_without_granting_others(staff,monkeypatch,key,label,path):
     s=staff;monkeypatch.setattr(main.settings,'SALES_ORDERS_ENABLED',True)
     monkeypatch.setattr(main.settings,'SALES_FULFILLMENT_ENABLED',True)

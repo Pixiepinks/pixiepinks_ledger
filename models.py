@@ -1245,3 +1245,8 @@ from pos_models import (POSConfig, POSRegister, POSSession, POSCart, POSCheckout
 from hardware_models import PrintDevice, HardwareJob, HardwareEvent, HardwareRate
 
 from purchasing_models import PurchaseRecord, PurchaseMovement, PurchaseAudit
+
+# Loyalty references the canonical customer/catalogue/order records.
+from loyalty_models import (LoyaltyConfig,LoyaltyMember,LoyaltyRule,LoyaltyRuleVersion,LoyaltyPricing,
+    LoyaltyRedemption,LoyaltyRedemptionEvent,LoyaltyAudit,LoyaltyIdentityReview,LoyaltyOrderIdentity,
+    LoyaltyMigration,LoyaltyMigrationRow,LoyaltyRecalculation,LoyaltyOrderExclusion)

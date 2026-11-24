@@ -20,7 +20,7 @@
 <label class="staff-active-label"><input type="checkbox" name="active" value="true" {% if member.is_active %}checked{% endif %}> Account active</label>
 {% if member.section_access is none %}<p>Existing role-based account. Saving will replace its legacy access with the checked sections.</p>{% endif %}
 <fieldset><legend>Allowed sections for {{ member.username }}</legend><div class="staff-access-grid">
-{% for key,label,path in sections %}<label><input type="checkbox" name="sections" value="{{ key }}" {% if member.section_access is none or key in member.section_access %}checked{% endif %}> {{ label }}</label>{% endfor %}
+{% for key,label,path in sections %}<label><input type="checkbox" name="sections" value="{{ key }}" {% if (member.section_access is none and not key.startswith('loyalty.')) or key in (member.section_access or []) %}checked{% endif %}> {{ label }}</label>{% endfor %}
 </div></fieldset><label>Reset password (optional) <input type="password" name="new_password" minlength="12" autocomplete="new-password"></label>
 <button type="submit" class="btn btn-primary">Save access for {{ member.username }}</button></form>{% endif %}</details></article>{% endfor %}</section>
 <section class="card"><h2>Recent access changes</h2><div class="staff-audit-table"><table><thead><tr><th>Time (Sri Lanka)</th><th>Administrator</th><th>Account</th><th>Action</th><th>Changes</th></tr></thead><tbody>
