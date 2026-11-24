@@ -18,6 +18,7 @@ def test_overseas_customer_local_recipient_drawer(loyalty,width):
         expect(page.locator('#order-delivery-phone')).to_have_value('')
         page.locator('#order-contact').fill('Local recipient');page.locator('#order-delivery-phone').fill('077 123 4567')
         expect(page.locator('#order-phone')).to_have_value('96550012345')
+        expect(page.locator('#order-same-recipient')).not_to_be_checked()
         page.screenshot(path=f'/tmp/recipient-interface-{width}.png',full_page=True)
         assert not errors,errors
 

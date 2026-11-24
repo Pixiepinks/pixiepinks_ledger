@@ -37,6 +37,12 @@
       "failed": 0,
       "errors": 0,
       "skipped": 0
+    },
+    "final_checkbox_ui": {
+      "passed": 4,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
     }
   },
   "distinct_passed": 459,

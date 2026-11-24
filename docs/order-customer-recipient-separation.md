@@ -19,7 +19,7 @@ Local drafts may omit delivery details. DELIVERY requires a recipient name, vali
 ## Interfaces
 
 - WhatsApp Create Order/Edit: Customer Information with original name/WhatsApp and derived country; separate Local Delivery Information for recipient and contacts, method, notes and existing address fields.
-- Same-customer checkbox copies name and only a valid local mobile. Overseas phones are not copied into recipient primary. Existing manual values require confirmation before replacement. Fields remain independently editable.
+- Same-customer checkbox copies name and only a valid local mobile. Overseas phones are not copied into recipient primary. Existing manual values require confirmation before replacement. Fields remain independently editable; manually editing recipient name/phone clears the convenience checkbox.
 - Sales Orders → Create sales order (`/crm/order-entry`) adds manual entry using the same authenticated draft API and current Shopify product resolver. It searches exact variants, accepts quantities and optional explicit Customer ID. Main order validation/loyalty identity checks still govern that association. It does not manufacture a WhatsApp conversation. Manual entry creates only a local draft and preserves a stable idempotency key across retries.
 - Detail page separates purchaser and recipient, shows missing local contact, and exposes the existing authorized Edit delivery details dialog. It can now correct recipient/name/phones/address/notes/method as well as city/district/postal code.
 - Delivery edits retain existing CSRF, conversation visibility/ownership, edit permission, row lock, optimistic version and dispatch/Shopify-link locks. Unknown fields (including purchaser identity, money and status) are rejected. Audits capture actor/time and changed before/after delivery values, not unchanged profile data. Draft-editor changes also produce recipient audit history.
@@ -36,6 +36,8 @@ Screenshots use synthetic buyers/recipients:
 Official reference reviewed successfully (HTTP 200):
 
 https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/DraftOrderInput
+
+https://shopify.dev/docs/api/admin-graphql/2026-10/input-objects/PurchasingEntityInput
 
 The documented `phone`, `shippingAddress`, `customAttributes` and `purchasingEntity` fields are used. No global API/webhook version, credentials, scopes or live settings change is introduced. Actual production negotiated-schema/permission behavior was not accessed here.
 

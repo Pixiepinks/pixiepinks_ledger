@@ -581,6 +581,7 @@
     }
     document.getElementById("create-order-button").onclick = () => openOrderDrawer();
     document.getElementById("close-order").onclick = closeOrderDrawer; document.getElementById("cancel-order").onclick = closeOrderDrawer; orderScrim.onclick = closeOrderDrawer;
+    for(const id of ['order-contact','order-delivery-phone'])orderInput(id).addEventListener('input',()=>{orderInput('order-same-recipient').checked=false;});
     orderInput('order-same-recipient').onchange=event=>{if(!event.target.checked)return;const phone=orderInput('order-phone').value.replace(/[^0-9]/g,''),local=/^947[0-9]{8}$/.test(phone)?'+'+phone:/^07[0-9]{8}$/.test(phone)?'+94'+phone.slice(1):'';if((orderInput('order-contact').value||orderInput('order-delivery-phone').value)&&!confirm('Replace the entered recipient name and primary phone with customer details?')){event.target.checked=false;return;}orderInput('order-contact').value=orderInput('order-customer-name').value;orderInput('order-delivery-phone').value=local;};
     document.getElementById("order-add-product").onclick = () => { document.getElementById("order-product-search").hidden = false; orderInput("order-product-query").focus(); searchOrderProducts(); };
     orderInput("order-product-query").oninput = () => { clearTimeout(orderSearchTimer); orderSearchTimer = setTimeout(searchOrderProducts, 300); };
