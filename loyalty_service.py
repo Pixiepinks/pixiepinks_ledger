@@ -133,7 +133,9 @@ def history(db,cid,exclude_order=None,filters=None):
             from pos_models import POSCheckout
             completed=db.query(POSCheckout.completed_at).filter_by(sales_order_id=order.id).scalar()
         seen.add(key);selected.append({'order_id':order.id,'reference':order.internal_order_number,'key':key,'paid':str(data['paid']),'refunded':str(data['refunded']),'net':str(data['net']),'date':completed.isoformat() if completed else None,'order_created_at':order.created_at.isoformat(),'channel':order.sales_channel or 'CRM'})
-    selected.sort(key=lambda r:(r['date'] or r['order_created_at'],r['order_id']))
+    from loyalty_recovery import remote_history
+    selected.extend(remote_history(db,cid,seen,filters))
+    selected.sort(key=lambda r:(r['date'] or r['order_created_at'],r['order_id'] or 0))
     return {'orders':selected,'count':len(selected),'net':str(sum((Decimal(o['net']) for o in selected),Decimal(0)).quantize(MONEY)),'duplicates':duplicates,'rejected':rejected}
 
 def member_summary(db,cid,exclude_order=None):
@@ -197,7 +199,7 @@ def resolve_order_identity(db,user,review_id,cid,why):
     if order.customer_id is not None and order.customer_id!=cid:fail('An existing authoritative customer association cannot be reassigned by loyalty',409)
     why=reason(why);db.add(LoyaltyOrderIdentity(order_id=order.id,customer_id=cid,actor_id=user.id,reason=why))
     r.status='RESOLVED';r.resolution={'customer_id':cid,'actor_id':user.id,'reason':why};audit(db,'IDENTITY_RECONCILED',r.id,user.username,None,r.resolution,why)
-    db.flush();refresh_member(db,cid,user.username,'MANAGEMENT_REVIEW')
+    db.flush()  # Customer attribution only; migration approval creates memberships.
 
 
 def rule_data(rule):
@@ -404,7 +406,7 @@ def preview_migration(db,user,payload,key):
     config(db,True)
     if not isinstance(key,str) or not 8<=len(key)<=100:fail('Provide a unique migration request key')
     filters={k:payload.get(k) for k in ('start','end','source')}
-    if filters['source'] not in {None,'','CRM','POS'}:fail('Choose CRM, POS or all local sources')
+    if filters['source'] not in {None,'','CRM','POS','SHOPIFY_HISTORY'}:fail('Choose CRM, POS, SHOPIFY_HISTORY or all available sources')
     if filters['start']:stamp(filters['start'])
     if filters['end']:stamp(filters['end'])
     if filters['start'] and filters['end'] and stamp(filters['end'])<=stamp(filters['start']):fail('End must follow start')
@@ -417,6 +419,7 @@ def preview_migration(db,user,payload,key):
     if filters['end']:query=query.filter(SalesOrder.created_at<stamp(filters['end']))
     if filters['source']=='POS':query=query.filter(SalesOrder.sales_channel=='POS')
     elif filters['source']=='CRM':query=query.filter((SalesOrder.sales_channel.is_(None))|(SalesOrder.sales_channel=='CRM'))
+    elif filters['source']=='SHOPIFY_HISTORY':query=query.filter(SalesOrder.id==-1)
     count=query.count()
     if count>10000:fail('More than 10,000 local orders. Narrow the date/source range; no partial preview will execute.')
     job=LoyaltyMigration(id=str(uuid4()),request_key=key,filters=filters,status='PREVIEW',digest='',counts={},actor_id=user.id);db.add(job);db.flush()
@@ -431,6 +434,19 @@ def preview_migration(db,user,payload,key):
             key_review=f'order:{order.id}'
             if not db.query(LoyaltyIdentityReview.id).filter_by(key=key_review).first():db.add(LoyaltyIdentityReview(key=key_review,order_id=order.id,candidates=candidates,reason='AMBIGUOUS_IDENTITY' if len(candidates)>1 else 'EXPLICIT_CUSTOMER_LINK_REQUIRED'))
             missing.append(order.id);db.add(LoyaltyMigrationRow(migration_id=job.id,order_id=order.id,status='REVIEW',detail={'reason':'CUSTOMER_LINK_REQUIRED','candidates':candidates}))
+    from loyalty_models import LoyaltyHistoricalOrder
+    remote_count=0
+    if filters['source'] in {None,'','SHOPIFY_HISTORY'}:
+        for r in db.query(LoyaltyHistoricalOrder).filter_by(shop=(settings.SHOPIFY_SHOP or '').lower()).order_by(LoyaltyHistoricalOrder.id):
+            created=stamp(r.evidence['createdAt'])
+            if filters['start'] and created<stamp(filters['start']) or filters['end'] and created>=stamp(filters['end']):continue
+            remote_count+=1
+            if count+remote_count>10000:fail('More than 10,000 source orders. Narrow the range; no partial preview will execute.')
+            if r.order_gid in seen:duplicates+=1;continue
+            seen.add(r.order_gid)
+            if r.customer_id and r.approved_fingerprint==r.fingerprint:customers.add(r.customer_id)
+            else:
+                missing.append('shopify:'+str(r.id));db.add(LoyaltyMigrationRow(migration_id=job.id,status='REVIEW',detail={'reason':'SHOPIFY_CUSTOMER_LINK_REQUIRED','historical_order_id':r.id}))
     eligible=existing=ambiguous=0;manifest=[]
     for cid in sorted(customers):
         summary=member_summary(db,cid);h=history(db,cid,filters=filters)
@@ -438,10 +454,10 @@ def preview_migration(db,user,payload,key):
             review_key=f'customer:{cid}:{fingerprint(db.get(Customer,cid))}'
             if not db.query(LoyaltyIdentityReview.id).filter_by(key=review_key).first():db.add(LoyaltyIdentityReview(key=review_key,customer_id=cid,candidates=summary['candidates'],reason=summary['reason']))
         eligible+=bool(h['count'] and summary['status']=='ACTIVE');existing+=bool(summary['member_id']);ambiguous+=bool(summary['candidates'] and summary['reason']=='AMBIGUOUS_CUSTOMER_IDENTITY')
-        detail={'count':h['count'],'net':h['net'],'order_ids':[o['order_id'] for o in h['orders']],'reason':summary['reason'],'fingerprint':digest(h)}
+        detail={'count':h['count'],'net':h['net'],'order_ids':[o['order_id'] for o in h['orders'] if o['order_id'] is not None],'historical_order_ids':[o['historical_order_id'] for o in h['orders'] if o.get('historical_order_id')],'reason':summary['reason'],'fingerprint':digest(h)}
         status='PROPOSED' if h['count'] and summary['status']=='ACTIVE' else 'INELIGIBLE'
         db.add(LoyaltyMigrationRow(migration_id=job.id,customer_id=cid,status=status,detail=detail));manifest.append({'customer_id':cid,'status':status,**detail})
-    job.counts={'orders_reviewed':count,'unique_customers':len(customers),'eligible_customers':eligible,'existing_members':existing,'new_proposed':sum(1 for m in manifest if m['status']=='PROPOSED' and not db.query(LoyaltyMember.id).filter_by(customer_id=m['customer_id']).first()),'ineligible_customers':len(customers)-eligible,'duplicate_orders':duplicates,'missing_customer_details':len(missing),'ambiguous_identities':ambiguous,'failed_records':0,'coverage':'CRM_LOCAL_ONLY; Shopify historical coverage NOT verified','complete_within_local_filters':True}
+    job.counts={'orders_reviewed':count+remote_count,'local_orders':count,'shopify_evidence_orders':remote_count,'unique_customers':len(customers),'eligible_customers':eligible,'existing_members':existing,'new_proposed':sum(1 for m in manifest if m['status']=='PROPOSED' and not db.query(LoyaltyMember.id).filter_by(customer_id=m['customer_id']).first()),'ineligible_customers':len(customers)-eligible,'duplicate_orders':duplicates,'missing_customer_details':len(missing),'ambiguous_identities':ambiguous,'failed_records':0,'coverage':'LOCAL_CRM_AND_REVIEWED_SHOPIFY_EVIDENCE; complete Shopify history NOT verified','complete_within_local_filters':True}
     job.digest=digest({'filters':filters,'manifest':manifest,'missing_orders':missing,'counts':job.counts});audit(db,'MIGRATION_PREVIEW',job.id,user.username,None,job.counts)
     return job
 

@@ -1250,3 +1250,4 @@ from purchasing_models import PurchaseRecord, PurchaseMovement, PurchaseAudit
 from loyalty_models import (LoyaltyConfig,LoyaltyMember,LoyaltyRule,LoyaltyRuleVersion,LoyaltyPricing,
     LoyaltyRedemption,LoyaltyRedemptionEvent,LoyaltyAudit,LoyaltyIdentityReview,LoyaltyOrderIdentity,
     LoyaltyMigration,LoyaltyMigrationRow,LoyaltyRecalculation,LoyaltyOrderExclusion)
+from loyalty_models import LoyaltyHistoryScan,LoyaltyHistoricalOrder,LoyaltyRecoveryPlan

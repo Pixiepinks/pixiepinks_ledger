@@ -41,7 +41,7 @@ def pg(monkeypatch):
             order.order_status='DELIVERED';order.payment_status='PAID';order.amount_paid=4500
             db.add(SalesPayment(sales_order_id=order.id,payment_method='CASH',amount=4500,currency='LKR',payment_date=datetime.utcnow().date(),verification_status='VERIFIED'))
             variant=RetailVariant(shop='loyalty-pg',product_id='gid://shopify/Product/1',variant_id='gid://shopify/ProductVariant/1',title='School bag',variant_title='Pink',price=4500,currency='LKR',product_status='ACTIVE',missing=False,stale=False,options=[],collections=[]);db.add(variant);db.commit();oid=order.id;rid=variant.id
-        command.upgrade(cfg,'head');command.upgrade(cfg,'head')
+        command.upgrade(cfg,'20261124_55');command.upgrade(cfg,'20261124_55')
         yield SimpleNamespace(engine=engine,sessions=sessions,cfg=cfg,uid=uid,cid=cid,oid=oid,rid=rid)
     finally:
         engine.dispose()
@@ -64,7 +64,7 @@ def test_additive_migration_and_rollback_preserve_legacy(pg):
         assert 'loyalty_members' not in inspect(c).get_table_names()
         assert c.execute(text('SELECT amount_paid FROM sales_orders WHERE id=:id'),{'id':v.oid}).scalar()==4500
         assert c.execute(text('SELECT password_hash FROM users WHERE id=:id'),{'id':v.uid}).scalar()=='retained-hash'
-    command.upgrade(v.cfg,'head')
+    command.upgrade(v.cfg,'20261124_55')
     with v.sessions() as db:assert not svc.config(db).enabled
 
 
