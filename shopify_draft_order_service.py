@@ -15,6 +15,7 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from settings import settings
 from models import SalesOrder, ShopifySyncEvent
 from shopify_catalog_service import ShopifyCatalogClient, ShopifyCatalogError, resolve_inbox_product
 
@@ -190,16 +191,15 @@ def _validate_local_order(order: SalesOrder) -> None:
     required = {
         "customer name": order.customer_name,
         "WhatsApp phone": order.whatsapp_phone,
-        "delivery contact": order.delivery_contact_person,
-        "delivery address": order.delivery_address,
-        "city": order.city,
-        "district": order.district,
+
     }
     missing = [name for name, value in required.items() if not str(value or "").strip()]
     if missing:
         raise ShopifyDraftSyncError(
             "Complete the following Ledger order fields before synchronizing: " + ", ".join(missing))
-    normalize_sri_lankan_mobile(order.whatsapp_phone)
+    from order_recipient import shipping
+    try:shipping(order)
+    except ValueError as exc:raise ShopifyDraftSyncError(str(exc)) from None
     if order.currency != "LKR":
         raise ShopifyDraftSyncError("Shopify Draft synchronization currently supports LKR orders only")
     if not order.lines:
@@ -285,13 +285,18 @@ def _shopify_input(order: SalesOrder) -> dict:
     order_discount = _money(order.discount_total) - line_discount_total
     if order_discount < 0:
         raise ShopifyDraftSyncError("Ledger discount totals are inconsistent")
-    if has_taxable_product and (not order.delivery_address or not order.city):
+    if has_taxable_product and (order.delivery_method or "DELIVERY")=="DELIVERY" and (not order.delivery_address or not order.city):
         raise ShopifyDraftSyncError(
             "A complete delivery address and city are required for Shopify tax calculation")
     if _money(order.tax_total) > 0 and not has_taxable_product:
         raise ShopifyDraftSyncError(
             "Ledger tax is nonzero, but Shopify reports every selected product as non-taxable")
-    shopify_phone = normalize_sri_lankan_mobile(order.whatsapp_phone)
+    from order_recipient import shipping
+    from marketing_identity import phone
+    shopify_phone = phone(order.whatsapp_phone)
+    if not shopify_phone:raise ShopifyDraftSyncError('Please enter a valid international customer WhatsApp number.')
+    try:recipient=shipping(order)
+    except ValueError as exc:raise ShopifyDraftSyncError(str(exc)) from None
     data = {
         "lineItems": line_items,
         "note": f"PixiePinks Ledger order {order.internal_order_number}",
@@ -300,14 +305,16 @@ def _shopify_input(order: SalesOrder) -> dict:
         "presentmentCurrencyCode": order.currency,
         "taxExempt": False,
         "phone": shopify_phone,
-        "shippingAddress": {
-            "firstName": order.delivery_contact_person or order.customer_name,
-            "address1": order.delivery_address,
-            "city": order.city, "province": order.district,
-            "zip": order.postal_code, "countryCode": "LK", "phone": shopify_phone,
-        },
     }
-    data["shippingAddress"] = {key: value for key, value in data["shippingAddress"].items() if value}
+    if order.customer_id:
+        from sqlalchemy.orm import object_session
+        from pos_models import POSCustomerBinding
+        session=object_session(order)
+        binding=session.query(POSCustomerBinding).filter_by(shop=(settings.SHOPIFY_SHOP or '').lower(),customer_id=order.customer_id).one_or_none() if session else None
+        if binding:data['purchasingEntity']={'customerId':binding.shopify_customer_id}
+    if recipient:data['shippingAddress']={key:value for key,value in recipient.items() if value}
+    for key,value in [('Local alternative phone',order.delivery_alternative_phone),('Delivery instructions',order.delivery_notes)]:
+        if value:data['customAttributes'].append({'key':key,'value':value})
     if order_discount:
         data["appliedDiscount"] = _fixed_discount(
             order_discount, "Ledger order discount", order.internal_order_number)

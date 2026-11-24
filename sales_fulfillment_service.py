@@ -74,8 +74,8 @@ def create_full_fulfillment(db: Session, order_id: int, actor: str, idempotency_
     for line, quantity in remaining:
         db.add(SalesFulfillmentItem(fulfillment_id=fulfillment.id, sales_order_line_id=line.id, quantity=quantity))
     db.add(SalesDeliveryDetail(fulfillment_id=fulfillment.id, delivery_method="COURIER",
-        contact_snapshot=order.delivery_contact_person or order.customer_name,
-        address_snapshot=", ".join(filter(None,[order.delivery_address,order.city,order.district,order.postal_code]))))
+        contact_snapshot=order.delivery_contact_person,
+        address_snapshot=", ".join(filter(None,[order.delivery_address,order.city,order.district,order.postal_code,order.delivery_phone,order.delivery_alternative_phone,order.delivery_notes]))))
     _event(db,fulfillment,None,"UNFULFILLED",actor,idempotency_key); (db.commit() if commit else db.flush()); db.refresh(fulfillment); return fulfillment
 
 

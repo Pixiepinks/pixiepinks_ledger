@@ -79,6 +79,7 @@ def managed_grant(user,section):
 
 
 def section_for(path):
+    if path=='/crm/order-entry':return 'sales_orders'
     if path=='/crm/pos' or path.startswith('/crm/pos/'):return 'pos.view'
     if path.startswith('/crm/retail/'):
         page=path.split('/')[3]

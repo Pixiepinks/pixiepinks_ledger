@@ -1,0 +1,48 @@
+{
+  "baseline": "203cff8",
+  "migration": "20261124_57",
+  "runs": {
+    "recipient_crm_loyalty": {
+      "passed": 225,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "pos_inbox_finance_inventory": {
+      "passed": 166,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "draft_postgresql": {
+      "passed": 53,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "fulfillment_postgresql": {
+      "passed": 18,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "receipt_pdfs": {
+      "passed": 48,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "final_browser_identity": {
+      "passed": 5,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "distinct_passed": 459,
+  "new_recipient_cases": 32,
+  "unresolved": {},
+  "production_changes": false,
+  "live_shopify_verification": false,
+  "physical_android_or_print_validation": false
+}

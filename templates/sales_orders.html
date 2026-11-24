@@ -1,5 +1,5 @@
 {% extends "base.html" %}{% block content %}
-<div class="page-heading"><div><h2>Sales Orders</h2><p>Local commercial drafts and their operational status.</p></div><a class="btn btn-secondary" href="/crm/whatsapp">Open WhatsApp Inbox</a></div>
+<div class="page-heading"><div><h2>Sales Orders</h2><p>Local commercial drafts and their operational status.</p></div><a class="btn btn-primary" href="/crm/order-entry">Create sales order</a><a class="btn btn-secondary" href="/crm/whatsapp">Open WhatsApp Inbox</a></div>
 <form id="sales-order-filters" class="card order-filters" method="get">
  <label>Search<input name="q" value="{{ q }}" placeholder="Order, customer, phone or Shopify order"></label>
  <label>Order status<select name="status_filter"><option value="">All statuses</option>{% for status in statuses %}<option value="{{ status }}" {{ 'selected' if status_filter == status }}>{{ status|replace('_',' ')|title }}</option>{% endfor %}</select></label>

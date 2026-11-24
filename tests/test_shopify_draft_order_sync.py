@@ -153,7 +153,7 @@ def test_shopify_payload_normalizes_all_phone_fields_without_changing_ledger(mon
         db.commit()
         payload = sync._shopify_input(draft)
         assert payload["phone"] == "+94703322111"
-        assert payload["shippingAddress"]["phone"] == "+94703322111"
+        assert payload["shippingAddress"]["phone"] == "+94771234567"  # Recipient does not follow purchaser phone edits.
         assert draft.whatsapp_phone == "+94 70 332 2111"
 
 
