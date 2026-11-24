@@ -63,7 +63,7 @@ def build_router(get_db,require_user,csrf,csrf_token,templates,verify_products,c
         elif page=='products':data=[{'rule':svc.rule_data(r),'variant':db.get(RetailVariant,r.variant_id),'calculation':svc.rule_projection(db,r)} for r in db.query(LoyaltyRule).order_by(LoyaltyRule.id.desc()).limit(100)]
         elif page=='redemptions':
             rows=safe_rows(reports.redemption_rows(db,start or None,end or None),can(user,'reports.profit'));total=len(rows);data=rows[offset:offset+50]
-        elif page=='migration':data={'jobs':list(db.query(LoyaltyMigration).order_by(LoyaltyMigration.created_at.desc()).limit(50)),'reviews':list(db.query(LoyaltyIdentityReview).filter_by(status='OPEN').order_by(LoyaltyIdentityReview.id).limit(100))}
+        elif page=='migration':data={'jobs':list(db.query(LoyaltyMigration).order_by(LoyaltyMigration.created_at.desc()).limit(50)),'recovery':__import__('loyalty_recovery').dashboard(db),'reviews':list(db.query(LoyaltyIdentityReview).filter_by(status='OPEN').order_by(LoyaltyIdentityReview.id).limit(100))}
         elif page=='reports':data={'kinds':['growth','repeat','products','customers','discounts','refunds','migrations']+(['profitability'] if can(user,'reports.profit') else [])}
         elif page=='settings':data=svc.config(db)
         return templates.TemplateResponse('loyalty.html',{'request':request,'user':user,'page_title':title,'page':page,'pages':PAGES,'data':data,'total':total,'offset':offset,'q':q,'start':start,'end':end,'channel':channel,'status':status,'source':source,'minimum_orders':minimum_orders,'config':svc.config(db),'defaults':svc.rules_config(db),'csrf':csrf_token(request),'loyalty_can':lambda p:can(user,p)},headers={'Cache-Control':'private, no-store'})
@@ -137,10 +137,10 @@ def build_router(get_db,require_user,csrf,csrf_token,templates,verify_products,c
     async def migration_preview(request:Request,db=Depends(get_db),user=Depends(require_user)):
         require(user,'migration.preview');v=await payload(request);job=svc.preview_migration(db,user,v,request.headers.get('Idempotency-Key'));db.commit();return json_response({'id':job.id,'status':job.status,'digest':job.digest,'counts':job.counts})
     @router.get('/crm/loyalty/api/migrations/{job_id}')
-    def migration(job_id:str,db=Depends(get_db),user=Depends(require_user)):
+    def migration(job_id:str,offset:int=Query(0,ge=0),db=Depends(get_db),user=Depends(require_user)):
         require(user,'migration.preview');job=db.get(LoyaltyMigration,job_id)
         if not job:svc.fail('Migration not found',404)
-        return json_response({'id':job.id,'status':job.status,'digest':job.digest,'counts':job.counts,'outcomes':{s:db.query(LoyaltyMigrationRow).filter_by(migration_id=job.id,status=s).count() for s in ('PROPOSED','EXECUTED','REVIEW','INELIGIBLE')},'rows':[{'customer_id':r.customer_id,'order_id':r.order_id,'status':r.status,'detail':r.detail} for r in db.query(LoyaltyMigrationRow).filter_by(migration_id=job.id).order_by(LoyaltyMigrationRow.id).limit(100)]})
+        return json_response({'id':job.id,'status':job.status,'digest':job.digest,'counts':job.counts,'outcomes':{s:db.query(LoyaltyMigrationRow).filter_by(migration_id=job.id,status=s).count() for s in ('PROPOSED','EXECUTED','REVIEW','INELIGIBLE')},'rows':[{'customer_id':r.customer_id,'order_id':r.order_id,'status':r.status,'detail':r.detail} for r in db.query(LoyaltyMigrationRow).filter_by(migration_id=job.id).order_by(LoyaltyMigrationRow.id).offset(offset).limit(100)],'offset':offset,'has_more':db.query(LoyaltyMigrationRow).filter_by(migration_id=job_id).count()>offset+100})
     @router.post('/crm/loyalty/api/migrations/{job_id}/{action}')
     async def migration_action(job_id:str,action:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
         require(user,'migration.execute');v=await payload(request)
@@ -197,4 +197,6 @@ def build_router(get_db,require_user,csrf,csrf_token,templates,verify_products,c
         totals=calculate_order(priced,0,v.get('shipping_total',0),v.get('tax_total',0),v.get('service_total',0))
         result['totals']={key:str(getattr(totals,key)) for key in ('subtotal','discount_total','shipping_total','service_total','tax_total','grand_total')}
         return json_response(svc.public_quote(result))
+    from loyalty_recovery_routes import build_router as recovery_router
+    router.include_router(recovery_router(get_db,require_user,payload,require,json_response,csrf_token,templates))
     return router

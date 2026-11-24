@@ -1,0 +1,42 @@
+cd /app
+python - <<'PY'
+import json
+from sqlalchemy import text
+from database import engine
+out={'mode':'READ_ONLY','customer_details_redacted':True,'database_writes':0,'shopify_requests':0}
+try:
+    with engine.connect() as c:
+        tx=c.begin()
+        try:
+            if c.dialect.name!='postgresql':raise RuntimeError()
+            c.execute(text('SET TRANSACTION READ ONLY'))
+            out['transaction_read_only']=c.execute(text('SHOW transaction_read_only')).scalar()=='on'
+            out['migration']=[dict(r) for r in c.execute(text('SELECT version_num FROM alembic_version')).mappings()]
+            out['programme']=[dict(r) for r in c.execute(text('SELECT enabled FROM loyalty_config WHERE id=1')).mappings()]
+            out['customer_records']=c.execute(text('SELECT count(*) FROM customers')).scalar()
+            out['channels']=[dict(r) for r in c.execute(text('''SELECT coalesce(s.sales_channel,'CRM') AS channel,
+              count(*) AS orders, sum(CASE WHEN coalesce(i.customer_id,s.customer_id) IS NOT NULL THEN 1 ELSE 0 END) AS authoritative_links,
+              sum(CASE WHEN length(trim(coalesce(s.customer_name,'')))>0 THEN 1 ELSE 0 END) AS names_present,
+              sum(CASE WHEN length(trim(coalesce(s.whatsapp_phone,'')))>0 THEN 1 ELSE 0 END) AS phone_values_present
+              FROM sales_orders s LEFT JOIN loyalty_order_identities i ON i.order_id=s.id GROUP BY coalesce(s.sales_channel,'CRM')''')).mappings()]
+            out['orders']=[dict(r) for r in c.execute(text('''SELECT s.id AS order_id,s.internal_order_number AS reference,
+              coalesce(s.sales_channel,'CRM') AS channel,(s.customer_id IS NOT NULL) AS original_customer_id_present,
+              (i.customer_id IS NOT NULL) AS approved_loyalty_link_present,
+              (length(trim(coalesce(s.customer_name,'')))>0) AS name_present,
+              (length(trim(coalesce(s.whatsapp_phone,'')))>0) AS phone_value_present,
+              (s.crm_conversation_id IS NOT NULL) AS conversation_reference_present,
+              (s.shopify_order_id IS NOT NULL) AS shopify_reference_present,
+              s.order_status,s.payment_status,s.currency,s.grand_total,
+              (SELECT coalesce(sum(p.amount),0) FROM sales_payments p WHERE p.sales_order_id=s.id
+               AND p.verification_status='VERIFIED' AND p.currency='LKR') AS verified_local_paid,
+              s.shopify_financial_status,(s.shopify_payment_status_refreshed_at IS NOT NULL) AS imported_payment_refresh_present,
+              s.shopify_total_received,s.shopify_total_outstanding,s.shopify_total_refunded,
+              pc.status AS pos_status,(pc.id IS NOT NULL) AS pos_snapshot_present
+              FROM sales_orders s LEFT JOIN loyalty_order_identities i ON i.order_id=s.id
+              LEFT JOIN pos_checkouts pc ON pc.sales_order_id=s.id ORDER BY s.id LIMIT 200''')).mappings()]
+            out['order_rows_limited_to']=200
+            out['status']='READ_ONLY_LOCAL_DIAGNOSTIC_COMPLETE'
+        finally:tx.rollback()
+except Exception:out['status']='READ_ONLY_DIAGNOSTIC_UNAVAILABLE'
+print(json.dumps(out,default=str,indent=2))
+PY

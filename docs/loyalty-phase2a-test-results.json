@@ -1,0 +1,78 @@
+{
+  "baseline": "46032a13fcd3aa84821b51b10e64a90fc7a93ef8",
+  "migration": "20261124_56",
+  "runs": {
+    "combined_loyalty": {
+      "passed": 106,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "final_recovery": {
+      "passed": 39,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "final_refunds": {
+      "passed": 36,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "predeploy_console": {
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "final_layout": {
+      "passed": 5,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "final_postgresql": {
+      "passed": 7,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "final_approval_and_postgresql": {
+      "passed": 43,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "commerce_regressions": {
+      "passed": 265,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "inbox_finance": {
+      "passed": 82,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "draft_postgresql": {
+      "passed": 53,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "fulfillment_postgresql": {
+      "passed": 18,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "distinct_tests_passed": 479,
+  "new_phase2a_cases": 45,
+  "unresolved": {},
+  "production_access": false,
+  "production_mutations": false,
+  "real_android_validation": false
+}

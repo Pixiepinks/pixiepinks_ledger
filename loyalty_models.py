@@ -1,6 +1,6 @@
 """Additive loyalty records reference existing customers, variants and commercial orders."""
 from datetime import datetime
-from sqlalchemy import Column,Integer,String,DateTime,ForeignKey,JSON,Numeric,Boolean,UniqueConstraint,CheckConstraint
+from sqlalchemy import Column,Integer,String,DateTime,ForeignKey,JSON,Numeric,Boolean,UniqueConstraint,CheckConstraint,Text
 from database import Base
 
 class LoyaltyConfig(Base):
@@ -167,4 +167,47 @@ class LoyaltyOrderExclusion(Base):
     order_id=Column(Integer,ForeignKey('sales_orders.id'),primary_key=True)
     actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
     reason=Column(String(2000),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+
+class LoyaltyHistoryScan(Base):
+    """Local evidence collection only. Never creates commercial SalesOrders."""
+    __tablename__='loyalty_history_scans'
+    id=Column(String(36),primary_key=True)
+    shop=Column(String(100),nullable=False,index=True)
+    status=Column(String(24),nullable=False,default='RUNNING')
+    cursor=Column(Text)
+    seen_cursors=Column(JSON,nullable=False,default=list)
+    pages=Column(Integer,nullable=False,default=0)
+    orders_seen=Column(Integer,nullable=False,default=0)
+    coverage=Column(JSON,nullable=False,default=dict)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    started_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    completed_at=Column(DateTime)
+
+class LoyaltyHistoricalOrder(Base):
+    __tablename__='loyalty_historical_orders'
+    id=Column(Integer,primary_key=True)
+    shop=Column(String(100),nullable=False,index=True)
+    order_gid=Column(String(100),nullable=False)
+    scan_id=Column(String(36),ForeignKey('loyalty_history_scans.id'),nullable=False,index=True)
+    evidence=Column(JSON,nullable=False)
+    identity=Column(JSON,nullable=False,default=dict)
+    fingerprint=Column(String(64),nullable=False)
+    customer_id=Column(Integer,ForeignKey('customers.id'),index=True)
+    approved_fingerprint=Column(String(64))
+    fetched_at=Column(DateTime,nullable=False,default=datetime.utcnow)
+    __table_args__=(UniqueConstraint('shop','order_gid',name='uq_loyalty_historical_order'),)
+
+class LoyaltyRecoveryPlan(Base):
+    __tablename__='loyalty_recovery_plans'
+    id=Column(String(36),primary_key=True)
+    request_key=Column(String(100),nullable=False,unique=True)
+    digest=Column(String(64),nullable=False)
+    items=Column(JSON,nullable=False)
+    status=Column(String(20),nullable=False,default='PREVIEW')
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    approved_by=Column(Integer,ForeignKey('users.id'))
+    approved_at=Column(DateTime)
+    approval_reason=Column(String(2000))
+    results=Column(JSON)
     created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
