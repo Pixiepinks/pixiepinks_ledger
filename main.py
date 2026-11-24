@@ -3184,7 +3184,7 @@ def sales_order_detail_page(order_id: int, request: Request, db: Session = Depen
         ShopifyFulfillmentOperation.created_at).all()}
     return templates.TemplateResponse("sales_order_detail.html", {"request": request,
         "page_title": order.internal_order_number, "order": order, "history": history,
-        "can_edit": can_edit, "can_edit_delivery_location": can_edit_location(db,user,order,payment_permissions), "can_sync": can_sync, "can_create_sync": can_create_sync,
+        "customer_country":__import__("order_recipient").customer_country(order.whatsapp_phone), "can_edit": can_edit, "can_edit_delivery_location": can_edit_location(db,user,order,payment_permissions), "can_sync": can_sync, "can_create_sync": can_create_sync,
         "can_reconcile_sync": can_reconcile_sync,
         "sync_label": SHOPIFY_SYNC_LABELS.get(
             order.shopify_sync_status, order.shopify_sync_status.replace("_", " ").title()),
@@ -3221,6 +3221,8 @@ def _sales_order_payload(order: SalesOrder) -> dict:
         "customer_id":order.customer_id, "customer_name": order.customer_name, "whatsapp_phone": order.whatsapp_phone,
         "alternative_phone": order.alternative_phone,
         "delivery_contact_person": order.delivery_contact_person,
+        **{key:getattr(order,key) for key in ("delivery_phone","delivery_alternative_phone","delivery_country","delivery_notes","delivery_method")},
+        "customer_country":__import__("order_recipient").customer_country(order.whatsapp_phone),
         "delivery_address": order.delivery_address, "city": order.city,
         "district": order.district, "postal_code": order.postal_code,
         "customer_notes": order.customer_notes, "notes": order.notes,
@@ -4750,3 +4752,25 @@ def _loyalty_crm_access(user,write=False):
 
 from loyalty_routes import build_router as build_loyalty_router
 app.include_router(build_loyalty_router(get_db,require_user,_require_csrf,_csrf_token,templates,_verify_sales_order_products,_loyalty_crm_access))
+
+@app.post('/api/sales-orders/identity/country')
+async def order_customer_country(request:Request,user=Depends(require_user)):
+    _require_sales_orders_enabled();_require_csrf(request)
+    if not {'create','edit'} & staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS):raise HTTPException(403,'Order editing permission required')
+    try:value=await request.json()
+    except ValueError:raise HTTPException(422,'Invalid request') from None
+    if not isinstance(value,dict) or not isinstance(value.get('phone'),str) or len(value['phone'])>64:raise HTTPException(422,'Invalid customer phone')
+    from order_recipient import customer_country
+    return JSONResponse({'country':customer_country(value['phone'])},headers={'Cache-Control':'private, no-store'})
+
+@app.get('/crm/order-entry',response_class=HTMLResponse)
+def manual_sales_entry(request:Request,user=Depends(require_user)):
+    _require_sales_orders_enabled();_require_sales_permission(user,'create')
+    return templates.TemplateResponse('manual_sales_order.html',{'request':request,'user':user,'page_title':'Create sales order','csrf_token':_csrf_token(request)},headers={'Cache-Control':'private, no-store'})
+
+@app.get('/api/sales-orders/catalog/search')
+def manual_order_catalog(q:str='',user=Depends(require_user)):
+    _require_sales_orders_enabled();_require_sales_permission(user,'create')
+    if len(q)>200:raise HTTPException(422,'Search is too long')
+    try:return search_products_for_inbox(q)
+    except ShopifyCatalogError:raise HTTPException(503,"Shopify catalogue is unavailable") from None

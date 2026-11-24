@@ -113,8 +113,10 @@ def _required_text(payload: dict, name: str, maximum: int) -> str:
 
 
 def _validate_phone(value: str) -> str:
-    phone = re.sub(r"\D", "", value or "")
-    if not 9 <= len(phone) <= 15:
+    from marketing_identity import phone as normalize
+    normalized=normalize(value)
+    phone=normalized[1:] if normalized else ""
+    if not phone:
         raise SalesOrderValidationError("whatsapp_phone is invalid")
     return phone
 
@@ -162,6 +164,10 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str, *
             discount_amount=calculated.discount_amount, tax_amount=calculated.tax_amount,
             line_total=calculated.line_total,
         ))
+    from order_recipient import values
+    try:
+        for key,value in values(payload).items():setattr(order,key,value)
+    except ValueError as exc:raise SalesOrderValidationError(str(exc)) from None
     db.add(order)
     try:
         if payload.get('_loyalty_managed'):
@@ -188,6 +194,8 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
         raise SalesOrderValidationError("A draft linked to Shopify cannot be edited in Ledger")
     if not isinstance(payload, dict):
         raise SalesOrderValidationError("A valid payload is required")
+    from order_recipient import FIELDS
+    recipient_before={key:getattr(order,key) for key in FIELDS}
     # Reuse creation validation without committing a second order.
     totals = calculate_order(payload.get("lines"), payload.get("order_discount", 0),
                              payload.get("shipping_total", 0), payload.get("tax_total", 0), payload.get("service_total", order.service_total or 0))
@@ -197,6 +205,14 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
     for field in ("alternative_phone", "delivery_contact_person", "delivery_address", "city",
                   "district", "postal_code", "customer_notes", "notes"):
         setattr(order, field, str(payload.get(field) or "").strip() or None)
+    from order_recipient import values
+    try:
+        for key,value in values(payload).items():setattr(order,key,value)
+    except ValueError as exc:raise SalesOrderValidationError(str(exc)) from None
+    recipient_after={key:getattr(order,key) for key in FIELDS}
+    if recipient_before!=recipient_after:
+        import json
+        db.add(SalesOrderStatusHistory(sales_order_id=order.id,previous_status=order.order_status,new_status=order.order_status,changed_by=actor,reason=json.dumps({'action':'DELIVERY_RECIPIENT_UPDATED','before':recipient_before,'after':recipient_after})))
     order.lines.clear()
     for raw, calculated in zip(payload["lines"], totals.lines):
         order.lines.append(SalesOrderLine(

@@ -7,7 +7,7 @@ from models import SalesOrder,SalesOrderStatusHistory,SalesFulfillment
 import conversation_access
 import customer_questions as questions
 
-FIELDS={'city':120,'district':120,'postal_code':30}
+from order_recipient import FIELDS,values as recipient_values
 EDITABLE={'DRAFT','AWAITING_CUSTOMER_CONFIRMATION','AWAITING_PAYMENT','PAYMENT_VERIFICATION','CONFIRMED','PROCESSING'}
 
 
@@ -63,22 +63,25 @@ def build_router(get_db,require_user,csrf,route_class):
             raw.extend(chunk)
         try:payload=json.loads(raw)
         except (ValueError,UnicodeError):raise HTTPException(422,'Invalid delivery location request') from None
-        if not isinstance(payload,dict) or set(payload)!={'version',*FIELDS} or not isinstance(payload['version'],str):
+        if not isinstance(payload,dict) or not {'version','city','district','postal_code'}<=set(payload) or set(payload)-{'version',*FIELDS} or not isinstance(payload.get('version'),str):
             raise HTTPException(422,'Provide the current city, district and postal code only')
         values={}
         for key,limit in FIELDS.items():
+            if key not in payload:continue
             value=payload[key]
-            if not isinstance(value,str) or len(value)>limit or any(ord(c)<32 or 127<=ord(c)<160 for c in value):
+            if not isinstance(value,str) or len(value)>limit or any((ord(c)<32 and not (key in {'delivery_address','delivery_notes'} and c in '\n\r')) or 127<=ord(c)<160 for c in value):
                 raise HTTPException(422,f'{key.replace("_"," ").title()} must be text with at most {limit} characters')
             values[key]=value.strip()
+        try:values={key:value or '' for key,value in recipient_values(values).items()}
+        except ValueError as exc:raise HTTPException(422,str(exc)) from None
         questions.write_transaction(db);order=access(db,user,oid,True)
-        before={key:getattr(order,key) or '' for key in FIELDS}
+        before={key:getattr(order,key) or '' for key in values}
         if before==values:return JSONResponse(public(order),headers={'Cache-Control':'private, no-store'})
         if payload['version']!=version(order):raise HTTPException(409,'Order changed. Refresh and review the delivery location before saving')
         for key,value in values.items():setattr(order,key,value or None)
         order.updated_at=datetime.utcnow()
         db.add(SalesOrderStatusHistory(sales_order_id=order.id,previous_status=order.order_status,new_status=order.order_status,
-            changed_by=user.username,reason=json.dumps({'action':'DELIVERY_LOCATION_UPDATED','before':before,'after':values},ensure_ascii=False)))
+            changed_by=user.username,reason=json.dumps({'action':'DELIVERY_LOCATION_UPDATED','before':{k:v for k,v in before.items() if v!=values[k]},'after':{k:v for k,v in values.items() if v!=before[k]}},ensure_ascii=False)))
         db.commit();db.refresh(order)
         return JSONResponse(public(order),headers={'Cache-Control':'private, no-store'})
     return router
