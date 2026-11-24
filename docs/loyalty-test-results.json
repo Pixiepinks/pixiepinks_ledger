@@ -1,0 +1,53 @@
+{
+  "baseline": "2c1457ffadcba8cd1f8469eec8801fe2bc7486e4",
+  "migration": "20261124_55",
+  "runs": {
+    "loyalty_crm": {
+      "passed": 187,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "inbox_finance": {
+      "passed": 135,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "commerce": {
+      "passed": 206,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "fulfillment_postgresql": {
+      "passed": 18,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "draft_postgresql": {
+      "passed": 53,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "permissions_final": {
+      "passed": 35,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "evidence_review": {
+      "passed": 1,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "distinct_tests_passed": 532,
+  "loyalty_distinct_tests": 68,
+  "unresolved": {},
+  "production_tests_executed": false,
+  "physical_android_tests_executed": false
+}

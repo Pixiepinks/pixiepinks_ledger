@@ -111,7 +111,9 @@ def test_postgresql_upgrade_concurrency_and_rollback(monkeypatch):
             c.execute(text("CREATE TABLE whatsapp_conversations(id SERIAL PRIMARY KEY,phone_number VARCHAR(50) NOT NULL,unread_count INTEGER NOT NULL DEFAULT 0,assigned_to_user_id INTEGER)"))
             c.execute(text("INSERT INTO users(username,password_hash,role) VALUES ('admin','PRESERVED','ADMIN'),('staff','PRESERVED','STAFF')"))
             c.execute(text("INSERT INTO whatsapp_conversations(phone_number,unread_count) VALUES ('94770000001',4)"))
-        command.stamp(cfg,'20261122_53');command.upgrade(cfg,'head');command.upgrade(cfg,'head')
+        # This minimal legacy fixture tests revision 54 only; later migrations
+        # require the full pre-existing commerce schema (covered in their suites).
+        command.stamp(cfg,'20261122_53');command.upgrade(cfg,'20261123_54');command.upgrade(cfg,'20261123_54')
         # Add the remaining mapped conversation fields to exercise service locks.
         with engine.begin() as c:
             for column in WhatsAppConversation.__table__.columns:
