@@ -28,7 +28,7 @@
       <select name="party_ids" class="border rounded-lg p-2 party-select customer-select hidden">
         <option value="">-- Select Customer --</option>
         {% for c in customers %}
-        <option value="{{ c.id }}">{{ c.name }}</option>
+        <option value="{{ c.id }}">{{ c.name }} · ID {{ c.id }}</option>
         {% endfor %}
       </select>
 
@@ -91,7 +91,7 @@ function addLine(){
 
     <select name="party_ids" class="border rounded-lg p-2 party-select customer-select hidden">
       <option value="">-- Select Customer --</option>
-      {% for c in customers %}<option value="{{ c.id }}">{{ c.name }}</option>{% endfor %}
+      {% for c in customers %}<option value="{{ c.id }}">{{ c.name }} · ID {{ c.id }}</option>{% endfor %}
     </select>
 
     <select name="party_ids" class="border rounded-lg p-2 party-select supplier-select hidden">

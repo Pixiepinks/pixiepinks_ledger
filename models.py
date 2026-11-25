@@ -58,7 +58,7 @@ class JournalLine(Base):
 class Customer(Base):
     __tablename__ = "customers"
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, nullable=False, unique=True)
+    name = Column(String, nullable=False, index=True)
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True)
     normalized_mobile=Column(String(20),index=True)

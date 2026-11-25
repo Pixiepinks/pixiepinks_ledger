@@ -50,13 +50,13 @@ def test_pos_register_attach_and_walkin_reset_without_leaving_billing(pos):
             response=r.client.request(req.method,u.path+('?' +u.query if u.query else ''),content=req.post_data_buffer,headers={k:v for k,v in req.headers.items() if k in {'content-type','x-csrf-token','idempotency-key'}})
             h.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k=='content-type'})
         page.route('https://register.test/**',route);page.goto('https://register.test/crm/pos');expect(page.locator('#pos-status')).to_contain_text('Register open')
-        page.locator('#pos-customer').click();modal=page.locator('#pos-modal');modal.get_by_label('Optional name',exact=True).fill('POS registration buyer');modal.get_by_label('Optional international customer mobile',exact=True).fill('+971501234567');modal.get_by_label('I have consent to save this operational contact',exact=True).check()
-        modal.get_by_role('button',name='Create new CRM customer',exact=True).click();expect(modal).to_contain_text('Customer registered and selected')
+        page.locator('#pos-customer').click();modal=page.locator('#pos-modal');modal.get_by_label('Customer name',exact=True).fill('POS registration buyer');modal.get_by_label('Customer mobile number',exact=True).fill('+971501234567');modal.get_by_label('I have consent to save this operational contact (not marketing consent)',exact=True).check()
+        modal.get_by_role('button',name='Register customer',exact=True).click();expect(modal).to_contain_text('Customer registered and selected')
         page.screenshot(path='/tmp/registration-pos-desktop.png',full_page=True)
         with r.sessions() as db:
             c=db.query(Customer).filter_by(name='POS registration buyer').one();cart=db.query(POSCart).filter_by(status='DRAFT').one();assert cart.payload['customer_id']==c.id and c.registration_source=='POS'
-        modal.get_by_role('button',name='Use walk-in (no customer profile)',exact=True).click();modal.get_by_role('button',name='Save sale details',exact=True).click();expect(modal).not_to_be_visible()
-        page.locator('#pos-customer').click();expect(page.locator('#pos-modal').get_by_label('Optional name',exact=True)).to_have_value('')
+        modal.get_by_role('button',name='Continue as walk-in',exact=True).click();expect(modal).not_to_be_visible()
+        page.locator('#pos-customer').click();expect(page.locator('#pos-modal').get_by_label('Customer name',exact=True)).to_have_value('')
         with r.sessions() as db:assert db.query(POSCart).filter_by(status='DRAFT').one().payload['customer_id'] is None
         assert not errors and not r.pos.calls
         b.close()
@@ -72,7 +72,7 @@ def test_late_pos_registration_response_cannot_attach_to_next_cart(pos):
             req=h.request;u=urlsplit(req.url);response=r.client.request(req.method,u.path+('?' +u.query if u.query else ''),content=req.post_data_buffer,headers={k:v for k,v in req.headers.items() if k in {'content-type','x-csrf-token','idempotency-key'}});h.fulfill(status=response.status_code,body=response.content,headers={k:v for k,v in response.headers.items() if k=='content-type'})
         page.route('https://late-register.test/**',route);page.goto('https://late-register.test/crm/pos');expect(page.locator('#pos-status')).to_contain_text('Register open')
         page.evaluate("""()=>{const original=window.fetch;window.fetch=async(...args)=>{const response=await original(...args);if(String(args[0]).endsWith('/api/customers')&&args[1]?.method==='POST')return new Promise(resolve=>{window.releaseRegistration=()=>resolve(response);});return response;};}""")
-        page.locator('#pos-customer').click();modal=page.locator('#pos-modal');modal.get_by_label('Optional name',exact=True).fill('Delayed customer contact');modal.get_by_label('Optional international customer mobile',exact=True).fill('+96550012345');modal.get_by_label('I have consent to save this operational contact',exact=True).check();modal.get_by_role('button',name='Create new CRM customer',exact=True).click();page.wait_for_function('typeof window.releaseRegistration==="function"')
+        page.locator('#pos-customer').click();modal=page.locator('#pos-modal');modal.get_by_label('Customer name',exact=True).fill('Delayed customer contact');modal.get_by_label('Customer mobile number',exact=True).fill('+96550012345');modal.get_by_label('I have consent to save this operational contact (not marketing consent)',exact=True).check();modal.get_by_role('button',name='Register customer',exact=True).click();page.wait_for_function('typeof window.releaseRegistration==="function"')
         modal.get_by_role('button',name='Close',exact=True).click();page.locator('#pos-clear').click();expect(page.locator('#pos-status')).to_contain_text('Unsent cart cancelled')
         page.locator('#pos-customer').click();page.evaluate('window.releaseRegistration()');expect(page.locator('#pos-status')).to_contain_text('active cart changed')
         with r.sessions() as db:
@@ -97,7 +97,7 @@ def test_late_crm_registration_cannot_attach_to_reopened_order(loyalty):
         page.locator('#close-order').click();page.locator('#create-order-button').click()
         page.evaluate('window.releaseCRMRegistration()')
         expect(page.locator('#order-loyalty-status')).to_contain_text('order details changed')
-        expect(page.locator('#order-loyalty-customer')).to_have_value('')
+        expect(page.locator('#order-customer-confirmed')).to_have_value('')
         with v.sessions() as db:
             assert db.query(Customer).filter_by(name='Delayed inquiry buyer').count()==1
             assert db.query(SalesOrder).count()==0 and db.query(JournalEntry).count()==0

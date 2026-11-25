@@ -29,7 +29,7 @@ def candidates(db,value):
 def local_time(value):
     if not value:return None
     instant=loyalty.stamp(value) if isinstance(value,str) else value
-    return instant.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Asia/Colombo')).strftime('%Y-%m-%d %H:%M Sri Lanka')
+    return instant.replace(tzinfo=timezone.utc).astimezone(ZoneInfo('Asia/Colombo')).strftime('%d %b %Y, %I:%M %p').replace(', 0', ', ')
 
 def describe(db,c):
     s=loyalty.member_summary(db,c.id)
@@ -66,7 +66,7 @@ def register(db,user,name,raw_phone,source,key=None,email=None):
         if prior.fingerprint!=fingerprint:raise HTTPException(409,'Registration key belongs to different details; review before retrying')
         return db.get(Customer,prior.customer_id),False
     matches=candidates(db,normalized)
-    if matches or any(name_key(c.name)==name_key(name) for c in db.query(Customer)):
+    if matches:
         loyalty.audit(db,'CUSTOMER_IDENTITY_CONFLICT','registration',user.username,None,{'source':source,'candidate_count':len(matches)},'Select an existing customer or request authorized identity review')
         raise HTTPException(409,'Existing or conflicting customer identity found. Search and explicitly select the correct Customer ID; do not register a duplicate.')
     if email is not None and (not isinstance(email,str) or len(email)>254):raise HTTPException(422,'Invalid optional email')
@@ -103,7 +103,7 @@ def edit_profile(db,user,cid,payload):
     c=db.query(Customer).filter_by(id=cid).populate_existing().with_for_update().one_or_none()
     if not c:raise HTTPException(404,'Customer not found')
     if payload['fingerprint']!=loyalty.fingerprint(c):raise HTTPException(409,'Customer identity changed; reload and review before saving')
-    others=[v for v in db.query(Customer) if v.id!=cid and (phone(v.phone)==normalized or name_key(v.name)==name_key(name))]
+    others=[v for v in db.query(Customer) if v.id!=cid and (phone(v.phone)==normalized)]
     if others:raise HTTPException(409,'Conflicting identity exists; use authorized identity review rather than merging profiles')
     before={'name':c.name,'phone':c.phone,'email':c.email};after={'name':name.strip(),'phone':normalized,'email':email.strip() or None}
     if before!=after:
