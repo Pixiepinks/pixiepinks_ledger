@@ -42,12 +42,23 @@ def process_one(sessions):
     try:
         with sessions() as db:
             if not svc.config(db):return False
-            job=db.query(LoyaltyRecalculation).filter_by(status='PENDING').order_by(LoyaltyRecalculation.updated_at).with_for_update(skip_locked=True).first()
+            candidate=db.query(LoyaltyRecalculation.customer_id).filter_by(status='PENDING').order_by(LoyaltyRecalculation.updated_at).first()
+            if not candidate:return False
+            cid=candidate[0]
+            # Same Customer -> outbox order as registration/order association.
+            customer=db.query(Customer).filter_by(id=cid).with_for_update(skip_locked=True).first()
+            if not customer:return False
+            job=db.query(LoyaltyRecalculation).filter_by(customer_id=cid,status='PENDING').with_for_update(skip_locked=True).first()
             if not job:return False
-            cid=job.customer_id;db.info['loyalty_processing']=True
+            db.info['loyalty_processing']=True
             mapping=[r.order_id for r in db.query(svc.LoyaltyOrderIdentity).filter_by(customer_id=cid)]
             for order in db.query(SalesOrder).filter((SalesOrder.customer_id==cid)|(SalesOrder.id.in_(mapping or [-1]))).order_by(SalesOrder.id):svc.sync_redemptions(db,order)
-            svc.refresh_member(db,cid);db.delete(job);db.commit();return True
+            member=db.query(svc.LoyaltyMember).filter_by(customer_id=cid).one_or_none()
+            summary=svc.member_summary(db,cid)
+            if member or summary['status']=='ACTIVE':
+                channel=summary['history']['orders'][0]['channel'] if summary['history']['orders'] else None
+                svc.refresh_member(db,cid,source='POS_COMPLETION' if channel=='POS' else 'CRM_COMPLETION' if channel=='CRM' else 'REVIEWED_SHOPIFY_HISTORY')
+            db.delete(job);db.commit();return True
     except Exception:
         if cid is not None:
             with sessions() as db:

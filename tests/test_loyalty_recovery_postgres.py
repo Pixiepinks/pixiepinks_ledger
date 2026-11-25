@@ -21,7 +21,7 @@ def recovered_schema(pg,monkeypatch):
     v=pg
     # Base metadata includes new tables; reconstruct genuine revision 55.
     for model in (LoyaltyRecoveryPlan,LoyaltyHistoricalOrder,LoyaltyHistoryScan):model.__table__.drop(v.engine)
-    command.upgrade(v.cfg,'head');command.upgrade(v.cfg,'head')
+    command.upgrade(v.cfg,'20261124_56');command.upgrade(v.cfg,'20261124_56')
     return v
 
 
@@ -39,7 +39,7 @@ def test_phase2a_additive_upgrade_rollback_preserves_identity_finance(recovered_
         assert c.execute(text('SELECT customer_id FROM sales_orders WHERE id=:i'),{'i':v.oid}).scalar()==v.cid
         assert c.execute(text('SELECT count(*) FROM sales_payments')).scalar()==1
         assert c.execute(text('SELECT count(*) FROM loyalty_audits')).scalar()==0
-    command.upgrade(v.cfg,'head')
+    command.upgrade(v.cfg,'20261124_56')
 
 
 def test_concurrent_approved_recovery_is_single_association(recovered_schema):
@@ -114,4 +114,4 @@ def test_copy_paste_console_works_before_phase2a_migration(recovered_schema,monk
     assert result['programme']==[{'enabled':False}] and result['channels'][0]['authoritative_links']==1
     assert 'Preserved customer' not in str(result) and '0771234567' not in str(result)
     with v.sessions() as db:assert db.query(SalesPayment).count()==1 and db.query(LoyaltyAudit).count()==0
-    command.upgrade(v.cfg,'head')
+    command.upgrade(v.cfg,'20261124_56')

@@ -61,6 +61,7 @@ def csrf(client):
 
 def payload(**overrides):
     value = {
+        "unidentified_reason":"Explicit authorized synthetic unidentified order",
         "customer_name": "Test Customer", "whatsapp_phone": "+94 77 123 4567",
         "shipping_total": "500.00", "order_discount": "100.00", "tax_total": "50.00",
         "lines": [

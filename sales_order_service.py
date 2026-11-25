@@ -136,6 +136,7 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str, *
     order = SalesOrder(
         internal_order_number=_order_number(), idempotency_key=idempotency_key,
         crm_conversation_id=payload.get("crm_conversation_id"), crm_lead_id=payload.get("crm_lead_id"),
+        unidentified_reason=(str(payload.get("unidentified_reason") or "Existing service-created unidentified order; no loyalty discount").strip()[:1000] if not payload.get("customer_id") else None),
         customer_id=payload.get("customer_id"), customer_name=_required_text(payload, "customer_name", 255),
         whatsapp_phone=_validate_phone(payload.get("whatsapp_phone", "")),
         alternative_phone=str(payload.get("alternative_phone") or "").strip() or None,
@@ -168,8 +169,14 @@ def create_draft(db: Session, payload: dict, actor: str, idempotency_key: str, *
     try:
         for key,value in values(payload).items():setattr(order,key,value)
     except ValueError as exc:raise SalesOrderValidationError(str(exc)) from None
+    if order.customer_id is not None:
+        from customer_registration import association
+        association(db,order.customer_id,order.whatsapp_phone)
     db.add(order)
     try:
+        db.flush()
+        from customer_registration import order_audit
+        order_audit(db,order,actor)
         if payload.get('_loyalty_managed'):
             db.flush()
             from loyalty_service import save_order_pricing
@@ -194,12 +201,17 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
         raise SalesOrderValidationError("A draft linked to Shopify cannot be edited in Ledger")
     if not isinstance(payload, dict):
         raise SalesOrderValidationError("A valid payload is required")
+    previous_customer_id=order.customer_id
     from order_recipient import FIELDS
     recipient_before={key:getattr(order,key) for key in FIELDS}
     # Reuse creation validation without committing a second order.
     totals = calculate_order(payload.get("lines"), payload.get("order_discount", 0),
                              payload.get("shipping_total", 0), payload.get("tax_total", 0), payload.get("service_total", order.service_total or 0))
     if 'customer_id' in payload:order.customer_id=payload['customer_id']
+    if order.customer_id is not None:
+        from customer_registration import association
+        association(db,order.customer_id,payload.get('whatsapp_phone'))
+    order.unidentified_reason=None if order.customer_id else str(payload.get('unidentified_reason') or order.unidentified_reason or 'Authorized existing draft without identification')[:1000]
     order.customer_name = _required_text(payload, "customer_name", 255)
     order.whatsapp_phone = _validate_phone(payload.get("whatsapp_phone", ""))
     for field in ("alternative_phone", "delivery_contact_person", "delivery_address", "city",
@@ -231,6 +243,9 @@ def update_draft(db: Session, order: SalesOrder, payload: dict, actor: str) -> S
     order.service_total = totals.service_total
     order.shipping_total, order.tax_total, order.grand_total = totals.shipping_total, totals.tax_total, totals.grand_total
     order.updated_at = datetime.utcnow()
+    if previous_customer_id!=order.customer_id:
+        from customer_registration import order_audit
+        order_audit(db,order,actor,previous_customer_id)
     if payload.get('_loyalty_managed'):
         db.flush()
         from loyalty_service import save_order_pricing
@@ -249,6 +264,10 @@ def transition_order(db: Session, order: SalesOrder, new_status: str, actor: str
         from loyalty_service import ensure_confirmation_pricing
         from fastapi import HTTPException
         try:ensure_confirmation_pricing(db,order,actor)
+        except HTTPException as exc:raise InvalidOrderTransition(str(exc.detail)) from None
+    if target=='CONFIRMED' and order.customer_id:
+        from customer_registration import association
+        try:association(db,order.customer_id,order.whatsapp_phone)
         except HTTPException as exc:raise InvalidOrderTransition(str(exc.detail)) from None
     previous = order.order_status
     order.order_status = target

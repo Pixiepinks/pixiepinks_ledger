@@ -1,0 +1,121 @@
+{
+  "baseline_main": "b760497df6478e948b541dd84e46c64340f8b5c9",
+  "branch": "feature/loyalty-phase2b-customer-registration",
+  "migration": "20261125_58",
+  "runs": {
+    "core-final3": {
+      "passed": 29,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "tests": 29,
+      "seconds": 21.95,
+      "modules": [
+        "tests.test_customer_registration",
+        "tests.test_customer_registration_pos",
+        "tests.test_customer_registration_postgres"
+      ]
+    },
+    "browser-latecrm": {
+      "passed": 5,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "tests": 5,
+      "seconds": 21.67,
+      "modules": [
+        "tests.test_customer_registration_browser"
+      ]
+    },
+    "final-regressions": {
+      "passed": 444,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "tests": 444,
+      "seconds": 599.01,
+      "modules": [
+        "tests.test_customer_registration_browser",
+        "tests.test_finance_reporting",
+        "tests.test_finance_reporting_pos",
+        "tests.test_inventory_phase3",
+        "tests.test_loyalty",
+        "tests.test_loyalty_browser",
+        "tests.test_loyalty_postgres",
+        "tests.test_loyalty_recovery",
+        "tests.test_loyalty_recovery_postgres",
+        "tests.test_manual_unread",
+        "tests.test_mobile_chat_layout",
+        "tests.test_order_recipient_browser",
+        "tests.test_pos",
+        "tests.test_pos_browser",
+        "tests.test_pos_daily",
+        "tests.test_pos_provisional_receipts",
+        "tests.test_pos_real_sale_pilot",
+        "tests.test_pos_receipt_tests",
+        "tests.test_pos_receipts_phase4g",
+        "tests.test_purchasing",
+        "tests.test_sales_orders_phase1",
+        "tests.test_sales_orders_phase2",
+        "tests.test_sales_payments_phase4b",
+        "tests.test_staff_access",
+        "tests.test_whatsapp_quick_messages"
+      ]
+    },
+    "inbox-final": {
+      "passed": 141,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "tests": 141,
+      "seconds": 198.22,
+      "modules": [
+        "tests.test_conversation_assignment",
+        "tests.test_crm_whatsapp_inbox",
+        "tests.test_inbox_collaboration",
+        "tests.test_inbox_reply_queue",
+        "tests.test_retail_barcode_retirement",
+        "tests.test_retail_phase1",
+        "tests.test_whatsapp_conversation_details",
+        "tests.test_whatsapp_phone_country"
+      ]
+    },
+    "draft-pg": {
+      "passed": 53,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "tests": 53,
+      "seconds": 7.67,
+      "modules": [
+        "tests.test_shopify_draft_order_sync"
+      ]
+    },
+    "fulfillment-pg": {
+      "passed": 18,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "tests": 18,
+      "seconds": 16.15,
+      "modules": [
+        "tests.test_sales_fulfillment_phase4d"
+      ]
+    }
+  },
+  "unique_tests": 686,
+  "unique_passed": 686,
+  "final_failed": 0,
+  "final_errors": 0,
+  "final_skipped": 0,
+  "new_feature_tests": 34,
+  "scope": "Local disposable SQLite/PostgreSQL, mocked external APIs and real Chromium; no production acceptance. Runs overlap: use unique count, not sum.",
+  "earlier_failures": "Resolved test helpers: explicit unidentified-order reasons, current per-customer fixture phones, fixture imports, non-admin CSRF retrieval and isolated PostgreSQL payment schema. Final listed runs are clean.",
+  "warnings": "Existing datetime.utcnow, framework lifespan and dependency deprecations remain; no warning treated as a passed test.",
+  "live_behaviour_unverified": [
+    "Production migration/runtime and worker health",
+    "Owner historical baseline and remaining historical orders",
+    "Physical Android acceptance",
+    "Production financial/Shopify/marketing side effects (not exercised)"
+  ]
+}

@@ -174,10 +174,12 @@ def edit_cart(db,user,cart_id,version,action,payload,client=None):
         customer=payload['customer_id']
         if customer is not None and (type(customer) is not int or not db.get(Customer,customer)):raise HTTPException(422,'Customer not found')
         for k in ['customer_name','phone','invoice_details','discount_reason']:inventory.text(payload[k],1000 if k=='invoice_details' else 255)
-        if payload['phone']:
-            from shopify_draft_order_service import normalize_sri_lankan_mobile
-            try:payload['phone']=normalize_sri_lankan_mobile(payload['phone'])
-            except ValueError:raise HTTPException(422,'Enter a valid Sri Lankan mobile number') from None
+        import customer_registration as registration
+        if payload['phone']:payload['phone']=registration.mobile(payload['phone'])
+        if customer is not None:
+            cprofile=registration.association(db,customer,payload['phone'])
+            payload['customer_name']=cprofile.name;payload['phone']=registration.mobile(cprofile.phone)
+        if customer!=p.get('customer_id'):audit(db,user,c.id,'CUSTOMER_SELECTED',previous_customer_id=p.get('customer_id'),customer_id=customer,walk_in=customer is None)
         p.update(payload)
     elif action in {'hold','resume','cancel'}:
         require(user,'hold' if action!='cancel' else 'void')
@@ -195,15 +197,15 @@ def authorize_discount(db,user,cart_id,version,reason):
     c.payload=p;c.version+=1;audit(db,user,c.id,'DISCOUNT_AUTHORIZED',**p['discount_approval']);db.commit();return c
 
 
-def create_customer(db,user,name,phone,consent):
+def create_customer(db,user,name,phone,consent,request_key=None):
     require(user,'sell');locked(db)
     if consent is not True:raise HTTPException(422,'Explicit operational contact consent required; marketing is separate')
-    name=inventory.text(name,255,True)
-    from shopify_draft_order_service import normalize_sri_lankan_mobile
-    try:phone=normalize_sri_lankan_mobile(phone)
-    except ValueError:raise HTTPException(422,'Valid mobile number required') from None
-    if db.query(Customer).filter((func.lower(Customer.name)==name.lower())|(func.replace(func.replace(func.replace(Customer.phone,' ',''),'-',''),'+','').in_([phone.lstrip('+'),'0'+phone[3:]]))).first():raise HTTPException(409,'Customer already exists; select their profile')
-    row=Customer(name=name,phone=phone);db.add(row);db.flush();audit(db,user,row.id,'CUSTOMER_CONSENT_RECORDED',purpose='POS contact only',marketing=False);db.commit();return row
+    import customer_registration as registration
+    try:r,created=registration.register(db,user,name,phone,'POS',request_key)
+    except HTTPException as exc:
+        if exc.status_code==409:db.commit()
+        raise
+    audit(db,user,r.id,'CUSTOMER_CONSENT_RECORDED',purpose='POS contact only',marketing=False);db.commit();return r
 
 
 def tenders(plan,total):
@@ -260,7 +262,8 @@ def checkout(db,user,cart_id,version,key,plan,client=None):
         if calc.money(observed['price'])!=calc.money(line['unit_price']) or observed['taxable']!=line['taxable']:raise HTTPException(409,'Product price/tax state changed; refresh cart')
         if type(observed.get('available')) is not int or observed['available']<line['quantity']:raise HTTPException(409,'Verified available stock is insufficient; no stock override is enabled')
     tender_plan=tenders(plan,Decimal(quote['grand_total']))
-    customer=db.get(Customer,c.payload['customer_id']) if c.payload.get('customer_id') else None
+    from customer_registration import association
+    customer=association(db,c.payload['customer_id'],c.payload.get('phone')) if c.payload.get('customer_id') else None
     reference='POS-'+secrets.token_hex(10).upper()
     order=SalesOrder(sales_channel='POS',internal_order_number=reference,idempotency_key='pos:'+c.id,customer_id=customer.id if customer else None,
         customer_name=customer.name if customer else c.payload['customer_name'] or 'Walk-in Customer',whatsapp_phone=customer.phone or '' if customer else c.payload['phone'],
