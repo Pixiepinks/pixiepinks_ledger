@@ -560,7 +560,7 @@
       for(const [id,key]of [['order-delivery-phone','delivery_phone'],['order-delivery-alt','delivery_alternative_phone'],['order-delivery-notes','delivery_notes'],['order-delivery-method','delivery_method']])orderInput(id).value=order?.[key]||(key==='delivery_method'?'DELIVERY':'');
       orderInput('order-same-recipient').checked=false;
       orderInput('order-customer-country').textContent=order?.customer_country||'Checking customer country…';
-      const countryPhone=orderInput('order-phone').value;api('/api/sales-orders/csrf').then(token=>api('/api/sales-orders/identity/country',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':token.csrf_token},body:JSON.stringify({phone:countryPhone})})).then(data=>{if(orderInput('order-phone').value===countryPhone)orderInput('order-customer-country').textContent=data.country?new Intl.DisplayNames(['en'],{type:'region'}).of(data.country):'Customer country unavailable';}).catch(()=>{orderInput('order-customer-country').textContent='Customer country unavailable';});
+
       orderInput("order-address").value = order?.delivery_address || currentConversationData?.order?.delivery_address || "";
       orderInput("order-city").value = order?.city || ""; orderInput("order-district").value = order?.district || ""; orderInput("order-postal").value = order?.postal_code || ""; orderInput("order-notes").value = order?.customer_notes || "";
       orderInput("order-discount").value = order?.loyalty?.base_order_discount || order?.discount_total || "0"; orderInput("order-shipping").value = order?.shipping_total || "0"; orderInput("order-tax").value = order?.tax_total || "0"; orderInput("order-service").value=order?.service_total||"0";

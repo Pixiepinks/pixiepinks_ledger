@@ -60,7 +60,7 @@ def test_crm_existing_customer_server_quote_and_saved_draft(loyalty,monkeypatch)
     monkeypatch.setattr(main,'search_products_for_inbox',lambda *args:{'products':[copy.deepcopy(product)],'has_more':False})
     with browser(v,1280) as (page,errors,calls):
         page.goto(f'https://loyalty.test/crm/whatsapp?conversation={cid}');expect(page.locator('#chat-phone')).to_have_text('94771234567');page.locator('#create-order-button').click()
-        page.locator('#order-loyalty-search').fill('Existing buyer');page.wait_for_function('document.getElementById("order-loyalty-customer").options.length>1');page.locator('#order-loyalty-customer').select_option(str(v.cid))
+        page.locator('#order-customer-search summary').click();page.locator('#order-loyalty-search').fill('Existing buyer');page.wait_for_function('document.getElementById("order-loyalty-customer").options.length>1');page.locator('#order-loyalty-customer').select_option(str(v.cid))
         page.locator('#order-add-product').click();page.locator('#order-product-results button').filter(has_text='Add').click()
         expect(page.locator('#order-loyalty-status')).to_contain_text('Server quote: LKR 4000.00')
         expect(page.locator('#order-preview-totals')).to_contain_text('LKR 4000.00')

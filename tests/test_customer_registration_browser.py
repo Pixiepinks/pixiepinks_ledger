@@ -24,7 +24,7 @@ def test_inbox_suggestions_quick_register_and_attach(loyalty,width,monkeypatch):
         with v.sessions() as db:assert db.query(Customer).count()==1 and db.query(LoyaltyMember).count()==0
         if width<600:page.get_by_role('button',name='More message actions').click()
         page.locator('#create-order-button').click();expect(page.locator('#order-loyalty-search')).to_have_value('96550012345')
-        page.locator('#order-register-customer').click();expect(page.locator('#order-registration-feedback')).to_contain_text('Customer registered and selected')
+        page.locator('#order-identity-confirm').check();page.locator('#order-register-customer').click();expect(page.locator('#order-registration-feedback')).to_contain_text('Customer registered and selected')
         page.locator('#order-add-product').click();page.locator('#order-product-results button').filter(has_text='Add').click()
         page.locator('.order-drawer-body').evaluate('(element)=>element.scrollTop=0')
         page.screenshot(path=f'/tmp/registration-crm-{width}.png',full_page=True)
@@ -92,7 +92,7 @@ def test_late_crm_registration_cannot_attach_to_reopened_order(loyalty):
         page.goto('https://loyalty.test/crm/whatsapp?conversation='+str(conversation))
         expect(page.locator('#chat-phone')).to_have_text('96550012345')
         page.evaluate("""()=>{const original=window.fetch;window.fetch=async(...args)=>{const response=await original(...args);if(String(args[0]).endsWith('/api/customer-registration/register'))return new Promise(resolve=>{window.releaseCRMRegistration=()=>resolve(response);});return response;};}""")
-        page.locator('#create-order-button').click();page.locator('#order-register-customer').click()
+        page.locator('#create-order-button').click();page.locator('#order-identity-confirm').check();page.locator('#order-register-customer').click()
         page.wait_for_function('typeof window.releaseCRMRegistration==="function"')
         page.locator('#close-order').click();page.locator('#create-order-button').click()
         page.evaluate('window.releaseCRMRegistration()')

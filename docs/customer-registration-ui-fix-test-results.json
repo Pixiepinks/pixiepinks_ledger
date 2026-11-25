@@ -1,0 +1,92 @@
+{
+  "baseline": "aa13ced46f4fed527ccfa1feabf7e11360d80ace",
+  "migration": "unchanged: 20261125_58",
+  "runs": {
+    "final": {
+      "tests": 56,
+      "passed": 56,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": [
+        "tests.test_customer_registration",
+        "tests.test_customer_registration_browser",
+        "tests.test_customer_registration_pos",
+        "tests.test_customer_registration_postgres",
+        "tests.test_customer_registration_ui_fix",
+        "tests.test_loyalty_browser",
+        "tests.test_order_recipient_browser",
+        "tests.test_whatsapp_phone_country"
+      ]
+    },
+    "layout-final": {
+      "tests": 24,
+      "passed": 24,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": [
+        "tests.test_customer_registration_browser",
+        "tests.test_customer_registration_ui_fix",
+        "tests.test_loyalty_browser",
+        "tests.test_order_recipient_browser"
+      ]
+    },
+    "regressions": {
+      "tests": 272,
+      "passed": 272,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": [
+        "tests.test_crm_whatsapp_inbox",
+        "tests.test_finance_reporting",
+        "tests.test_inventory_phase3",
+        "tests.test_loyalty",
+        "tests.test_loyalty_postgres",
+        "tests.test_manual_unread",
+        "tests.test_pos",
+        "tests.test_pos_daily",
+        "tests.test_pos_receipt_tests",
+        "tests.test_purchasing",
+        "tests.test_staff_access"
+      ]
+    },
+    "screenshots": {
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "modules": [
+        "tests.test_customer_registration_ui_fix"
+      ]
+    }
+  },
+  "distinct_passed": 329,
+  "final_failed": 0,
+  "final_errors": 0,
+  "final_skipped": 0,
+  "postgres_module_cases": 11,
+  "baseline_defect_reproduction": {
+    "tests": 1,
+    "passed": 1,
+    "note": "An isolated test on pre-fix code reproduced the raw fetch error, misleading country unavailable and oversized checkbox. Excluded from distinct passing feature/regression count."
+  },
+  "warnings": "Existing UTC/framework/dependency deprecations remain. Screenshots run selected two cases; ten deselected are not skipped tests.",
+  "earlier_failures": "Recipient exact-text/unnormalized-mobile assertions and optional-search visibility helper were updated for the intentional new UI; final affected browser suite passed.",
+  "source_sha256": {
+    "customer_registration.py": "9d3e8b7d6dc15877f64abc8bba7229ead3c9ed60e9fbc10011a253cf18a95dfa",
+    "static/loyalty_order.js": "530f1f68cbf14303c4f86db84268a07f85f12dec5073f2a1c6ac921b45864e7b",
+    "static/loyalty_order.css": "81ea88241ec0743bcb7bb5722c09c7947b9c2ca2503862c7397085f565114b65",
+    "static/whatsapp_inbox.js": "1228dfe2f6506f89a9b877e555a5f00a7dcfc62dff236cd499074930c7a93c5b",
+    "templates/whatsapp_inbox.html": "afd69f7d5e456ffec46c269ffa37ea04db58f7352382c6b3947978080053cd36"
+  },
+  "production_unverified": [
+    "Exact cause of live network failure",
+    "Production deployment/asset source identity",
+    "Actual signed-in staff account/grants and browser request outcome",
+    "Real Android operator acceptance"
+  ],
+  "production_mutations": false
+}
