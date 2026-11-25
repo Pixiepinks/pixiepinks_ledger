@@ -1,0 +1,209 @@
+{
+  "baseline_main": "887af276c290ecee2f553b84788af2d980dbba4a",
+  "branch": "feature/inbox-customer-panel-stability",
+  "migration": "unchanged: 20261125_59",
+  "new_environment_variables": [],
+  "distinct_tests_passed_final": 538,
+  "new_feature_cases": 30,
+  "postgres_related_cases": 19,
+  "remaining_failures": 0,
+  "remaining_errors": 0,
+  "remaining_skips": 0,
+  "runs": {
+    "stability-regressions": {
+      "tests": 316,
+      "passed": 315,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [
+        "tests.test_whatsapp_conversation_details::test_postgresql_read_only_details_query_uses_real_conversation_and_analysis"
+      ],
+      "modules": [
+        "tests.test_ad_flows",
+        "tests.test_conversation_assignment",
+        "tests.test_crm_whatsapp_inbox",
+        "tests.test_customer_registration",
+        "tests.test_customer_registration_postgres",
+        "tests.test_inbox_collaboration",
+        "tests.test_inbox_reply_queue",
+        "tests.test_loyalty",
+        "tests.test_loyalty_postgres",
+        "tests.test_manual_unread",
+        "tests.test_pos",
+        "tests.test_saved_voices",
+        "tests.test_whatsapp_conversation_details",
+        "tests.test_whatsapp_quick_messages",
+        "tests.test_whatsapp_reply_context"
+      ]
+    },
+    "stability-extra": {
+      "tests": 210,
+      "passed": 208,
+      "failed": 2,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [
+        "tests.test_marketing_consent::test_customer_phone_change_and_recreated_customer_do_not_transfer_permission",
+        "tests.test_marketing_consent::test_identity_reconciliation_never_grants_and_import_cannot_restore_out"
+      ],
+      "modules": [
+        "tests.test_customer_final_browser",
+        "tests.test_customer_registration_browser",
+        "tests.test_loyalty_browser",
+        "tests.test_marketing_consent",
+        "tests.test_marketing_consent_buttons",
+        "tests.test_marketing_consent_ui",
+        "tests.test_mobile_chat_layout",
+        "tests.test_order_recipient_browser",
+        "tests.test_single_row_filters",
+        "tests.test_whatsapp_conversation_details",
+        "tests.test_whatsapp_incoming_media",
+        "tests.test_whatsapp_outbound_media"
+      ]
+    },
+    "panel-final": {
+      "tests": 72,
+      "passed": 72,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [],
+      "modules": [
+        "tests.test_inbox_customer_panel",
+        "tests.test_inbox_customer_panel_browser",
+        "tests.test_marketing_consent",
+        "tests.test_whatsapp_conversation_details"
+      ]
+    },
+    "panel-final3": {
+      "tests": 30,
+      "passed": 28,
+      "failed": 2,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [
+        "tests.test_inbox_customer_panel::test_postgres_active_projection_is_valid_in_readonly_transaction",
+        "tests.test_inbox_customer_panel_browser::test_audio_scroll_composer_pending_attachment_and_new_messages_survive_polling"
+      ],
+      "modules": [
+        "tests.test_inbox_customer_panel",
+        "tests.test_inbox_customer_panel_browser"
+      ]
+    },
+    "stability-targets": {
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [],
+      "modules": [
+        "tests.test_inbox_customer_panel",
+        "tests.test_inbox_customer_panel_browser"
+      ]
+    },
+    "panel-geometry-final": {
+      "tests": 7,
+      "passed": 7,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [],
+      "modules": [
+        "tests.test_inbox_customer_panel_browser",
+        "tests.test_mobile_chat_layout"
+      ]
+    },
+    "panel-polling-final": {
+      "tests": 4,
+      "passed": 4,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [],
+      "modules": [
+        "tests.test_inbox_customer_panel_browser"
+      ]
+    }
+  },
+  "before": {
+    "390": {
+      "polls_after_initial": 5,
+      "customer_requests": 6,
+      "dom_mutations": 15,
+      "initial_node_retained": false
+    },
+    "1280": {
+      "polls_after_initial": 5,
+      "customer_requests": 6,
+      "dom_mutations": 15,
+      "initial_node_retained": false
+    }
+  },
+  "after": {
+    "390-False": {
+      "polls_after_initial": 5,
+      "message_detail_requests": 6,
+      "customer_requests": 1,
+      "unchanged_panel_mutations": 0,
+      "stable_profile_order_and_customer_nodes": true
+    },
+    "390-True": {
+      "polls_after_initial": 5,
+      "message_detail_requests": 6,
+      "customer_requests": 1,
+      "unchanged_panel_mutations": 0,
+      "stable_profile_order_and_customer_nodes": true
+    },
+    "1280-False": {
+      "polls_after_initial": 5,
+      "message_detail_requests": 6,
+      "customer_requests": 1,
+      "unchanged_panel_mutations": 0,
+      "stable_profile_order_and_customer_nodes": true
+    },
+    "1280-True": {
+      "polls_after_initial": 5,
+      "message_detail_requests": 6,
+      "customer_requests": 1,
+      "unchanged_panel_mutations": 0,
+      "stable_profile_order_and_customer_nodes": true
+    }
+  },
+  "identity_request_reduction_in_short_window_percent": 83.3,
+  "message_poll_interval_ms": 4000,
+  "list_poll_interval_ms": 7000,
+  "identity_cache_ms": 12000,
+  "production_programme_setting_written": false,
+  "on_preservation_verified": "Existing ON configuration/version preserved by repeated reads and repeated migrations in isolated databases. Live production state was not accessed.",
+  "resolved_issues": [
+    "Local PostgreSQL server unavailable after environment restart; restored and affected cases passed.",
+    "Two legacy consent-deletion tests isolated from unrelated loyalty outbox FKs in disposable Session factories only; original consent assertions passed.",
+    "Browser harness differentiated main message polling from existing media-status polling; monotonic test clock corrected.",
+    "Synthetic audio/reply fixtures received provider IDs and respect attachment/composer exclusivity; actual playback, rate, scroll, draft and attachment checks passed.",
+    "New PostgreSQL projection fixture explicitly enables sales orders before testing a confirmed order association; read-only SQL assertion passed."
+  ],
+  "voice_evidence": "Actual Chromium playback of generated silent WAV retains element/time progression, UI-selected 1.5x speed and zero pause events across message polls/new arrival. Native MediaRecorder uses a synthetic in-browser stream; no physical microphone or customer messages.",
+  "scroll_and_draft_evidence": "Older-message anchoring, near-bottom scrolling, text/cursor/focus/quoted reply, pending image/video/PDF, recording and per-conversation text restoration passed.",
+  "warnings": "Existing UTC/framework/dependency deprecation warnings remain.",
+  "before_capture_tests": {
+    "passed": 2,
+    "excluded_from_feature_total": true
+  },
+  "source_sha256": {
+    "main.py": "a735ec14da12da827e97201f362962b45ae8cbac3660e5edecfb3f60555cc026",
+    "inbox_customer_panel.py": "1fd200b5b4c683327616743b6835de868414fdee9cb98475dd51342a7bd25572",
+    "static/inbox_customer_panel.js": "433319873acce457fa256f239a81a6055e127985f8b754dab4cac984cbcf31e4",
+    "static/whatsapp_inbox.js": "ef534f9223e800feb018a0eadb15554cec2280291d3143078dcafa5d7f5ba28c",
+    "static/marketing_consent.js": "60af581638026f27ae923881986bd0878393c274dda1fc4f768ddec2b96dacaf",
+    "static/loyalty_order.js": "78026f436cbd7ea52b955c4fc46ccf7ba46405b7ecc7acc4249622f47f922808",
+    "static/loyalty_order.css": "fc84fccf61c24b95f39b2984095bc7fb4846cbfebf2f83086bc9d8e892ef2124",
+    "templates/whatsapp_inbox.html": "c85effad5017795c6003923c2640d7ad5af713d68203331508ccaaa064cd7070"
+  },
+  "unverified": [
+    "Live deployment identity/cause and production traffic latency",
+    "Physical Android/PWA and live Meta playback/network",
+    "Actual owner programme/rule and historical baseline after deployment"
+  ]
+}

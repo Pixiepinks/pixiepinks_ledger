@@ -4,14 +4,14 @@
   if(!dialog)return;
   const content=document.getElementById('marketing-consent-content'),feedback=document.getElementById('marketing-consent-feedback');
   const csrf=dashboard?.dataset.csrf || inbox?.dataset.assignmentCsrf;
-  let generation=0,current=null,offset=0,tableGeneration=0,widgetGeneration=0,widgetCid=null,widgetLoading=false;
+  let generation=0,current=null,offset=0,tableGeneration=0,widgetGeneration=0,widgetCid=null,widgetLoading=false,widgetSignature=null,widgetLastAttempt=null,widgetController=null;
   const node=(tag,text)=>{const el=document.createElement(tag);if(text!=null)el.textContent=text;return el;};
   const readable=value=>(value||'—').replaceAll('_',' ');
   const date=value=>value?new Date(value).toLocaleString('en-GB',{timeZone:'Asia/Colombo'}):'—';
   const statusLabel=row=>row.status==='PENDING'?`PENDING — ${row.needs_review?'Staff review required':'Awaiting customer'}`:readable(row.status);
   const badge=status=>{const el=node('span',readable(status));el.className='marketing-status';el.dataset.status=status;return el;};
-  async function api(path,body,headers={}){
-    const response=await fetch(path,{credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...headers},...(body?{method:'POST',body:JSON.stringify(body)}:{})});
+  async function api(path,body,headers={},signal){
+    const response=await fetch(path,{credentials:'same-origin',cache:'no-store',signal,headers:{'Content-Type':'application/json','X-CSRF-Token':csrf,...headers},...(body?{method:'POST',body:JSON.stringify(body)}:{})});
     let data={};try{data=await response.json();}catch(_){}
     if(!response.ok||response.redirected)throw new Error(typeof data.detail==='string'?data.detail:data.error||'Consent service is unavailable. Refresh before retrying.');return data;
   }
@@ -26,7 +26,7 @@
   async function act(row,data){
     const token=generation;
     try{feedback.textContent='Saving…';await api(endpoint(row.id)+'/action',{...data,version:row.version,key:crypto.randomUUID()});
-      if(token!==generation)return;feedback.textContent='Consent change saved. No message was sent.';await loadCurrent();if(inbox)loadWidget();else loadTable();
+      if(token!==generation)return;feedback.textContent='Consent change saved. No message was sent.';await loadCurrent();if(inbox)loadWidget(true);else loadTable();
     }catch(error){if(token===generation)feedback.textContent=error.message;}
   }
   function render(data){
@@ -84,7 +84,7 @@
             try{
               await api(`/crm/whatsapp/api/conversations/${row.conversation_id}/send`,{message:result.text,marketing_request_id:result.request_id},{'Idempotency-Key':result.key});
               if(token!==generation)return;feedback.textContent='Request accepted for sending. Pending is not marketing consent.';
-              try{sessionStorage.removeItem(slot);}catch(_){}await loadCurrent();if(inbox)loadWidget();else loadTable();
+              try{sessionStorage.removeItem(slot);}catch(_){}await loadCurrent();if(inbox)loadWidget(true);else loadTable();
             }catch(error){if(token===generation)feedback.textContent=error.message+' Check the existing request; do not resend automatically.';}
           });
           previewArea.append(send);
@@ -114,7 +114,7 @@
         e.preventDefault();if(decision.value==='approve'&&!confirmation.checked){feedback.textContent='Explicit verification confirmation is required.';return;}
         submit.disabled=true;const token=generation;
         const payload={event_id:review.event_id,decision:decision.value,confirmed:confirmation.checked,reason:reason.value,version:row.version,key:crypto.randomUUID()};
-        try{await api(endpoint(row.id)+'/review',payload);if(token!==generation)return;feedback.textContent='Review recorded. No message was sent.';await loadCurrent();if(inbox)loadWidget();else loadTable();}
+        try{await api(endpoint(row.id)+'/review',payload);if(token!==generation)return;feedback.textContent='Review recorded. No message was sent.';await loadCurrent();if(inbox)loadWidget(true);else loadTable();}
         catch(error){if(token===generation)feedback.textContent=error.message+' Refresh before retrying.';}
         finally{if(token===generation)submit.disabled=false;}
       };section.append(form);
@@ -144,17 +144,19 @@
       if(data.next_before){const more=button('Older history',()=>{more.remove();history(id,data.next_before,target);});target.append(more);}
     }catch(error){if(token===generation)feedback.textContent=error.message;}
   }
-  async function loadWidget(){
-    if(!inbox || !widgetCid || widgetLoading)return;const cid=widgetCid,token=widgetGeneration;widgetLoading=true;
+  async function loadWidget(force=false){
+    if(!inbox||!widgetCid)return;if(widgetLoading){if(!force)return;widgetGeneration++;widgetController?.abort();widgetLoading=false;}
+    if(!force&&widgetLastAttempt!==null&&performance.now()-widgetLastAttempt<12000)return;
+    const cid=widgetCid,token=widgetGeneration;widgetLastAttempt=performance.now();widgetLoading=true;widgetController=new AbortController();
     try{
-      const data=await api(`/crm/whatsapp/api/conversations/${cid}/marketing-consent`);if(token!==widgetGeneration)return;
-      const box=document.getElementById('marketing-consent-summary');box.replaceChildren(badge(data.contact.status),node('p',statusLabel(data.contact)),node('p',`Interested in: ${data.contact.interests.join(', ')||'—'}`),node('p',`Source: ${readable(data.contact.source)} · Consent: ${date(data.contact.consent_at)}`),node('p',`Updated: ${date(data.contact.updated_at)}`));
+      const data=await api(`/crm/whatsapp/api/conversations/${cid}/marketing-consent`,undefined,{},widgetController.signal);if(token!==widgetGeneration)return;
+      const box=document.getElementById('marketing-consent-summary'),signature=JSON.stringify([cid,data.contact.id,data.contact.status,data.contact.interests,data.contact.source,data.contact.consent_at,data.contact.updated_at,data.contact.needs_review]);if(signature!==widgetSignature){widgetSignature=signature;box.replaceChildren(badge(data.contact.status),node('p',statusLabel(data.contact)),node('p',`Interested in: ${data.contact.interests.join(', ')||'—'}`),node('p',`Source: ${readable(data.contact.source)} · Consent: ${date(data.contact.consent_at)}`),node('p',`Updated: ${date(data.contact.updated_at)}`));}
       document.getElementById('marketing-consent-panel').hidden=false;document.getElementById('marketing-consent-manage').onclick=()=>open(data.contact.id);
-    }catch(_){if(token===widgetGeneration){document.getElementById('marketing-consent-panel').hidden=false;document.getElementById('marketing-consent-summary').textContent='Consent unavailable. Refresh to retry.';}}
+    }catch(_){if(token===widgetGeneration){widgetSignature=null;document.getElementById('marketing-consent-panel').hidden=false;const box=document.getElementById('marketing-consent-summary');if(box.textContent!=='Consent unavailable. Refresh to retry.')box.textContent='Consent unavailable. Refresh to retry.';}}
     finally{if(token===widgetGeneration)widgetLoading=false;}
   }
   if(inbox){
-    inbox.addEventListener('inbox-conversation',e=>{widgetCid=e.detail.id;widgetGeneration++;widgetLoading=false;document.getElementById('marketing-consent-panel').hidden=true;dialog.close();});
+    inbox.addEventListener('inbox-conversation',e=>{widgetCid=e.detail.id;widgetGeneration++;widgetController?.abort();widgetController=null;widgetLoading=false;widgetSignature=null;widgetLastAttempt=null;document.getElementById('marketing-consent-summary').replaceChildren();document.getElementById('marketing-consent-panel').hidden=true;dialog.close();});
     inbox.addEventListener('inbox-conversation-data',e=>{widgetCid=e.detail.id;loadWidget();});
     document.getElementById('marketing-consent-from-details').onclick=async()=>{
       document.getElementById('conversation-details-dialog').close();
