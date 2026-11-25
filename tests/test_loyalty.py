@@ -32,7 +32,7 @@ def loyalty(inbox,monkeypatch):
 
 def line(quantity='1',discount='0'):
     return {'shopify_product_id':'gid://shopify/Product/1','shopify_variant_id':'gid://shopify/ProductVariant/1','product_name':'School bag','variant_name':'Pink','unit_price':'4500','currency':'LKR','quantity':quantity,'discount_amount':discount,'tax_amount':'0'}
-def payload(cid=None,**changes):return {'customer_id':cid,'customer_name':'Existing buyer','whatsapp_phone':'94771234567','lines':[line()],**changes}
+def payload(cid=None,**changes):return {'unidentified_reason':'Explicit authorized synthetic unidentified order' if cid is None else None,'customer_id':cid,'customer_name':'Existing buyer','whatsapp_phone':'94771234567','lines':[line()],**changes}
 def source(v,paid=True,status='DELIVERED',refund='0',customer=True,key=None):
     with v.sessions() as db:
         o,_=orders.create_draft(db,payload(v.cid if customer else None), 'fixture',key or str(uuid4()))

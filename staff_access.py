@@ -101,6 +101,9 @@ def section_for(path):
 def enforce(user,path):
     if getattr(user,'section_access',None) is None or user.role=='ADMIN':return
     if path in {'/','/staff-home','/logout'}:return
+    if path.startswith('/api/customer-registration/'):
+        if not any(allowed(user,k) for k in ('sales_orders','pos.sell','customers')):raise HTTPException(403,'Customer operational access required')
+        return  # Registration router enforces the selected channel's action permissions.
     if path.startswith('/crm/retail/'):
         if not any(allowed(user,key) for key in KEYS if key.startswith('retail.')):raise HTTPException(403,'Retail access has not been granted')
         return  # Every retail endpoint enforces its granular permission.

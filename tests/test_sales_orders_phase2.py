@@ -37,7 +37,7 @@ def verified(product_id, variant_id):
 
 
 def order_payload(conversation_id):
-    return {"crm_conversation_id": conversation_id, "customer_name": "Shopper",
+    return {"unidentified_reason":"Explicit authorized synthetic unidentified order","crm_conversation_id": conversation_id, "customer_name": "Shopper",
             "whatsapp_phone": "+94 77 123 4567", "shipping_total": "0", "lines": [{
                 "shopify_product_id": "gid://shopify/Product/1",
                 "shopify_variant_id": "gid://shopify/ProductVariant/11", "quantity": "1",

@@ -61,6 +61,22 @@ class Customer(Base):
     name = Column(String, nullable=False, unique=True)
     email = Column(String, nullable=True)
     phone = Column(String, nullable=True)
+    normalized_mobile=Column(String(20),index=True)
+    registration_source=Column(String(30))
+    registered_at=Column(DateTime)
+
+class CustomerPhoneLock(Base):
+    __tablename__='customer_phone_locks'
+    phone=Column(String(20),primary_key=True)
+
+class CustomerRegistration(Base):
+    __tablename__='customer_registrations'
+    request_key=Column(String(100),primary_key=True)
+    customer_id=Column(Integer,ForeignKey('customers.id'),nullable=False,index=True)
+    fingerprint=Column(String(64),nullable=False)
+    source=Column(String(30),nullable=False)
+    actor_id=Column(Integer,ForeignKey('users.id'),nullable=False)
+    created_at=Column(DateTime,nullable=False,default=datetime.utcnow)
 
 class Supplier(Base):
     __tablename__ = "suppliers"
@@ -111,6 +127,7 @@ class SalesOrder(Base):
     crm_conversation_id = Column(Integer, ForeignKey("whatsapp_conversations.id"), index=True)
     crm_lead_id = Column(Integer, ForeignKey("leads.id"), index=True)
     customer_id = Column(Integer, ForeignKey("customers.id"), index=True)
+    unidentified_reason=Column(String(1000))
     customer_name = Column(String(255), nullable=False)
     whatsapp_phone = Column(String(50), nullable=False, index=True)
     alternative_phone = Column(String(50))

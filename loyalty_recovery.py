@@ -137,6 +137,9 @@ def execute(db,user,job,digest):
         db.query(model).filter_by(id=item['id']).populate_existing().with_for_update().one_or_none()
     target_ids=sorted({i['customer_id'] for i in job.items if i['action']=='ASSOCIATE'})
     if target_ids:db.query(Customer).filter(Customer.id.in_(target_ids)).order_by(Customer.id).populate_existing().with_for_update().all()
+    from customer_registration import lock_mobile
+    for item in job.items:
+        if item['action']=='CREATE':lock_mobile(db,item['create_phone'])
     # Verify every source and target before creating any customer/mapping.
     for item in job.items:
         if item.get('shop')!=(settings.SHOPIFY_SHOP or '').lower():svc.fail('Recovery shop identity changed; review a new preview',409)
@@ -150,7 +153,7 @@ def execute(db,user,job,digest):
         results=[]
         for item in job.items:
             if item['action']=='CREATE':
-                customer=Customer(name=item['create_name'],phone=item['create_phone']);db.add(customer);db.flush();cid=customer.id
+                customer=Customer(name=item['create_name'],phone=item['create_phone'],normalized_mobile=item['create_phone'],registration_source='HISTORICAL_REVIEW',registered_at=datetime.utcnow());db.add(customer);db.flush();cid=customer.id
             else:cid=item['customer_id']
             if item['kind']=='LOCAL':
                 db.add(LoyaltyOrderIdentity(order_id=item['id'],customer_id=cid,actor_id=user.id,reason=job.approval_reason))

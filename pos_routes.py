@@ -128,12 +128,12 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
 
     @router.get('/api/customers')
     def customers(q:str=Query(...,min_length=2,max_length=100),db=Depends(get_db),user=Depends(require_user)):
-        service.require(user,'sell');escaped=q.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
-        rows=db.query(Customer).filter((Customer.name.ilike('%'+escaped+'%',escape='\\'))|(Customer.phone.ilike('%'+escaped+'%',escape='\\'))).order_by(Customer.id).limit(20)
-        return out({'rows':[{'id':r.id,'name':r.name,'phone':r.phone} for r in rows]})
+        service.require(user,'sell')
+        from customer_registration import search
+        return out(search(db,q))
     @router.post('/api/customers')
     async def new_customer(request:Request,db=Depends(get_db),user=Depends(require_user)):
-        p=await body(request,['name','phone','consent']);r=service.create_customer(db,user,p['name'],p['phone'],p['consent']);return out({'id':r.id,'name':r.name,'phone':r.phone})
+        p=await body(request,['name','phone','consent']);r=service.create_customer(db,user,p['name'],p['phone'],p['consent'],request.headers.get('Idempotency-Key'));return out(__import__('customer_registration').describe(db,r))
     @router.post('/api/customer-bindings')
     async def bind(request:Request,db=Depends(get_db),user=Depends(require_user)):
         p=await body(request,['customer_id','shopify_customer_id']);r=service.bind_customer(db,user,**p);return out({'id':r.id})

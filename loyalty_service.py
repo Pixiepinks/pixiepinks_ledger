@@ -320,7 +320,10 @@ def prepare_order(db,payload,order=None,actor='staff'):
     data['_loyalty_managed']=True
     if order and 'customer_id' not in data:data['customer_id']=order.customer_id
     cid=data.get('customer_id')
-    if not cid:return data
+    if not cid:
+        why=data.get('unidentified_reason')
+        if not isinstance(why,str) or not 3<=len(why.strip())<=1000:fail('Select/register a customer, or explicitly provide an authorized unidentified-order reason')
+        data['unidentified_reason']=why.strip();return data
     if not isinstance(cid,int) or isinstance(cid,bool) or not db.get(Customer,cid):fail('Choose an existing customer')
     # Identity is explicit, never matched/merged from the WhatsApp phone automatically.
     if phone(data.get('whatsapp_phone'))!=phone(db.get(Customer,cid).phone):fail('Selected customer mobile differs; reconcile identity before applying loyalty',409)

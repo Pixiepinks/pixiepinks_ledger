@@ -32,6 +32,7 @@ def test_manual_customer_and_recipient_create_local_only(loyalty,width,monkeypat
     with browser(v,width) as (page,errors,calls):
         page.goto('https://loyalty.test/crm/order-entry')
         form=page.locator('#manual-order');form.locator('[name=customer_name]').fill('Overseas buyer');form.locator('[name=whatsapp_phone]').fill('+971501234567');form.locator('[name=delivery_contact_person]').fill('Local recipient');form.locator('[name=delivery_phone]').fill('0771234567')
+        page.locator('#manual-unidentified').check();form.locator('[name=unidentified_reason]').fill('Authorized synthetic gift order without registered buyer')
         page.locator('#manual-search').fill('School bag');page.locator('#manual-find').click();page.get_by_role('button',name='Add variant').click()
         page.screenshot(path=f'/tmp/recipient-manual-{width}.png',full_page=True)
         form.get_by_role('button',name='Save local draft').click();page.wait_for_url('**/crm/sales-orders/*')

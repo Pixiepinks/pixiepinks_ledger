@@ -2121,25 +2121,32 @@ def create_account(
 
 # ---------------------- Customers ----------------------
 @app.get("/customers", response_class=HTMLResponse)
-def list_customers(request: Request, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    customers = db.query(Customer).order_by(Customer.name).all()
-    return templates.TemplateResponse("customers.html", {"request": request, "customers": customers})
+def list_customers(request: Request, q:str='',offset:int=0, db: Session = Depends(get_db), user: User = Depends(require_user)):
+    import customer_registration as registration
+    if not staff_access.allowed(user,'customers'):raise HTTPException(403,'Customer management access required')
+    if offset<0 or offset>100000:raise HTTPException(422,'Invalid customer page')
+    if q:
+        ids={r['id'] for r in registration.search(db,q)['rows']};customers=db.query(Customer).filter(Customer.id.in_(ids)).order_by(Customer.id).all()
+    else:customers=db.query(Customer).order_by(Customer.id).offset(offset).limit(50).all()
+    return templates.TemplateResponse('customers.html',{'request':request,'user':user,'customers':customers,'summaries':{c.id:registration.describe(db,c) for c in customers},'csrf_token':_csrf_token(request),'registration_key':secrets.token_urlsafe(24),'q':q,'offset':offset},headers={'Cache-Control':'private, no-store'})
 
-@app.post("/customers")
-def create_customer(name: str = Form(...), email: str = Form(""), phone: str = Form(""), db: Session = Depends(get_db), user: User = Depends(require_user)):
-    c = Customer(name=name.strip(), email=email.strip(), phone=phone.strip())
-    db.add(c)
-    db.commit()
-    return RedirectResponse("/customers", status_code=303)
+@app.post('/customers')
+def create_customer(request:Request,name:str=Form(...),email:str=Form(''),phone:str=Form(''),csrf_token:str=Form(''),registration_key:str=Form(''),db:Session=Depends(get_db),user:User=Depends(require_user)):
+    if not staff_access.allowed(user,'customers'):raise HTTPException(403,'Customer management access required')
+    if not csrf_token or not hmac.compare_digest(csrf_token,request.session.get('csrf_token','')):raise HTTPException(403,'Invalid CSRF token')
+    import customer_registration as registration
+    try:registration.register(db,user,name,phone,'CUSTOMER_MANAGEMENT',registration_key,email)
+    except HTTPException as exc:
+        if exc.status_code==409:db.commit()
+        raise
+    db.commit();return RedirectResponse('/customers',status_code=303)
 
-@app.post("/customers/{cust_id}/delete")
-def delete_customer(cust_id: int, db: Session = Depends(get_db), user: User = Depends(require_user)):
-    c = db.get(Customer, cust_id)
-    if not c:
-        raise HTTPException(status_code=404, detail="Customer not found")
-    db.delete(c)
-    db.commit()
-    return RedirectResponse("/customers", status_code=303)
+@app.post('/customers/{cust_id}/delete')
+def delete_customer(cust_id:int,request:Request,csrf_token:str=Form(''),db:Session=Depends(get_db),user:User=Depends(require_user)):
+    if user.role!='ADMIN':raise HTTPException(403,'Administrator review required')
+    if not csrf_token or not hmac.compare_digest(csrf_token,request.session.get('csrf_token','')):raise HTTPException(403,'Invalid CSRF token')
+    # Operational identities are retained; deletion is not a substitute for review.
+    raise HTTPException(409,'Customer identities and history are preserved. Use authorized identity review instead of deletion.')
 
 # ---------------------- Suppliers ----------------------
 @app.get("/suppliers", response_class=HTMLResponse)
@@ -3218,7 +3225,7 @@ def _sales_order_payload(order: SalesOrder) -> dict:
     return {
         'loyalty':public_order(order),
         "id": order.id, "internal_order_number": order.internal_order_number,
-        "customer_id":order.customer_id, "customer_name": order.customer_name, "whatsapp_phone": order.whatsapp_phone,
+        "unidentified_reason":order.unidentified_reason, "customer_id":order.customer_id, "customer_name": order.customer_name, "whatsapp_phone": order.whatsapp_phone,
         "alternative_phone": order.alternative_phone,
         "delivery_contact_person": order.delivery_contact_person,
         **{key:getattr(order,key) for key in ("delivery_phone","delivery_alternative_phone","delivery_country","delivery_notes","delivery_method")},
@@ -4774,3 +4781,6 @@ def manual_order_catalog(q:str='',user=Depends(require_user)):
     if len(q)>200:raise HTTPException(422,'Search is too long')
     try:return search_products_for_inbox(q)
     except ShopifyCatalogError:raise HTTPException(503,"Shopify catalogue is unavailable") from None
+
+from customer_registration_routes import build_router as build_customer_registration_router
+app.include_router(build_customer_registration_router(get_db,require_user,_require_csrf))

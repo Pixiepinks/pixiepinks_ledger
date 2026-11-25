@@ -186,35 +186,46 @@ def test_postgresql_concurrent_payment_claim_is_created_once():
     url = os.environ["TEST_POSTGRESQL_URL"]
     assert url.startswith(("postgresql://", "postgresql+psycopg://", "postgresql+psycopg2://"))
     assert "test" in url.lower(), "refusing a PostgreSQL URL not explicitly named for testing"
-    pg_engine = create_engine(url, pool_size=4)
-    TestingSession = sessionmaker(bind=pg_engine, autoflush=False, autocommit=False)
-    Base.metadata.create_all(pg_engine)
-    number = "SO-20261024-CONCUR01"
-    with TestingSession() as db:
-        existing = db.query(SalesOrder).filter_by(internal_order_number=number).one_or_none()
-        if existing:
-            payment_ids = [row[0] for row in db.query(SalesPayment.id).filter_by(
-                sales_order_id=existing.id).all()]
-            if payment_ids:
-                db.query(SalesPaymentAuditEvent).filter(
-                    SalesPaymentAuditEvent.sales_payment_id.in_(payment_ids)).delete()
-                db.query(SalesPayment).filter(SalesPayment.id.in_(payment_ids)).delete()
-            db.delete(existing); db.commit()
-        order = SalesOrder(internal_order_number=number, idempotency_key="pg-payment-order",
-            customer_name="Concurrency Test", whatsapp_phone="94770000000", created_by="test",
-            order_status="CONFIRMED", payment_status="UNPAID", fulfillment_status="UNFULFILLED",
-            subtotal=1000, discount_total=0, shipping_total=0, tax_total=0,
-            grand_total=1000, amount_paid=0, currency="LKR")
-        db.add(order); db.commit(); order_id = order.id
-    def submit():
+    # Isolate current metadata from stale public-schema test data.
+    from uuid import uuid4
+    from sqlalchemy import text
+    schema='payment_'+uuid4().hex
+    admin=create_engine(url)
+    with admin.begin() as c:c.execute(text('CREATE SCHEMA '+schema))
+    try:
+        pg_engine = create_engine(url, pool_size=4, connect_args={"options":"-csearch_path="+schema})
+        TestingSession = sessionmaker(bind=pg_engine, autoflush=False, autocommit=False)
+        Base.metadata.create_all(pg_engine)
+        number = "SO-20261024-CONCUR01"
         with TestingSession() as db:
-            payment, created = record_payment_claim(
-                db, order_id, _claim(), "test-worker", "pg-concurrent-payment")
-            return payment.id, created
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: submit(), range(2)))
-    assert len({payment_id for payment_id, _ in results}) == 1
-    assert sorted(created for _, created in results) == [False, True]
-    with TestingSession() as db:
-        assert db.query(SalesPayment).filter_by(sales_order_id=order_id).count() == 1
-        assert db.query(SalesPaymentAuditEvent).filter_by(sales_order_id=order_id).count() == 1
+            existing = db.query(SalesOrder).filter_by(internal_order_number=number).one_or_none()
+            if existing:
+                payment_ids = [row[0] for row in db.query(SalesPayment.id).filter_by(
+                    sales_order_id=existing.id).all()]
+                if payment_ids:
+                    db.query(SalesPaymentAuditEvent).filter(
+                        SalesPaymentAuditEvent.sales_payment_id.in_(payment_ids)).delete()
+                    db.query(SalesPayment).filter(SalesPayment.id.in_(payment_ids)).delete()
+                db.delete(existing); db.commit()
+            order = SalesOrder(internal_order_number=number, idempotency_key="pg-payment-order",
+                customer_name="Concurrency Test", whatsapp_phone="94770000000", created_by="test",
+                order_status="CONFIRMED", payment_status="UNPAID", fulfillment_status="UNFULFILLED",
+                subtotal=1000, discount_total=0, shipping_total=0, tax_total=0,
+                grand_total=1000, amount_paid=0, currency="LKR")
+            db.add(order); db.commit(); order_id = order.id
+        def submit():
+            with TestingSession() as db:
+                payment, created = record_payment_claim(
+                    db, order_id, _claim(), "test-worker", "pg-concurrent-payment")
+                return payment.id, created
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: submit(), range(2)))
+        assert len({payment_id for payment_id, _ in results}) == 1
+        assert sorted(created for _, created in results) == [False, True]
+        with TestingSession() as db:
+            assert db.query(SalesPayment).filter_by(sales_order_id=order_id).count() == 1
+            assert db.query(SalesPaymentAuditEvent).filter_by(sales_order_id=order_id).count() == 1
+    finally:
+        pg_engine.dispose()
+        with admin.begin() as c:c.execute(text('DROP SCHEMA '+schema+' CASCADE'))
+        admin.dispose()

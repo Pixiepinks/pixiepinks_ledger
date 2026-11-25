@@ -99,7 +99,7 @@ def test_restartable_batched_migration_concurrent_execution(pg):
     with pg.sessions() as db:
         for i in range(104):
             customer=Customer(name=f'Historical customer {i}',phone='+1416555'+f'{i:04d}');db.add(customer);db.flush()
-            order,_=orders.create_draft(db,payload(customer.id),'fixture','historical-'+str(i),commit=False)
+            order,_=orders.create_draft(db,payload(customer.id,whatsapp_phone=customer.phone),'fixture','historical-'+str(i),commit=False)
             order.order_status='DELIVERED';order.payment_status='PAID';order.amount_paid=4500
             db.add(SalesPayment(sales_order_id=order.id,payment_method='CASH',amount=4500,currency='LKR',payment_date=datetime.utcnow().date(),verification_status='VERIFIED'))
         db.commit();user=db.get(User,pg.uid);job=svc.preview_migration(db,user,{},'postgres-historical-batches');db.commit()
