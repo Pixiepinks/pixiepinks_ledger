@@ -165,6 +165,9 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+from customer_display import local_datetime, lkr
+templates.env.filters["customer_local_time"] = local_datetime
+templates.env.filters["customer_lkr"] = lkr
 templates.env.globals["settings"] = settings
 import staff_access
 import loyalty_models

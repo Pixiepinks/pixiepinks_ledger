@@ -1,0 +1,127 @@
+{
+  "baseline_main": "5ea16fc4b7b7060933548fcae265593bca56f293",
+  "branch": "feature/loyalty-phase2b2-final-refinements",
+  "migration": "20261125_59",
+  "distinct_passed_final": 422,
+  "new_feature_cases": 22,
+  "postgres_related_cases": 20,
+  "remaining_failures": 0,
+  "remaining_errors": 0,
+  "remaining_skips": 0,
+  "runs": {
+    "focused-final": {
+      "tests": 76,
+      "passed": 75,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [
+        "tests.test_loyalty_browser::test_crm_existing_customer_server_quote_and_saved_draft"
+      ],
+      "modules": [
+        "tests.test_customer_final_browser",
+        "tests.test_customer_final_refinements",
+        "tests.test_customer_registration",
+        "tests.test_customer_registration_browser",
+        "tests.test_customer_registration_pos",
+        "tests.test_customer_registration_postgres",
+        "tests.test_customer_registration_ui_fix",
+        "tests.test_loyalty_browser",
+        "tests.test_order_recipient_browser",
+        "tests.test_pos_browser"
+      ]
+    },
+    "regressions": {
+      "tests": 346,
+      "passed": 345,
+      "failed": 1,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [
+        "tests.test_manual_unread::test_sqlite_rollback_preserves_users_with_existing_foreign_keys"
+      ],
+      "modules": [
+        "tests.test_crm_whatsapp_inbox",
+        "tests.test_finance_reporting",
+        "tests.test_inventory_phase3",
+        "tests.test_loyalty",
+        "tests.test_loyalty_postgres",
+        "tests.test_loyalty_recovery",
+        "tests.test_loyalty_recovery_postgres",
+        "tests.test_manual_unread",
+        "tests.test_pos",
+        "tests.test_pos_daily",
+        "tests.test_pos_receipt_tests",
+        "tests.test_purchasing",
+        "tests.test_sales_orders_phase1",
+        "tests.test_sales_orders_phase2",
+        "tests.test_sales_payments_phase4b",
+        "tests.test_staff_access"
+      ]
+    },
+    "final-check": {
+      "tests": 33,
+      "passed": 33,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [],
+      "modules": [
+        "tests.test_customer_final_browser",
+        "tests.test_customer_final_refinements",
+        "tests.test_loyalty_browser",
+        "tests.test_manual_unread"
+      ]
+    },
+    "checkbox-final": {
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [],
+      "modules": [
+        "tests.test_customer_final_browser"
+      ]
+    },
+    "identity-final": {
+      "tests": 2,
+      "passed": 2,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "failures": [],
+      "modules": [
+        "tests.test_customer_final_browser"
+      ]
+    }
+  },
+  "resolved_failures": {
+    "old_currency_assertion": "Updated intentional display expectation to Rs. without changing calculation values; final loyalty browser suite passed.",
+    "sqlite_foreign_key_rollback": "Fixed revision59 downgrade to use a unique SQLite index without table rebuilding; full manual unread suite and guarded PostgreSQL/SQLite tests passed.",
+    "suggestion_vs_attachment": "Updated old late-response assertion to inspect the new authoritative confirmed ID, rather than suggested dropdown selection; regression passed."
+  },
+  "before_capture": {
+    "tests": 4,
+    "passed": 4,
+    "excluded_from_distinct_total": true,
+    "data": "Synthetic; actual prior-release code."
+  },
+  "warnings": "Existing UTC/framework/dependency deprecations remain; 11 deselections in each targeted UI run are not skips.",
+  "source_sha256": {
+    "models.py": "8d52585ac90c0891da4e2f1f9da4fa0d996abcf9f59a0ee3f9037e969f17b7c0",
+    "customer_registration.py": "82e5714ac3a2e101f1c715a8a968d079caebb019e241589ca64b34ede1a45598",
+    "customer_display.py": "41daa4d63d35c7c175d3e238426595f4a05da848cd75a801b62aa4f7cd26f43a",
+    "loyalty_recovery.py": "46b6d77f091c0f0aef2aec1f8718754fa6a11eb92eb1be045b3dd5a23e453cb0",
+    "pos_routes.py": "872fc1a7cf1cf3c60479a18378fa5ce4f2379d35e3c66082161c2c5649db9891",
+    "static/pos.js": "f348fbf1370e76432ac90f616fb1dd426cf40f6212d304a52622515ec9c0ff79",
+    "static/loyalty_order.js": "9b4387f37916e78e1548b790504e2fb8675db24dc7c9f6117320c206ed0b396d",
+    "alembic/versions/20261125_59_customer_names_nonunique.py": "abd041bdda6026773a9ae712321e6b4fe3e54e46a2825503bcec951616b9c4e9"
+  },
+  "not_verified": [
+    "Production constraint metadata/external integrations",
+    "Production deployment and retained historical baseline",
+    "Real Android acceptance"
+  ],
+  "production_mutations": false
+}

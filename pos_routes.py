@@ -150,6 +150,14 @@ def build_router(get_db,require_user,csrf,csrf_token,templates):
     @router.post('/api/carts')
     async def new(request:Request,db=Depends(get_db),user=Depends(require_user)):
         p=await body(request,['session_id']);return out(cart(service.new_cart(db,user,p['session_id'])))
+    @router.get('/api/carts/{cid}/customer')
+    def cart_customer(cid:str,db=Depends(get_db),user=Depends(require_user)):
+        service.require(user,'sell');c=service.get_cart(db,user,cid)
+        customer=db.get(Customer,c.payload.get('customer_id')) if c.payload.get('customer_id') else None
+        from customer_registration import describe
+        value=describe(db,customer) if customer else None
+        return out({'cart_id':c.id,'cart_version':c.version,'customer':{k:value[k] for k in ('id','name','phone','membership_id','membership_status','qualifying_purchases')} if value else None})
+
     @router.get('/api/carts/{cid}')
     def get(cid:str,db=Depends(get_db),user=Depends(require_user)):
         c=service.get_cart(db,user,cid);checkout=db.query(POSCheckout).filter_by(cart_id=c.id).one_or_none()

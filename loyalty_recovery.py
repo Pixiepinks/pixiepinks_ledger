@@ -62,9 +62,8 @@ def proposal(db,snapshot):
     exact=[c for c in matches if normalized_name(c.name)==normalized_name(name)]
     candidates=[{'id':c.id,'name':c.name,'name_matches':c in exact} for c in matches]
     usable=bool(phone and valid_name(name) and not snapshot['identity_conflict'])
-    same_name=any(normalized_name(c.name)==normalized_name(name) for c in db.query(Customer))
     unambiguous=usable and len(matches)==1 and len(exact)==1
-    return {'candidates':candidates,'unambiguous':unambiguous,'suggested_customer_id':exact[0].id if unambiguous else None,'can_create':usable and snapshot['financial_error']!='TEST_ORDER' and not matches and not same_name,'recoverable_information':usable,'requires_identity_review':not unambiguous,'phone_mask':('…'+phone[-3:]) if phone else None,'has_name':valid_name(name),'fingerprint':svc.digest(snapshot)}
+    return {'candidates':candidates,'unambiguous':unambiguous,'suggested_customer_id':exact[0].id if unambiguous else None,'can_create':usable and snapshot['financial_error']!='TEST_ORDER' and not matches,'recoverable_information':usable,'requires_identity_review':not unambiguous,'phone_mask':('…'+phone[-3:]) if phone else None,'has_name':valid_name(name),'fingerprint':svc.digest(snapshot)}
 
 def dashboard(db):
     rows=[local_snapshot(db,o) for o in db.query(SalesOrder).order_by(SalesOrder.id)]
