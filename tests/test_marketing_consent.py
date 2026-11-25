@@ -226,6 +226,9 @@ def test_phone_collision_quarantines_and_append_only_correction(consent):
 
 def test_customer_phone_change_and_recreated_customer_do_not_transfer_permission(consent):
     v=consent
+    # Isolate legacy consent-deletion semantics from unrelated loyalty outbox FKs.
+    # This affects this disposable test session factory only; production tracking remains enabled.
+    v.sessions.configure(info={**v.sessions.kw.get('info',{}),'loyalty_processing':True})
     with v.sessions() as db:
         customer=Customer(name='Bound customer',phone='0770012301');db.add(customer);db.commit();customer_id=customer.id
     assert action(v,'verify',**evidence()).status_code==200
@@ -297,6 +300,9 @@ def test_clear_multilingual_withdrawals_apply_without_request(consent,body):
 
 def test_identity_reconciliation_never_grants_and_import_cannot_restore_out(consent):
     v=consent
+    # Isolate legacy consent-deletion semantics from unrelated loyalty outbox FKs.
+    # This affects this disposable test session factory only; production tracking remains enabled.
+    v.sessions.configure(info={**v.sessions.kw.get('info',{}),'loyalty_processing':True})
     with v.sessions() as db:
         db.add(Customer(name='First',phone='0770012301'));db.commit()
         duplicate=Customer(name='Duplicate',phone='94770012301');db.add(duplicate);db.commit();duplicate_id=duplicate.id

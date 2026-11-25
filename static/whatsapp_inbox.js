@@ -8,8 +8,8 @@
   let mailbox = isAdmin ? "all" : "mine", assignees = [], assignmentDirty = false, assignmentExpected = 0;
   let replyQueue = "all", inboxFilters=null;
   let replyHistory = new Map(), replyJump = 0;
-  let conversationController, conversationLoading = false, conversationMarkRead = false, conversationGeneration = 0, listLoading = false, detailsSignature = "", currentConversationData = null, listGeneration = 0;
-  const text = (el, value) => { el.textContent = value == null ? "—" : String(value); };
+  let conversationController, conversationLoading = false, conversationMarkRead = false, conversationGeneration = 0, listLoading = false, orderSignature = "", currentConversationData = null, listGeneration = 0;
+  const text = (el, value) => { const next=value == null ? "—" : String(value);if(el.textContent!==next)el.textContent=next; };
   const clock = seconds => `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
   const badge = (value, kind = "neutral") => { const el = document.createElement("span"); el.className = `badge ${kind}`; text(el, value); return el; };
   const money = value => new Intl.NumberFormat("en-LK", {style: "currency", currency: "LKR", maximumFractionDigits: 2}).format(value || 0);
@@ -116,8 +116,16 @@
     select.value = conversation.owner ? String(conversation.owner.id) : "";
     assignmentExpected = conversation.assignment_version;
   }
+  const textDrafts=new Map();
+  function switchTextDraft(previous,next){
+    const input=document.getElementById('message-input');
+    if(previous&&input.value){textDrafts.delete(previous);textDrafts.set(previous,{value:input.value,start:input.selectionStart,end:input.selectionEnd});while(textDrafts.size>20)textDrafts.delete(textDrafts.keys().next().value);}
+    else if(previous)textDrafts.delete(previous);
+    const draft=textDrafts.get(next);input.value=draft?.value||'';if(draft)input.setSelectionRange(draft.start,draft.end);
+  }
+  window.addEventListener('pagehide',()=>textDrafts.clear());
   function clearRevokedConversation() {
-    clearQuotedReply();
+    clearQuotedReply();textDrafts.clear();
     conversationGeneration++; replyJump++; replyHistory.clear(); selected = null; currentConversationData = null;
     conversationController?.abort(); conversationController = null; conversationLoading = false;
     root.dataset.activeConversation = ""; root.classList.remove("chat-open");
@@ -126,23 +134,27 @@
     messages.querySelectorAll("audio,video").forEach(media => media.pause()); messages.replaceChildren();
     discard = true; if (recorder?.state === "recording") recorder.stop(); resetRecording(); closeCatalog();
     document.getElementById("message-input").value = "";
-    document.getElementById("profile").replaceChildren(); document.getElementById("order").replaceChildren();
+    clearCustomerDetails();
     document.getElementById("chat").hidden = true; document.getElementById("chat-empty").hidden = false;
     text(document.getElementById("chat-empty"), "This conversation is no longer available to you. Choose an assigned conversation.");
     loadList(true);
   }
+  function clearCustomerDetails(){
+    for(const id of ['profile-name','profile-phone','profile-country','profile-mode'])text(document.getElementById(id),'—');
+    document.getElementById('order').replaceChildren();orderSignature='';
+  }
   function detailRow(label, value) { const row = document.createElement("div"), name = document.createElement("span"), content = document.createElement("span"); row.className = "detail-row"; text(name, label); text(content, value); row.append(name, content); return row; }
   function detailLink(label, url, primary = false) { const link = document.createElement("a"); link.className = `btn ${primary ? "btn-primary" : "btn-secondary"}`; link.href = url; text(link, label); return link; }
   function renderDetails(data) {
-    const profile = document.getElementById("profile"); profile.replaceChildren(); const heading = document.createElement("h3"); text(heading, "Customer profile");
-    const country = data.conversation.phone_country;
-    const phoneCountry = detailRow("Phone country", country ? `${country.flag} ${country.name} (${country.dialing_code})` : "Unknown");
-    phoneCountry.title = "Numbering-plan country/region only; does not indicate current location, residence or delivery address.";
-    profile.append(heading, detailRow("Name", data.conversation.customer_name), detailRow("WhatsApp", data.conversation.phone_number), phoneCountry, detailRow("Mode", data.conversation.mode));
-    const order = document.getElementById("order"); order.replaceChildren();
+    const country=data.conversation.phone_country;
+    for(const [id,value] of [['profile-name',data.conversation.customer_name],['profile-phone',data.conversation.phone_number],['profile-country',country?`${country.flag} ${country.name} (${country.dialing_code})`:'Unknown'],['profile-mode',data.conversation.mode]]){
+      const element=document.getElementById(id),next=String(value??'—');if(element.textContent!==next)element.textContent=next;
+    }
+    const nextOrderSignature=JSON.stringify([data.conversation.id,data.order,data.sales_order]);if(nextOrderSignature===orderSignature)return;orderSignature=nextOrderSignature;
+    const order = document.getElementById("order"); order.replaceChildren();const orderTitle=document.createElement("h3");text(orderTitle,"Latest Sales Order");order.append(orderTitle);
     if (data.sales_order) {
       const value = data.sales_order, heading = document.createElement("h3"), actions = document.createElement("div"); heading.className = "detail-title"; text(heading, "Latest sales order"); actions.className = "detail-actions";
-      order.append(heading, detailRow("Order", value.internal_order_number), detailRow("Order status", value.order_status.replaceAll("_", " ")), detailRow("Payment", value.payment_status.replaceAll("_", " ")), detailRow("Shopify draft sync", syncLabel(value.shopify_sync_status)), detailRow("Shopify order", value.shopify_order_name || value.shopify_lifecycle_status.replaceAll("_", " ")), detailRow("Products", value.product_count), detailRow("Grand total", money(value.grand_total)));
+      order.append(detailRow("Order", value.internal_order_number), detailRow("Order status", value.order_status.replaceAll("_", " ")), detailRow("Payment", value.payment_status.replaceAll("_", " ")), detailRow("Shopify draft sync", syncLabel(value.shopify_sync_status)), detailRow("Shopify order", value.shopify_order_name || value.shopify_lifecycle_status.replaceAll("_", " ")), detailRow("Products", value.product_count), detailRow("Grand total", money(value.grand_total)));
       actions.append(detailLink("View Order", value.view_url)); if (value.edit_url) actions.append(detailLink("Edit Draft", value.edit_url, true)); order.append(actions);
       if (value.conversation_order_count > 1) { const note = document.createElement("small"); note.className = "detail-note"; text(note, `${value.conversation_order_count} sales orders are linked to this conversation. Showing the latest.`); order.append(note); }
     }
@@ -384,15 +396,17 @@
     // Polling and send completions refresh data; only an explicit selection opens the pane.
     if (!navigate && selected !== id) return;
     if (selected !== id && (window.inboxMediaBusy || textSending)) return;
-    const switching = selected !== id; selected = id;
+    if(selected!==id&&(recorder?.state==='recording'||blob)){showComposerMessage('Send or cancel the voice recording before changing conversation.',true);return;}
+    const previous=selected,switching = selected !== id;if(switching)switchTextDraft(previous,id); selected = id;
     root.dataset.activeConversation = String(id);
     if (switching) root.dispatchEvent(new CustomEvent("inbox-conversation", {detail: {id}})); if (navigate) root.classList.add("chat-open"); document.getElementById("chat-empty").hidden = true; document.getElementById("chat").hidden = false;
-    if (switching) { clearQuotedReply(); conversationGeneration += 1; replyJump++; replyHistory.clear(); assignmentDirty = false; currentConversationData=null; conversationController?.abort(); conversationLoading = false; detailsSignature = ""; messages.replaceChildren(); const feedback=document.getElementById("assignment-feedback"); if(feedback) { feedback.textContent=""; document.getElementById("assignment-owner").disabled=true; document.getElementById("assignment-save").disabled=true; } }
+    if (switching) { clearQuotedReply(); conversationGeneration += 1; replyJump++; replyHistory.clear(); assignmentDirty = false; currentConversationData=null; conversationController?.abort(); conversationLoading = false; orderSignature = ""; clearCustomerDetails(); messages.querySelectorAll("audio,video").forEach(media=>media.pause()); messages.replaceChildren(); const feedback=document.getElementById("assignment-feedback"); if(feedback) { feedback.textContent=""; document.getElementById("assignment-owner").disabled=true; document.getElementById("assignment-save").disabled=true; } }
     if (conversationLoading) return;
     const generation = conversationGeneration, controller = new AbortController(); conversationController = controller; conversationLoading = true; conversationMarkRead = markRead;
     try {
       if (markRead) await api(`/crm/whatsapp/api/conversations/${id}/read`, {method: "POST", signal: controller.signal}); const data = await api(`/crm/whatsapp/api/conversations/${id}`, {signal: controller.signal});
       if (generation !== conversationGeneration || selected !== id) return;
+      if(data.viewer_id!==undefined&&data.viewer_id!==Number(root.dataset.userId)){clearRevokedConversation();location.reload();return;}
       currentConversationData = data;
       document.getElementById("send-button").disabled=data.conversation.work?.window_closed===true;
       renderOwner(data.conversation);
@@ -400,9 +414,9 @@
       if(manualHeader.dataset.signature!==manualSignature){manualHeader.dataset.signature=manualSignature;manualHeader.replaceChildren(window.CRMManualUnread.controls(data.conversation,()=>{manualHeader.dataset.signature='';loadList(true);openConversation(id,false);}));}
       window.CRMWorkActions?.buttons(document.getElementById('conversation-work-actions'),{id,name:data.conversation.customer_name,work:data.conversation.work,can_manage:data.conversation.can_manage},()=>{});
       root.dispatchEvent(new CustomEvent("inbox-conversation-data", {detail: {id, conversation: data.conversation, customer_id:data.sales_order?.customer_id}}));
-      text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); document.getElementById("mode-badge").replaceChildren(badge(data.conversation.mode, data.conversation.mode.toLowerCase()));
+      text(document.getElementById("chat-name"), data.conversation.customer_name); text(document.getElementById("chat-phone"), data.conversation.phone_number); const modeBadge=document.getElementById("mode-badge");if(modeBadge.dataset.mode!==data.conversation.mode){modeBadge.dataset.mode=data.conversation.mode;modeBadge.replaceChildren(badge(data.conversation.mode,data.conversation.mode.toLowerCase()));}
       const action = document.getElementById("mode-action"); text(action, data.conversation.mode === "AI" ? "Take Over" : "Return to AI"); action.dataset.mode = data.conversation.mode; document.getElementById("payment-banner").hidden = !data.conversation.payment_required;
-      reconcileMessages(withReplyHistory(data.messages)); const nextDetailsSignature = JSON.stringify([data.conversation, data.order, data.sales_order]); if (nextDetailsSignature !== detailsSignature) { renderDetails(data); detailsSignature = nextDetailsSignature; }
+      reconcileMessages(withReplyHistory(data.messages)); renderDetails(data);
       if (markRead || switching) loadList();
     } catch (error) { if ([403,404].includes(error.status) && selected === id && generation === conversationGeneration) clearRevokedConversation(); else if (error.name !== "AbortError" && !messages.children.length) messages.innerHTML = '<div class="empty">Conversation not found or could not be loaded.</div>'; }
     finally { if (conversationController === controller) { conversationLoading = false; conversationMarkRead = false; conversationController = null; } }

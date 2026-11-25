@@ -2396,6 +2396,14 @@ def whatsapp_conversation_details(conversation_id: int, response: Response,
     return {"conversation": conversation_details(db, _get_conversation(db, conversation_id))}
 
 
+@app.get('/crm/whatsapp/api/conversations/{conversation_id}/customer-panel')
+def whatsapp_customer_panel(conversation_id:int,response:Response,db:Session=Depends(get_db),user:User=Depends(require_user)):
+    import inbox_customer_panel
+    response.headers['Cache-Control']='private, no-store'
+    response.headers['X-Content-Type-Options']='nosniff'
+    return {'viewer_id':user.id,**inbox_customer_panel.snapshot(db,user,conversation_access.require_visible(db,user,conversation_id))}
+
+
 @app.get("/crm/whatsapp/api/conversations/{conversation_id}")
 def whatsapp_conversation_detail(conversation_id: int, response: Response, limit: int = 100,
                                  around_message_id: int | None = None,
@@ -2521,7 +2529,7 @@ def whatsapp_conversation_detail(conversation_id: int, response: Response, limit
                      and "edit" in staff_access.sales_permissions(user,SALES_ORDER_PERMISSIONS) else None),
     }
     import conversation_work_service
-    return {"conversation": {**_conversation_payload(db, conversation),"work":conversation_work_service.snapshots(db,[conversation])[conversation.id],
+    return {"viewer_id":user.id,"conversation": {**_conversation_payload(db, conversation),"work":conversation_work_service.snapshots(db,[conversation])[conversation.id],
                              "phone_country": phone_country(conversation.phone_number)}, "messages": message_data,
             "order": order_data, "sales_order": sales_order_data}
 
