@@ -44,7 +44,7 @@ def search(db,q):
         escaped=term.replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
         numeric_id=int(term) if term.isdigit() and len(term)<=10 and int(term)<=2147483647 else -1
         rows=db.query(Customer).filter(or_(Customer.name.ilike('%'+escaped+'%',escape='\\') if len(term)>=2 else False,Customer.id==numeric_id,Customer.id.in_(member_ids or [-1]))).order_by(Customer.id).limit(21).all()
-    return {'rows':[describe(db,c) for c in rows[:20]],'identity_conflict':bool(normalized and len(rows)>1),'has_more':len(rows)>20,'suggestions_only':True}
+    return {'rows':[describe(db,c) for c in rows[:20]],'identity_conflict':bool(normalized and len(rows)>1),'has_more':len(rows)>20,'suggestions_only':True,'normalized_mobile':normalized,'country':__import__('order_recipient').customer_country(normalized) if normalized else None}
 
 def lock_mobile(db,normalized):
     dialect=db.get_bind().dialect.name
