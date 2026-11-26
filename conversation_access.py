@@ -88,4 +88,6 @@ def assign(db,actor,cid,owner_id,expected_version):
     db.flush();db.refresh(row)
     import staff_notifications
     staff_notifications.assignment(db,row,actor.id)
+    import sales_pipeline
+    sales_pipeline.reassigned(db,row,actor.id)
     db.commit();db.refresh(row);return row
