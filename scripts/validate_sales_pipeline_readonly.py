@@ -15,6 +15,8 @@ def main():
         result={'mode':'READ_ONLY','transaction_read_only':db.execute(text('SHOW transaction_read_only')).scalar()=='on','migration':db.execute(text('SELECT version_num FROM alembic_version')).scalar(),'flags':{'pipeline':settings.SALES_PIPELINE_ENABLED,'reminders':settings.SALES_PIPELINE_REMINDERS_ENABLED},'tables':{n:n in existing for n in names},'indexes':{n:[v['name'] for v in inspector.get_indexes(n)] for n in names if n in existing},'mappings':STAGES,'notification_tables_ready':all(n in existing for n in ['staff_notifications','staff_push_devices']),'permissions':'Existing WhatsApp conversation visibility/ownership; administrator-only backfill/configuration','live_push_verified':False}
         if available:
             p=preview(db);result['backfill']={'eligible':len(p['proposed']),'distribution':p['distribution'],'unmapped_count':len(p['unmapped_lead_ids']),'missing_commitment_dates':p['missing_commitment_dates'],'digest':p['digest']}
+        from sales_pipeline_diagnostics import order_reconciliation
+        if available:result['order_reconciliation']=order_reconciliation(db)
         from models import User
         from staff_access import allowed
         import staff_notifications

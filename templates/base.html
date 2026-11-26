@@ -8,7 +8,7 @@
   <link rel="stylesheet" href="/static/staff_notifications.css?v=dropdown-2">
   <title>{{ page_title or request.app.title }}</title>
   <script src="https://unpkg.com/htmx.org@1.9.12"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
+  {% if not request.url.path.startswith("/crm/sales-pipeline") %}<script src="https://cdn.tailwindcss.com"></script>{% endif %}
   <link rel="stylesheet" href="/static/crm.css?v=work-resolution-1">
 </head>
 <body class="app-body{{ ' whatsapp-page' if request.url.path.startswith('/crm/whatsapp') else ' pipeline-page' if request.url.path.startswith('/crm/sales-pipeline') else '' }}">
