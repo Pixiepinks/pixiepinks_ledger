@@ -3355,15 +3355,45 @@ async def create_sales_order(request: Request, db: Session = Depends(get_db),
     except ValueError: raise HTTPException(400, "Invalid JSON") from None
     if _sales_payload_has_discount(payload):
         _require_sales_permission(user, "approve_discount")
+    pipeline_opportunity = None
+    if key.startswith('pipeline-order:') and not request.headers.get('X-Sales-Pipeline-Opportunity'):raise HTTPException(422,'Pipeline order keys require an authorized opportunity')
+    if request.headers.get('X-Sales-Pipeline-Opportunity'):
+        import sales_pipeline as pipeline
+        from sales_pipeline_models import SalesOpportunity,SalesPipelineEvent
+        pipeline.authorize(user)
+        raw=request.headers['X-Sales-Pipeline-Opportunity']
+        if not raw.isdigit() or not 0<int(raw)<=2147483647:raise HTTPException(422,'Invalid pipeline opportunity')
+        pipeline_opportunity=pipeline.scope(db,user).filter(SalesOpportunity.id==int(raw)).one_or_none()
+        if not pipeline_opportunity:raise HTTPException(404,'Opportunity not found')
+        db.query(WhatsAppConversation).filter_by(id=pipeline_opportunity.conversation_id).with_for_update().one()
+        conversation=conversation_access.require_visible(db,user,pipeline_opportunity.conversation_id)
+        pipeline.manageable(db,user,conversation)
+        db.refresh(pipeline_opportunity,with_for_update=True)
+        if not pipeline_opportunity.active_conversation_id or payload.get('crm_conversation_id')!=conversation.id:raise HTTPException(409,'Current opportunity/conversation identity changed')
+        key='pipeline-order:'+str(pipeline_opportunity.id)
+        if pipeline_opportunity.order_id:
+            existing_order=db.get(SalesOrder,pipeline_opportunity.order_id)
+            if not existing_order or existing_order.crm_conversation_id!=conversation.id:raise HTTPException(409,'Existing order identity requires review')
+            return JSONResponse({'created':False,'order':_sales_order_payload(existing_order)},status_code=200)
+        if request.headers.get('X-Sales-Pipeline-Version')!=str(pipeline_opportunity.version):raise HTTPException(409,'Sales commitment changed; refresh before creating an order')
     try:
         existing = db.query(SalesOrder).filter_by(idempotency_key=key).one_or_none() if key else None
+        if existing and pipeline_opportunity is not None:raise HTTPException(409,'Pipeline order identity requires review; do not create another draft')
         if existing:
             order, created = existing, False
         else:
             payload = _verify_sales_order_products(payload)
             from loyalty_service import prepare_order
             payload=prepare_order(db,payload,actor=user.username)
-            order, created = create_draft(db, payload, user.username, key)
+            order, created = create_draft(db, payload, user.username, key,commit=pipeline_opportunity is None)
+            if pipeline_opportunity is not None:
+                previous=dict(pipeline_opportunity.data)
+                pipeline_opportunity.order_id=order.id
+                pipeline_opportunity.data={**previous,'order_id':order.id}
+                pipeline_opportunity.version+=1
+                db.add(SalesPipelineEvent(opportunity_id=pipeline_opportunity.id,actor_id=user.id,previous=previous,current=pipeline_opportunity.data,key='draft:'+key))
+                pipeline.schedule(db,pipeline_opportunity,conversation)
+                db.commit()
     except SalesOrderValidationError as exc:
         raise HTTPException(422, str(exc)) from None
     return JSONResponse({"created": created, "order": _sales_order_payload(order)},
@@ -4799,3 +4829,8 @@ def manual_order_catalog(q:str='',user=Depends(require_user)):
 
 from customer_registration_routes import build_router as build_customer_registration_router
 app.include_router(build_customer_registration_router(get_db,require_user,_require_csrf))
+
+from sales_pipeline_routes import build_router as build_sales_pipeline_router
+app.include_router(build_sales_pipeline_router(get_db,require_user,_require_csrf,_csrf_token,templates))
+
+templates.env.globals['sales_pipeline_enabled'] = lambda: settings.SALES_PIPELINE_ENABLED

@@ -1,0 +1,117 @@
+{
+  "date": "2026-11-26",
+  "baseline": "f6a9a4d9ded0dd5c91ba9cd09a683dbc1144b0b0",
+  "migration": "20261126_61",
+  "mode": "DISPOSABLE_SQLITE_POSTGRESQL_AND_SYNTHETIC_CHROMIUM",
+  "distinct_final_results": {
+    "passed": 348
+  },
+  "suites": {
+    "tests.test_conversation_work": {
+      "passed": 26
+    },
+    "tests.test_crm_whatsapp_leads": {
+      "passed": 16
+    },
+    "tests.test_customer_registration": {
+      "passed": 21
+    },
+    "tests.test_inbox_customer_panel": {
+      "passed": 12
+    },
+    "tests.test_loyalty": {
+      "passed": 60
+    },
+    "tests.test_manual_unread": {
+      "passed": 8
+    },
+    "tests.test_order_recipient": {
+      "passed": 26
+    },
+    "tests.test_sales_orders_phase1": {
+      "passed": 10
+    },
+    "tests.test_sales_orders_phase2": {
+      "passed": 9
+    },
+    "tests.test_sales_payment_excess": {
+      "passed": 11
+    },
+    "tests.test_sales_payments_phase4b": {
+      "passed": 12
+    },
+    "tests.test_sales_pipeline": {
+      "passed": 31
+    },
+    "tests.test_sales_pipeline_browser": {
+      "passed": 4
+    },
+    "tests.test_shopify_draft_order_sync": {
+      "passed": 53
+    },
+    "tests.test_staff_notifications": {
+      "passed": 37
+    },
+    "tests.test_staff_notifications_postgres": {
+      "passed": 2
+    },
+    "tests.test_whatsapp_inbox_lead_status": {
+      "passed": 10
+    }
+  },
+  "visual": {
+    "screenshots": {
+      "desktop-1366-board.png": [
+        1366,
+        768
+      ],
+      "desktop-1920-board.png": [
+        1920,
+        1080
+      ],
+      "android-details.png": [
+        412,
+        915
+      ],
+      "future-form.png": [
+        1648,
+        928
+      ],
+      "payment-form.png": [
+        1648,
+        928
+      ],
+      "android-board.png": [
+        412,
+        915
+      ],
+      "filters.png": [
+        1648,
+        928
+      ],
+      "future-selected.png": [
+        1648,
+        928
+      ],
+      "payment-selected.png": [
+        1648,
+        928
+      ],
+      "desktop-1648-board.png": [
+        1648,
+        928
+      ]
+    },
+    "browser_errors": [],
+    "mobile_document_overflow": false
+  },
+  "production_changes": false,
+  "actual_android_push_verified": false,
+  "notes": [
+    "Overlapping runs counted once by final retrieved testcase outcome.",
+    "Earlier notification integration failures were corrected; complete notification suite and PostgreSQL regressions passed.",
+    "The legacy SQLite-skipped PostgreSQL retry case was executed successfully in a disposable schema.",
+    "Pipeline browser cases exercised all four requested viewport dimensions.",
+    "Production Railway state, backfill, live Meta connectivity and physical Android push were not accessed."
+  ]
+}

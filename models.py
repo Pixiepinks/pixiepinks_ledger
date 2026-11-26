@@ -1285,3 +1285,6 @@ from loyalty_models import (LoyaltyConfig,LoyaltyMember,LoyaltyRule,LoyaltyRuleV
     LoyaltyRedemption,LoyaltyRedemptionEvent,LoyaltyAudit,LoyaltyIdentityReview,LoyaltyOrderIdentity,
     LoyaltyMigration,LoyaltyMigrationRow,LoyaltyRecalculation,LoyaltyOrderExclusion)
 from loyalty_models import LoyaltyHistoryScan,LoyaltyHistoricalOrder,LoyaltyRecoveryPlan
+
+# Imported after core conversation/order declarations to register additive metadata.
+from sales_pipeline_models import SalesOpportunity, SalesPipelineEvent, SalesPipelineReminder, SalesPipelineControl

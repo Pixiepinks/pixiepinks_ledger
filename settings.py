@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     SHOPIFY_CLIENT_SECRET: Optional[str] = None
     SHOPIFY_WEBHOOK_SECRET: Optional[str] = None
     SHOPIFY_API_VERSION: str = "2026-07"
+    SALES_PIPELINE_ENABLED: bool = False
+    SALES_PIPELINE_REMINDERS_ENABLED: bool = False
     SALES_ORDERS_ENABLED: bool = False
     SHOPIFY_ORDER_SYNC_ENABLED: bool = False
     SHOPIFY_ORDER_LIFECYCLE_SYNC_ENABLED: bool = False

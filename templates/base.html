@@ -11,7 +11,7 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="stylesheet" href="/static/crm.css?v=work-resolution-1">
 </head>
-<body class="app-body{{ ' whatsapp-page' if request.url.path.startswith('/crm/whatsapp') else '' }}">
+<body class="app-body{{ ' whatsapp-page' if request.url.path.startswith('/crm/whatsapp') else ' pipeline-page' if request.url.path.startswith('/crm/sales-pipeline') else '' }}">
 {% if request.url.path != '/login' %}
   <button class="mobile-menu" id="mobile-menu" aria-label="Open navigation" aria-expanded="false">☰</button>
   <div class="sidebar-scrim" id="sidebar-scrim"></div>
@@ -20,6 +20,7 @@
     {% set nav_user = user if user is defined else request.state.current_user|default(none) %}
     <nav>
       <p class="nav-label">Overview</p>
+{% if sales_pipeline_enabled() and can_access_section(nav_user,"whatsapp") %}<a href="/crm/sales-pipeline" class="{{ 'active' if request.url.path.startswith('/crm/sales-pipeline') else '' }}"><span>▤</span> Sales Pipeline</a>{% endif %}
 {% if can_access_section(nav_user,"crm") %}      <a href="/crm" class="{{ 'active' if request.url.path == '/crm' else '' }}"><span>▦</span> CRM Dashboard</a>{% endif %}
 {% if can_access_section(nav_user,"finance") %}      <a href="/dashboard" class="{{ 'active' if request.url.path == '/dashboard' else '' }}"><span>◫</span> Finance Overview</a>{% endif %}
 {% if nav_user and nav_user.role=="ADMIN" %}<a href="/admin/staff" class="{{ 'active' if request.url.path.startswith('/admin/staff') else '' }}"><span>♙</span> Staff &amp; Access</a>{% endif %}

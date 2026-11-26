@@ -142,11 +142,19 @@ def deliverable(db, notice, user):
             return False  # No previous assignee/shared-team alerts after reassignment.
         if c.assigned_to_user_id and c.assigned_to_user_id != user.id:
             return False
+    if notice.event_key.startswith('pipeline:'):
+        from sales_pipeline_models import SalesPipelineReminder, SalesOpportunity
+        if not settings.SALES_PIPELINE_ENABLED or not settings.SALES_PIPELINE_REMINDERS_ENABLED:return False
+        try:rid=int(notice.event_key.rsplit(':',1)[1])
+        except (ValueError,IndexError):return False
+        reminder=db.get(SalesPipelineReminder,rid)
+        opportunity=db.get(SalesOpportunity,reminder.opportunity_id) if reminder else None
+        if not opportunity or not opportunity.active_conversation_id or opportunity.version!=reminder.version or reminder.user_id!=user.id or c.assigned_to_user_id!=user.id:return False
     if notice.kind == 'MESSAGE' and c.assigned_to_user_id is None:
         control = db.get(Control, 1)
         if not control or user.id not in control.shared_users:
             return False
-    if notice.kind in {'REMINDER', 'ESCALATION'}:
+    if notice.kind in {'REMINDER', 'ESCALATION'} and not notice.event_key.startswith('pipeline:'):
         control = db.get(Control, 1)
         enabled = control and (control.reminders_enabled if notice.kind == 'REMINDER' else control.escalations_enabled)
         message = db.get(Message, notice.message_id)
@@ -175,12 +183,17 @@ def history_query(db, user):
     if not control or user.id not in control.shared_users:
         query = query.filter(or_(Notice.kind != 'MESSAGE', Conversation.assigned_to_user_id.isnot(None)))
     if not control or not control.reminders_enabled:
-        query = query.filter(Notice.kind != 'REMINDER')
+        query = query.filter(or_(Notice.kind != 'REMINDER',Notice.event_key.like('pipeline:%')))
     if not control or not control.escalations_enabled or not manager(user) or user.id not in control.escalation_users:
         query = query.filter(Notice.kind != 'ESCALATION')
+    from sales_pipeline_models import SalesPipelineReminder as PR, SalesOpportunity as PO
+    if not settings.SALES_PIPELINE_ENABLED or not settings.SALES_PIPELINE_REMINDERS_ENABLED:query=query.filter(~Notice.event_key.like('pipeline:%'))
+    else:
+        from sqlalchemy import cast,String
+        query=query.filter(or_(~Notice.event_key.like('pipeline:%'),Notice.event_key.in_(select('pipeline:'+cast(PR.opportunity_id,String)+':'+cast(PR.id,String)).join(PO,PO.id==PR.opportunity_id).where(PR.version==PO.version,PO.active_conversation_id.isnot(None)))))
     pending, _ = inbox_reply_queue.summary(db)
     query = query.outerjoin(Message, Message.id == Notice.message_id).outerjoin(pending, pending.c.phone == Conversation.phone_number)
-    return query.filter(or_(Notice.kind.notin_(['REMINDER', 'ESCALATION']),
+    return query.filter(or_(Notice.event_key.like('pipeline:%'),Notice.kind.notin_(['REMINDER', 'ESCALATION']),
         and_(pending.c.waiting_since.isnot(None), pending.c.waiting_since <= Message.created_at)))
 
 
@@ -195,9 +208,9 @@ def serialize(db, notice, user, *, checked=False):
     elif notice.kind == 'ASSIGNMENT':
         actor = db.get(User, notice.actor_id) if notice.actor_id else None
         body += ' · Assigned by ' + safe_text(actor.username if actor else 'Administrator', 50)
-    return {'id': notice.id, 'type': notice.kind, 'title': 'PixiePinks CRM — ' + TITLES[notice.kind],
+    return {'id': notice.id, 'type': notice.kind, 'title': 'PixiePinks CRM — ' + ('Sales commitment follow-up' if notice.event_key.startswith('pipeline:') else TITLES[notice.kind]),
             'body': body, 'customer': safe_text(c.customer_name, 60) if c else '',
-            'url': f'/crm/whatsapp?conversation={c.id}' if c else '/crm/notifications',
+            'url': ('/crm/sales-pipeline?selected='+notice.event_key.split(':')[1]) if notice.event_key.startswith('pipeline:') else f'/crm/whatsapp?conversation={c.id}' if c else '/crm/notifications',
             'created_at': notice.created_at.isoformat() + 'Z', 'read': bool(notice.read_at),
             'sound': prefs(db, user.id)['sound']}
 
@@ -355,6 +368,8 @@ def prepare(sessions):
     from crm_analytics_tracking import insert_for
     with sessions() as db:
         scan_reminders(db)
+        import sales_pipeline
+        sales_pipeline.scan(db)
         # Claims use conditional UPDATE, so multiple Railway workers can safely fan out.
         for notice in db.query(Notice).filter_by(expanded=False).order_by(Notice.id).limit(100).all():
             changed = db.query(Notice).filter_by(id=notice.id, expanded=False).update({'expanded': True}, synchronize_session=False)
