@@ -206,3 +206,20 @@ def test_api_feature_flag_role_and_csrf_are_enforced(monkeypatch):
     assert admin.post("/login", data={"username":"sync-admin", "password":"password", "next":"/"}).status_code == 200
     assert admin.post(f"/api/sales-orders/{order_id}/shopify-payment-sync/preflight",
         headers={"Idempotency-Key":"api"}).status_code == 403
+
+
+def test_retained_excess_is_not_sent_as_shopify_sale_value():
+    """Only the order-applied payment participates in existing settlement."""
+    after = _remote(financial='PAID', received='350.00', outstanding='0.00', transactions=[_tx()])
+    api = Shopify(after=after)
+    with SessionLocal() as db:
+        order = _order(db)
+        payment = db.query(SalesPayment).filter_by(sales_order_id=order.id).one()
+        payment.received_amount = Decimal('400.00')
+        payment.excess_reason = 'Exchange-rate difference'
+        db.commit()
+        op = create_preflight(db, order.id, 'admin', 'excess-preflight', api)
+        op = execute_operation(db, order.id, op.operation_id, 'admin', 'MARK SHOPIFY ORDER PAID', api)
+        assert op.status == 'SYNCED' and api.mutations == 1
+        assert order.amount_paid == order.grand_total == Decimal('350.00')
+        assert payment.actual_received == Decimal('400.00') and payment.excess_amount == Decimal('50.00')

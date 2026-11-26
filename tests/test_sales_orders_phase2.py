@@ -145,7 +145,8 @@ def test_inbox_panel_does_not_leak_another_conversations_order(monkeypatch):
 
 def test_order_panel_poll_signature_and_actions_include_commercial_order():
     source = Path("static/whatsapp_inbox.js").read_text()
-    assert "[data.conversation, data.order, data.sales_order]" in source
+    # PR #213 scopes the order-only signature to conversation identity.
+    assert "[data.conversation.id,data.order,data.sales_order]" in source
     assert 'detailLink("View Order", value.view_url)' in source
     assert 'detailLink("Edit Draft", value.edit_url, true)' in source
 

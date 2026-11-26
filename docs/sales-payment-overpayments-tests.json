@@ -1,0 +1,78 @@
+{
+  "date": "2026-11-26",
+  "mode": "DISPOSABLE_DATABASES_AND_MOCKED_EXTERNAL_SERVICES",
+  "distinct_final_results": {
+    "passed": 399
+  },
+  "suites": {
+    "tests.test_finance_reporting": {
+      "passed": 4
+    },
+    "tests.test_finance_reporting_pos": {
+      "passed": 5
+    },
+    "tests.test_loyalty": {
+      "passed": 60
+    },
+    "tests.test_loyalty_recovery": {
+      "passed": 37
+    },
+    "tests.test_pos": {
+      "passed": 22
+    },
+    "tests.test_pos_daily": {
+      "passed": 27
+    },
+    "tests.test_pos_daily_postgres": {
+      "passed": 2
+    },
+    "tests.test_pos_postgres": {
+      "passed": 4
+    },
+    "tests.test_pos_provisional_receipts": {
+      "passed": 22
+    },
+    "tests.test_pos_real_sale_pilot": {
+      "passed": 23
+    },
+    "tests.test_pos_receipt_tests": {
+      "passed": 17
+    },
+    "tests.test_pos_receipts_phase4g": {
+      "passed": 19
+    },
+    "tests.test_question_payment_review": {
+      "passed": 23
+    },
+    "tests.test_sales_fulfillment_phase4d": {
+      "passed": 18
+    },
+    "tests.test_sales_orders_phase1": {
+      "passed": 10
+    },
+    "tests.test_sales_orders_phase2": {
+      "passed": 9
+    },
+    "tests.test_sales_payment_excess": {
+      "passed": 11
+    },
+    "tests.test_sales_payments_phase4b": {
+      "passed": 12
+    },
+    "tests.test_shopify_draft_order_sync": {
+      "passed": 53
+    },
+    "tests.test_shopify_payment_sync_phase4c": {
+      "passed": 21
+    }
+  },
+  "migration": "20261126_60",
+  "production_mutations": false,
+  "notes": [
+    "Runs overlap; distinct test names are counted once using their final retrieved outcome.",
+    "The obsolete PR213 order-signature assertion was corrected in tests only and passed in the final focused run.",
+    "Two PostgreSQL-only cases skipped by SQLite were executed successfully in isolated PostgreSQL schemas.",
+    "The initial restricted-sandbox confirmation run stalled and was stopped; its successful 23-case replacement is included.",
+    "Refund execution, reusable customer credit and liability journal posting are outside this operational payment-recording feature."
+  ]
+}

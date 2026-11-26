@@ -217,12 +217,16 @@ def send_confirmation(db,run,conversation,item):
     outstanding=max(Decimal('0'),Decimal(order.grand_total)-Decimal(order.amount_paid))
     if order.payment_status=='PAID':
         body=(f"ඔබගේ ගෙවීම තහවුරු කර ඇත. ස්තුතියි! 💖\nඇණවුම් අංකය: {order.internal_order_number}\n"
-            f"ලැබුණු මුදල: Rs. {Decimal(payment.amount):,.2f}\n"
+            f"ලැබුණු මුදල: Rs. {Decimal(payment.actual_received):,.2f}\n"
             'ඔබගේ බයිසිකලය සූදානම් කර බෙදාහැරීමේ ඉදිරි විස්තර දැනුම් දෙන්නම්. 🚲🚚')
     else:
-        body=(f"ඔබගේ Rs. {Decimal(payment.amount):,.2f} ගෙවීම තහවුරු කර ඇත. ස්තුතියි! 💖\n"
+        body=(f"ඔබගේ Rs. {Decimal(payment.actual_received):,.2f} ගෙවීම තහවුරු කර ඇත. ස්තුතියි! 💖\n"
             f"ඇණවුම් අංකය: {order.internal_order_number}\nඉතිරි මුදල: Rs. {outstanding:,.2f}\n"
             'ඉතිරි ගෙවීම පිළිබඳ අපගේ කාර්ය මණ්ඩලය ඔබට සහාය වනු ඇත.')
+    if payment.excess_amount > 0:
+        body += (f"\nApplied to this order: Rs. {Decimal(payment.amount):,.2f}. "
+                 f"Excess received: Rs. {Decimal(payment.excess_amount):,.2f}, held for staff review; "
+                 "not applied to another order or refunded automatically.")
     try:provider=send_whatsapp_text(conversation.phone_number,body,return_message_id=True)
     except Exception:provider=None
     if not isinstance(provider,str) or not 1<=len(provider)<=255:
