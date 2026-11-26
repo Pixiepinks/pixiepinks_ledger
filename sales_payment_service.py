@@ -90,6 +90,9 @@ def _deduplication_key(method: str, reference: str | None) -> str | None:
 def _payload_hash(payload: dict) -> str:
     bounded = {key: payload.get(key) for key in
                ("payment_method", "amount", "payment_date", "payment_reference", "notes")}
+    for key in ("retain_excess", "excess_reason"):
+        if key in payload:
+            bounded[key] = payload[key]
     return hashlib.sha256(json.dumps(bounded, sort_keys=True, default=str,
                                      separators=(",", ":")).encode()).hexdigest()
 
@@ -125,6 +128,12 @@ def _derive_summary(db: Session, order: SalesOrder) -> None:
 
 def _audit(db: Session, payment: SalesPayment, action: str, previous: str | None,
            new: str, actor: str, idempotency_key: str, reason: str | None = None) -> None:
+    if payment.excess_amount > 0:
+        reason = json.dumps({"reason": reason, "received_amount": str(payment.actual_received),
+                             "applied_amount": str(payment.amount), "excess_amount": str(payment.excess_amount),
+                             "currency": payment.currency, "excess_reason": payment.excess_reason,
+                             "excess_status": "HELD_FOR_REVIEW" if new == "VERIFIED" else new},
+                            sort_keys=True)
     db.add(SalesPaymentAuditEvent(
         sales_payment_id=payment.id, sales_order_id=payment.sales_order_id,
         action=action, previous_status=previous, new_status=new, actor=actor,
@@ -171,13 +180,25 @@ def record_payment_claim(db: Session, order_id: int, payload: dict, actor: str,
     pending = db.query(func.coalesce(func.sum(SalesPayment.amount), 0)).filter(
         SalesPayment.sales_order_id == order.id,
         SalesPayment.verification_status == "PENDING").scalar()
-    if committed + Decimal(str(pending or 0)) + amount > Decimal(str(order.grand_total)):
-        raise PaymentValidationError("Payment claim exceeds the outstanding order balance",
-                                     status_code=409)
+    available = Decimal(str(order.grand_total)) - committed - Decimal(str(pending or 0))
+    received = amount
+    excess_reason = None
+    if amount > available:
+        # Explicit opt-in only. POS cash/change and existing integrations retain
+        # their strict tender semantics. Pending claims reserve the applied sum.
+        if payload.get("retain_excess") is not True or pos_authorized or order.sales_channel == "POS":
+            raise PaymentValidationError("Payment claim exceeds the outstanding order balance; explicitly retain excess for review", status_code=409)
+        if available <= 0:
+            raise PaymentValidationError("No unreserved order balance remains; review existing claims", status_code=409)
+        excess_reason = _text(payload.get("excess_reason"), 500)
+        if not excess_reason:
+            raise PaymentValidationError("A reason is required to retain excess funds for review")
+        amount = available.quantize(MONEY)
     payment = SalesPayment(
         sales_order_id=order.id, payment_reference=reference,
         idempotency_key=idempotency_key, request_payload_hash=request_hash,
         deduplication_key=deduplication_key, payment_method=method, amount=amount,
+        received_amount=received, excess_reason=excess_reason,
         currency=order.currency, payment_date=_parse_date(payload.get("payment_date")),
         verification_status="PENDING", source="STAFF_RECORDED", claimed_by=actor,
         notes=_text(payload.get("notes"), 1000))
@@ -229,6 +250,9 @@ def decide_payment(db: Session, order_id: int, payment_id: int, *, approve: bool
         raise PaymentValidationError("Only pending payment claims can be decided", status_code=409)
     now = datetime.utcnow()
     if approve:
+        if payment.actual_received < payment.amount or (payment.excess_amount > 0 and (
+                order.sales_channel == "POS" or not payment.excess_reason)):
+            raise PaymentValidationError("Excess payment evidence is invalid; review the claim", status_code=409)
         if verified_total(db, order.id) + Decimal(str(payment.amount)) > Decimal(str(order.grand_total)):
             raise PaymentValidationError("Verification would exceed the order total", status_code=409)
         payment.verification_status = "VERIFIED"

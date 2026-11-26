@@ -214,6 +214,18 @@ class SalesPayment(Base):
     deduplication_key = Column(String(255), unique=True, index=True)
     payment_method = Column(String(40), nullable=False)
     amount = Column(Numeric(14, 2), nullable=False)
+    # amount remains the order-applied value for all existing financial consumers.
+    received_amount = Column(Numeric(14, 2))  # NULL means legacy received == amount
+    excess_reason = Column(String(500))
+
+    @property
+    def actual_received(self):
+        return self.received_amount if self.received_amount is not None else self.amount
+
+    @property
+    def excess_amount(self):
+        return self.actual_received - self.amount
+
     currency = Column(String(8), nullable=False, default="LKR")
     payment_date = Column(Date, nullable=False)
     verification_status = Column(String(40), nullable=False, default="PENDING", index=True)

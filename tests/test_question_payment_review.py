@@ -209,3 +209,18 @@ def test_window_closes_after_verification_before_send(reviewing):
     assert text(f[0][0],'Hello again').status_code==200
     assert action(f,'queue_confirmation').status_code==200 and q.dispatch_one(v.sessions)
     with v.sessions() as db:assert db.query(SalesPayment).count()==1
+
+
+def test_confirmation_distinguishes_actual_received_and_retained_excess(reviewing):
+    f=reviewing;oid=prepare(f)
+    assert verify(f,oid).status_code==200
+    # Simulate the same verified claim carrying separately recorded receipt evidence.
+    with f[1].sessions() as db:
+        payment=db.query(SalesPayment).one()
+        payment.received_amount=Decimal('47000.00');payment.excess_reason='Exchange-rate difference'
+        db.commit()
+    assert q.dispatch_one(f[1].sessions)
+    body=f[3][0][1]
+    assert '47,000.00' in body and 'Applied to this order: Rs. 46,800.00' in body
+    assert 'Excess received: Rs. 200.00, held for staff review' in body
+    assert not q.dispatch_one(f[1].sessions)
