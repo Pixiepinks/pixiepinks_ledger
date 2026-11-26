@@ -1,0 +1,154 @@
+{
+  "baseline": "bad80695043207f80ffd51f8973763e2a7776301",
+  "database_revision": "20261126_61",
+  "migration_required": false,
+  "tests": {
+    "passed": 224,
+    "failed": 0,
+    "skipped": 0,
+    "reports": {
+      "pipeline-refinement-final-backend.xml": 43,
+      "pipeline-refinement-ui-final.xml": 9,
+      "pipeline-refinement-reg-test_conversation_work.xml": 26,
+      "pipeline-refinement-reg-test_customer_registration.xml": 21,
+      "pipeline-refinement-reg-test_inbox_customer_panel.xml": 12,
+      "pipeline-refinement-reg-test_manual_unread.xml": 8,
+      "pipeline-refinement-reg-test_order_recipient.xml": 26,
+      "pipeline-refinement-reg-test_sales_orders_phase2.xml": 9,
+      "pipeline-refinement-reg-test_sales_payment_excess.xml": 11,
+      "pipeline-refinement-reg-test_sales_payments_phase4b.xml": 12,
+      "pipeline-refinement-reg-test_staff_notifications.xml": 37,
+      "pipeline-refinement-reg-test_whatsapp_inbox_lead_status.xml": 10
+    }
+  },
+  "performance": [
+    {
+      "opportunities": 1001,
+      "interested": 801,
+      "projection_seconds": 0.249,
+      "sql_statements": 7,
+      "returned_cards": 200,
+      "response_bytes": 236341
+    },
+    {
+      "opportunities": 5001,
+      "interested": 4001,
+      "projection_seconds": 0.5787,
+      "sql_statements": 7,
+      "returned_cards": 200,
+      "response_bytes": 236799
+    }
+  ],
+  "performance_scope": "Disposable SQLite development projection; not production SLA",
+  "browser": {
+    "1648": {
+      "viewport": 928,
+      "pageHeight": 928,
+      "overflow": false
+    },
+    "1920": {
+      "viewport": 1080,
+      "pageHeight": 1080,
+      "overflow": false
+    },
+    "1366": {
+      "viewport": 768,
+      "pageHeight": 768,
+      "overflow": false
+    },
+    "independent_scroll": {
+      "NEW": 0,
+      "INTERESTED": 420,
+      "PAYMENT": 0,
+      "FUTURE": 0,
+      "CONFIRMED": 0
+    },
+    "mobile_overflow": false,
+    "browser_errors": []
+  },
+  "screenshots": {
+    "docs/images/sales-pipeline-refinement/after/android-board.png": [
+      412,
+      915
+    ],
+    "docs/images/sales-pipeline-refinement/after/android-details.png": [
+      412,
+      915
+    ],
+    "docs/images/sales-pipeline-refinement/after/desktop-1366-default.png": [
+      1366,
+      768
+    ],
+    "docs/images/sales-pipeline-refinement/after/desktop-1366-selected.png": [
+      1366,
+      768
+    ],
+    "docs/images/sales-pipeline-refinement/after/desktop-1648-default.png": [
+      1648,
+      928
+    ],
+    "docs/images/sales-pipeline-refinement/after/desktop-1648-selected.png": [
+      1648,
+      928
+    ],
+    "docs/images/sales-pipeline-refinement/after/desktop-1920-default.png": [
+      1920,
+      1080
+    ],
+    "docs/images/sales-pipeline-refinement/after/desktop-1920-selected.png": [
+      1920,
+      1080
+    ],
+    "docs/images/sales-pipeline-refinement/after/future-edit.png": [
+      1648,
+      928
+    ],
+    "docs/images/sales-pipeline-refinement/after/independent-scroll.png": [
+      1648,
+      928
+    ],
+    "docs/images/sales-pipeline-refinement/after/multilingual-overdue.png": [
+      1648,
+      928
+    ],
+    "docs/images/sales-pipeline-refinement/after/payment-edit.png": [
+      1648,
+      928
+    ],
+    "docs/images/sales-pipeline-refinement/after/unknown-amounts.png": [
+      1648,
+      928
+    ],
+    "docs/images/sales-pipeline-refinement/before/android-board.png": [
+      412,
+      915
+    ],
+    "docs/images/sales-pipeline-refinement/before/android-details.png": [
+      412,
+      915
+    ],
+    "docs/images/sales-pipeline-refinement/before/desktop-1366-board.png": [
+      1366,
+      768
+    ],
+    "docs/images/sales-pipeline-refinement/before/desktop-1648-board.png": [
+      1648,
+      928
+    ],
+    "docs/images/sales-pipeline-refinement/before/desktop-1920-board.png": [
+      1920,
+      1080
+    ],
+    "docs/images/sales-pipeline-refinement/before/payment-selected.png": [
+      1648,
+      928
+    ]
+  },
+  "production_mutations": false,
+  "live_reconciliation_executed": false,
+  "physical_android_verified": false,
+  "notes": [
+    "Final retrieved test reports only; corrected earlier browser test harness waits are excluded.",
+    "Visual evidence uses synthetic data."
+  ]
+}

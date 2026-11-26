@@ -108,7 +108,12 @@ def batch(db,rows):
         total=Decimal(str(order.grand_total)) if linked else Decimal(d['agreed']) if d.get('agreed') else None
         verified=paid.get((order.id,order.currency),Decimal(0)) if linked else None
         outstanding=max(Decimal(0),total-verified) if linked and order.currency=='LKR' else total if not order and total is not None else None
-        result.append({**d,'id':o.id,'version':o.version,'conversation_id':c.id,'assignment_version':c.assignment_version,'lead_status':l.status if o.active_conversation_id else d.get('archived_lead_status',CANONICAL.get(s,'LOST')),'stage':s,'source_stage':STAGES.get(l.status,'CLOSED') if o.active_conversation_id else s,'label':LABELS[s],'name':c.customer_name or l.customer_name,'phone':c.phone_number,'assigned_id':c.assigned_to_user_id,'assigned':users.get(c.assigned_to_user_id,'Unassigned'),'message':messages.get(c.phone_number,''),'created_at':o.created_at.replace(tzinfo=timezone.utc).astimezone(TZ).isoformat(),'verified':str(verified) if verified is not None else None,'outstanding':str(outstanding) if outstanding is not None else None,'total':str(total) if total is not None else None,'review_required':STAGES.get(l.status)=='CONFIRMED' and not valid,'order':{'id':order.id,'number':order.internal_order_number,'status':order.order_status,'payment':order.payment_status,'shopify':order.shopify_order_name if order.shopify_order_id else None,'customer_id':order.customer_id,'currency':order.currency,'confirmed':valid} if linked else None,'due_label':due_label(d.get('payment_date') if s=='PAYMENT' else d.get('purchase_date')),'current':o.active_conversation_id is not None})
+        result.append({**d,'id':o.id,'version':o.version,'conversation_id':c.id,'assignment_version':c.assignment_version,'lead_status':l.status if o.active_conversation_id else d.get('archived_lead_status',CANONICAL.get(s,'LOST')),'stage':s,'source_stage':STAGES.get(l.status,'CLOSED') if o.active_conversation_id else s,'label':LABELS[s],'name':c.customer_name or l.customer_name,'phone':c.phone_number,'assigned_id':c.assigned_to_user_id,'assigned':users.get(c.assigned_to_user_id,'Unassigned'),'message':messages.get(c.phone_number,''),'activity_at':(c.last_customer_message_at or c.last_message_at or o.created_at).replace(tzinfo=timezone.utc).astimezone(TZ).isoformat(),'created_at':o.created_at.replace(tzinfo=timezone.utc).astimezone(TZ).isoformat(),'verified':str(verified) if verified is not None else None,'outstanding':str(outstanding) if outstanding is not None else None,'total':str(total) if total is not None else None,'review_required':STAGES.get(l.status)=='CONFIRMED' and not valid,'order':{'id':order.id,'number':order.internal_order_number,'status':order.order_status,'payment':order.payment_status,'shopify':order.shopify_order_name if order.shopify_order_id else None,'customer_id':order.customer_id,'currency':order.currency,'confirmed':valid} if linked else None,'due_label':due_label(d.get('payment_date') if s=='PAYMENT' else d.get('purchase_date')),'current':o.active_conversation_id is not None})
+    for value in result:
+        value['status_label']=display_status(value['lead_status'],value['verified'])
+        value['payment_due']=date_state(value.get('payment_date'))
+        value['purchase_due']=date_state(value.get('purchase_date'))
+        value['followup_due']=date_state(value.get('followup_date'))
     return result
 
 def filtered(items,p,u,*,include_closed=False):
@@ -169,13 +174,23 @@ def report(db,u,p,*,export=False):
     def total(vals,key):return str(sum((Decimal(v[key]) for v in vals if v.get(key) is not None),Decimal(0)))
     pending=[v for v in items if v['stage']=='PAYMENT'];future=[v for v in items if v['stage']=='FUTURE']
     kpi={'open':sum(v['stage'] in {'NEW','INTERESTED','PAYMENT','FUTURE'} for v in items),'pending':len(pending),'pending_value':total(pending,'outstanding'),'pending_unknown':sum(v.get('outstanding') is None for v in pending),'week':sum(bool(v.get('payment_date') and week<=date.fromisoformat(v['payment_date'])<=week+timedelta(days=6)) for v in pending),'week_start':str(week),'week_end':str(week+timedelta(days=6)),'future':len(future),'future_value':total(future,'estimated'),'future_unknown':sum(v.get('estimated') is None for v in future)}
-    items.sort(key=lambda v:(v.get('payment_date') if v['stage']=='PAYMENT' else v.get('purchase_date') if v['stage']=='FUTURE' else v.get('followup_date') or '9999') or '9999')
+    sort_items(items,p.get('sort','default'),now)
     for value in items:value['can_edit']=bool(value['current'] and (u.role=='ADMIN' or value['assigned_id']==u.id))
     if export:return items
     counts={s:sum(v['stage']==s for v in items) for s in LABELS}
     offset=int(p.get('offset','0'));limit=50
     if offset<0:raise HTTPException(422,'Invalid page')
-    board={s:[v for v in items if v['stage']==s][offset:offset+limit] for s in LABELS}
+    limits={}
+    for name in LABELS:
+        try:limits[name]=int(p.get('limit_'+name,limit))
+        except (ValueError,TypeError):raise HTTPException(422,'Invalid column page size') from None
+        if not 1<=limits[name]<=1000:raise HTTPException(422,'Column page size must be between 1 and 1000')
+    offsets={}
+    for name in LABELS:
+        try:offsets[name]=int(p.get('offset_'+name,offset))
+        except (ValueError,TypeError):raise HTTPException(422,'Invalid column offset') from None
+        if not 0<=offsets[name]<=100000:raise HTTPException(422,'Invalid column offset')
+    board={s:[v for v in items if v['stage']==s][offsets[s]:offsets[s]+limits[s]] for s in LABELS}
     staff={}
     for v in items:
         entry=staff.setdefault(v['assigned'],{'count':0,'pending':'0','overdue_followups':0});entry['count']+=1
@@ -190,7 +205,7 @@ def report(db,u,p,*,export=False):
         if not v.get('purchase_date') or v.get('estimated') is None:continue
         dt=date.fromisoformat(v['purchase_date'])
         for period in [dt.strftime('%Y-%m'),str(dt.isocalendar().year)+'-W'+str(dt.isocalendar().week)]:future_periods[period]=str(Decimal(future_periods.get(period,'0'))+Decimal(v['estimated']))
-    return {'columns':board,'counts':counts,'kpi':kpi,'offset':offset,'limit':limit,'report':{'expected_payments':expected,'potential_purchases_by_period':future_periods,'staff':staff,'confirmed_order_value':total([v for v in unique.values() if v['order']['currency']=='LKR'],'total'),'verified_received_applied':total([v for v in unique.values() if v['order']['currency']=='LKR'],'verified'),'overdue_expected':total([v for v in pending if v.get('payment_date') and v['payment_date']<str(now)],'outstanding'),'unknown_values':sum(v.get('total') is None and v.get('estimated') is None for v in items),'conversion':{'cohort':'Filtered opportunity creation dates and staff scope; closed/lost included unless a specific stage is selected; one purchase intent per opportunity','converted':sum(bool(v['order'] and v['order']['confirmed']) for v in cohort),'opportunities':len(cohort)}},'integration':{'status':'Configured — live delivery not verified' if settings.META_WHATSAPP_PHONE_NUMBER_ID and settings.META_WHATSAPP_ACCESS_TOKEN else 'Not configured'},'today':str(now)}
+    return {'columns':board,'counts':counts,'kpi':kpi,'offset':offset,'limit':limit,'limits':limits,'offsets':offsets,'report':{'expected_payments':expected,'potential_purchases_by_period':future_periods,'staff':staff,'confirmed_order_value':total([v for v in unique.values() if v['order']['currency']=='LKR'],'total'),'verified_received_applied':total([v for v in unique.values() if v['order']['currency']=='LKR'],'verified'),'overdue_expected':total([v for v in pending if v.get('payment_date') and v['payment_date']<str(now)],'outstanding'),'unknown_values':sum(v.get('total') is None and v.get('estimated') is None for v in items),'conversion':{'cohort':'Filtered opportunity creation dates and staff scope; closed/lost included unless a specific stage is selected; one purchase intent per opportunity','converted':sum(bool(v['order'] and v['order']['confirmed']) for v in cohort),'opportunities':len(cohort)}},'integration':{'status':'Configured — live delivery not verified' if settings.META_WHATSAPP_PHONE_NUMBER_ID and settings.META_WHATSAPP_ACCESS_TOKEN else 'Not configured'},'today':str(now)}
 
 def update(db,u,oid,p,key):
     if not isinstance(p,dict) or set(p)-FIELDS-{'version','owner_id','assignment_version'}:raise HTTPException(422,'Unknown opportunity field')
@@ -313,3 +328,43 @@ def remember_flushed_sources(db,context,instances):
 @event.listens_for(Session,'after_commit')
 def clear_sources(db):
     db.info.pop('pipeline_changed',None)
+
+
+def date_state(value,now=None):
+    if not value:return {'kind':'unknown','label':'Date Not Confirmed'}
+    n=(date.fromisoformat(value)-(now or today())).days
+    kind='overdue' if n<0 else 'today' if n==0 else 'tomorrow' if n==1 else 'upcoming'
+    label=f'Overdue by {-n} day'+('s' if n!=-1 else '') if n<0 else 'Due today' if n==0 else 'Due tomorrow' if n==1 else f'Due in {n} days'
+    return {'kind':kind,'label':label}
+
+
+def display_status(status,verified):
+    if status=='PAID' and (verified is None or Decimal(str(verified))<=0):return 'Paid — Verification Required'
+    return {'NEW':'New Inquiry','FOLLOW_UP':'Follow-up','OUT_OF_STOCK':'Out of Stock','FUTURE_BUYER':'Future Buyer','ORDER_CONFIRMED':'Order Confirmed'}.get(status,status.replace('_',' ').title())
+
+
+def sort_items(items,mode,now=None):
+    now=now or today()
+    valid={'default','latest','oldest','payment','purchase','followup','overdue','priority','value','unassigned'}
+    if mode not in valid:raise HTTPException(422,'Choose a supported sort order')
+    def dt(v,key):return (not bool(v.get(key)),v.get(key) or '9999-12-31')
+    def key(v):
+        tie=v['id']
+        if mode in {'latest','oldest'}:
+            value=datetime.fromisoformat(v['activity_at']).timestamp()
+            return (-value if mode=='latest' else value,tie)
+        if mode in {'payment','purchase','followup'}:return (*dt(v,mode+'_date'),tie)
+        if mode=='priority':return ({'HIGH':0,'MEDIUM':1,'LOW':2}.get(v.get('priority'),3),tie)
+        if mode=='unassigned':return (v.get('assigned_id') is not None,tie)
+        if mode=='value':
+            amount=v.get('total') if v.get('total') is not None else v.get('estimated')
+            return (amount is None,-Decimal(amount) if amount is not None else Decimal(0),tie)
+        if mode=='overdue':
+            fields=['followup_date']+(['payment_date'] if v['stage']=='PAYMENT' else ['purchase_date'] if v['stage']=='FUTURE' else [])
+            dates=[v[k] for k in fields if v.get(k)]
+            earliest=min(dates) if dates else None
+            return (not bool(earliest and earliest<str(now)),earliest or '9999-12-31',tie)
+        field='payment_date' if v['stage']=='PAYMENT' else 'purchase_date' if v['stage']=='FUTURE' else None
+        if field:return (*dt(v,field),tie)
+        return (-datetime.fromisoformat(v['activity_at']).timestamp(),tie)
+    items.sort(key=key)
