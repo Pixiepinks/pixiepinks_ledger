@@ -36,9 +36,9 @@ def encode(pcm):
     if abs(samples-duration)>.15:raise MonaraAudioError('MP3_DURATION_MISMATCH')
     return {**result,'duration':duration}
 
-def generate(transcript,model,voice,api_version):
+def generate(transcript,model,voice,api_version,style_prompt="",language="si"):
     python=settings.MONARA_TTS_PYTHON or str(Path(__file__).resolve().parent/'.monara-venv/bin/python')
-    payload={'transcript':transcript,'model':model,'voice':voice,'api_version':api_version,'timeout':max(5,min(60,settings.MONARA_TTS_TIMEOUT_SECONDS)),'max_pcm_bytes':min(4320000,settings.MONARA_TTS_MAX_AUDIO_SECONDS*48000)}
+    payload={'language':language,'style_prompt':style_prompt,'transcript':transcript,'model':model,'voice':voice,'api_version':api_version,'timeout':max(5,min(60,settings.MONARA_TTS_TIMEOUT_SECONDS)),'max_pcm_bytes':min(4320000,settings.MONARA_TTS_MAX_AUDIO_SECONDS*48000)}
     env={'PATH':'/usr/bin:/bin','GEMINI_API_KEY':settings.GEMINI_API_KEY}
     # Keep inherited CA/proxy configuration, never arbitrary application secrets.
     for key in ('HTTPS_PROXY','HTTP_PROXY','NO_PROXY','https_proxy','http_proxy','no_proxy','SSL_CERT_FILE','REQUESTS_CA_BUNDLE'):

@@ -1,0 +1,257 @@
+{
+  "baseline": "d8e6f6f",
+  "branch": "feature/monara-ai-voice-system",
+  "migration": "20261127_62",
+  "parent_migration": "20261126_61",
+  "final_distinct_results": {
+    "passed": 330
+  },
+  "retrieved_reports": [
+    {
+      "report": "monara-regressions.xml",
+      "retrieved_outcomes": {
+        "passed": 267,
+        "skipped": 2
+      },
+      "included_cases": 269,
+      "selection": "all"
+    },
+    {
+      "report": "monara-global-pg.xml",
+      "retrieved_outcomes": {
+        "passed": 2
+      },
+      "included_cases": 2,
+      "selection": "all"
+    },
+    {
+      "report": "monara-complete-final.xml",
+      "retrieved_outcomes": {
+        "passed": 78
+      },
+      "included_cases": 78,
+      "selection": "all"
+    },
+    {
+      "report": "monara-guard-final.xml",
+      "retrieved_outcomes": {
+        "passed": 6
+      },
+      "included_cases": 2,
+      "selection": "Monara service cases only; browser cases superseded by final parametrized browser report"
+    },
+    {
+      "report": "monara-policy-invalid.xml",
+      "retrieved_outcomes": {
+        "passed": 1
+      },
+      "included_cases": 1,
+      "selection": "all"
+    },
+    {
+      "report": "monara-sdk-portable.xml",
+      "retrieved_outcomes": {
+        "passed": 3
+      },
+      "included_cases": 3,
+      "selection": "all"
+    },
+    {
+      "report": "monara-mobile-regressions.xml",
+      "retrieved_outcomes": {
+        "passed": 2
+      },
+      "included_cases": 2,
+      "selection": "all"
+    },
+    {
+      "report": "monara-policy-audit.xml",
+      "retrieved_outcomes": {
+        "passed": 2
+      },
+      "included_cases": 2,
+      "selection": "all"
+    },
+    {
+      "report": "monara-approval-final.xml",
+      "retrieved_outcomes": {
+        "passed": 5
+      },
+      "included_cases": 5,
+      "selection": "all"
+    }
+  ],
+  "test_class_counts": {
+    "tests.test_saved_voices": 24,
+    "tests.test_audio_service": 2,
+    "tests.test_voice_ffmpeg_candidate": 27,
+    "tests.test_voice_audio_compatibility": 26,
+    "tests.test_media_delivery_status": 5,
+    "tests.test_whatsapp_quick_messages": 29,
+    "tests.test_global_ai_control": 27,
+    "tests.test_whatsapp_outbound_media": 33,
+    "tests.test_whatsapp_inbox_lead_status": 10,
+    "tests.test_manual_unread": 8,
+    "tests.test_customer_registration": 21,
+    "tests.test_order_recipient": 26,
+    "tests.test_sales_pipeline": 31,
+    "tests.test_monara": 54,
+    "tests.test_monara_browser": 5,
+    "tests.test_mobile_chat_layout": 2
+  },
+  "counting_notes": [
+    "Overlapping reruns counted once using latest retrieved case outcome.",
+    "Two SQLite-conditional Global AI lock skips subsequently passed on PostgreSQL.",
+    "Superseded failing Android test was corrected by adding Monara to the existing mobile action sheet, then verified in final browser results."
+  ],
+  "sdk_capabilities": {
+    "sdk": "3.6.1",
+    "custom_voice_supported": true,
+    "config": {
+      "temperature": 1.0,
+      "response_modalities": [
+        "audio"
+      ],
+      "speech_config": {
+        "voice_config": {
+          "voice": "voice_xu8nahptj1p9"
+        }
+      }
+    },
+    "model": "gemini-3.8-flash-tts",
+    "api_version": "v1beta",
+    "style_supported": true,
+    "language_code_supported": true,
+    "http_options": {
+      "api_version": "v1beta",
+      "timeout": 60000,
+      "retry_options": {
+        "attempts": 1
+      }
+    }
+  },
+  "sdk_wheel": {
+    "name": "google_genai-3.6.1-py3-none-any.whl",
+    "sha256": "4b35064da644f61d7e5f6c0e9406bf63b945e7e96b4af18cadb3371cbc3acf74"
+  },
+  "crm_dependencies_unchanged": {
+    "pydantic": "2.9.2",
+    "httpx": "0.27.2"
+  },
+  "pip_check": "Both isolated SDK and existing CRM environments passed",
+  "google_reference": {
+    "url": "https://github.com/google-gemini/cookbook/blob/2e212552b2318092ce1ca66eddced2558cb2522c/quickstarts/Get_started_TTS.ipynb",
+    "sha256": "04d46310d4b827d676be12fafeb53f5b8e92ea2fd5fe0b34aa2290367a298c8e"
+  },
+  "meta_documentation_review": {
+    "direct_documentation_fetch": "Blocked by environment allowlist (CONNECT 403)",
+    "standard_audio_payload": "Existing adapter exercised with mocked HTTP; voice flag omitted",
+    "native_voice_note_claim": false,
+    "live_acceptance_required": true
+  },
+  "audio_fixture": "0.5-second synthetic tone, locally encoded MP3 and OGG/Opus; not actual Monara speech",
+  "read_only_diagnostic": "Real READ ONLY disposable PostgreSQL transaction tested, no app startup or provider calls",
+  "screenshots": [
+    {
+      "path": "docs/images/monara/1366-library.png",
+      "dimensions": [
+        1366,
+        3495
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/1366-preview.png",
+      "dimensions": [
+        1366,
+        3241
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/1366-sent-and-usage.png",
+      "dimensions": [
+        1366,
+        3556
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/1648-inbox-panel.png",
+      "dimensions": [
+        1648,
+        928
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/1648-library.png",
+      "dimensions": [
+        1648,
+        3495
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/1648-preview.png",
+      "dimensions": [
+        1648,
+        3241
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/1648-sent-and-usage.png",
+      "dimensions": [
+        1648,
+        3556
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/412-inbox-panel.png",
+      "dimensions": [
+        412,
+        915
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/412-library.png",
+      "dimensions": [
+        412,
+        4833
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/412-preview.png",
+      "dimensions": [
+        412,
+        4471
+      ],
+      "synthetic_customer_data": true
+    },
+    {
+      "path": "docs/images/monara/412-sent-and-usage.png",
+      "dimensions": [
+        412,
+        4916
+      ],
+      "synthetic_customer_data": true
+    }
+  ],
+  "provider_calls_live": 0,
+  "live_whatsapp_messages_sent": 0,
+  "production_records_modified": false,
+  "production_variables_modified": false,
+  "merged": false,
+  "deployed": false,
+  "live_activation": "NO-GO pending owner release, documentation, billing/retention and separate live acceptance approvals",
+  "limitations": [
+    "No billable provider/recipient playback validation performed",
+    "Deliberate repeat of one asset to the same conversation remains fenced; no resend override",
+    "Retention access expiry is immediate; physical purge requires approved regular admin maintenance",
+    "Estimated costs/reservations are not actual provider billing or a Google-enforced spend cap"
+  ]
+}

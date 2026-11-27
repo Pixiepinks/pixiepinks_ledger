@@ -12,8 +12,9 @@ from settings import settings
 import conversation_access as access
 from quick_message_service import require_reply_window
 import monara_audio
+from monara_styles import PROMPTS,LABELS
 
-DEFAULT={'generation':False,'sending':False,'staff_ids':[],'monthly_characters':50000,'daily_requests_per_staff':20,'monthly_budget':'0','reserve_per_request':'0','price_per_1000_characters':None,'currency':'USD','retention_days':7,'default_style':'transcript_only'}
+DEFAULT={'generation':False,'sending':False,'staff_ids':[],'monthly_characters':50000,'daily_requests_per_staff':20,'monthly_budget':'0','reserve_per_request':'0','price_per_1000_characters':None,'currency':'USD','retention_days':7,'default_style':'friendly','style_prompts':PROMPTS}
 DISCLOSURE='AI-generated voice — PixiePinks Monara / AI හඬ පණිවිඩය'
 
 def hashv(v):return hashlib.sha256(json.dumps(v,sort_keys=True,default=str).encode()).hexdigest()
@@ -41,7 +42,8 @@ def configure(db,user,values):
     authorize(db,user,admin=True)
     if not isinstance(values,dict) or set(values)!={'version','policy'} or type(values['version']) is not int or not isinstance(values['policy'],dict):raise HTTPException(422,'Version and complete policy required')
     p=values['policy']
-    if set(p)!=set(DEFAULT) or type(p['generation']) is not bool or type(p['sending']) is not bool or p['default_style']!='transcript_only':raise HTTPException(422,'Invalid policy or unsupported style')
+    if set(p)!=set(DEFAULT) or type(p['generation']) is not bool or type(p['sending']) is not bool or not isinstance(p['default_style'],str) or p['default_style'] not in PROMPTS:raise HTTPException(422,'Invalid policy or unsupported style')
+    if not isinstance(p['style_prompts'],dict) or set(p['style_prompts'])!=set(PROMPTS) or any(not isinstance(v,str) or len(v)>1000 or (k!='transcript_only' and not v.strip()) for k,v in p['style_prompts'].items()) or p['style_prompts']['transcript_only']!='':raise HTTPException(422,'Valid bounded non-spoken style presets required')
     if not isinstance(p['staff_ids'],list) or len(p['staff_ids'])>500 or any(type(x) is not int or x<=0 for x in p['staff_ids']):raise HTTPException(422,'Choose valid staff IDs')
     if db.query(User).filter(User.id.in_(p['staff_ids']),User.is_active.is_(True)).count()!=len(set(p['staff_ids'])):raise HTTPException(422,'Staff account unavailable')
     for key,maxi in [('monthly_characters',1000000),('daily_requests_per_staff',100),('retention_days',90)]:
@@ -56,7 +58,8 @@ def configure(db,user,values):
     row=lock_policy(db)
     if p['currency']!=policy(db)['currency'] and db.query(J).filter(J.created_at>=datetime.utcnow().replace(day=1,hour=0,minute=0,second=0,microsecond=0)).first():raise HTTPException(409,'Keep one budget currency throughout the current UTC month')
     if row.version!=values['version']:raise HTTPException(409,'Policy changed; refresh')
-    row.data=p;row.version+=1;event(db,user,'POLICY_CHANGED',version=row.version);db.flush();return {'version':row.version,'policy':p}
+    previous={k:v for k,v in policy(db).items() if k!='style_prompts'}
+    row.data=p;row.version+=1;event(db,user,'POLICY_CHANGED',version=row.version,previous=previous,current={k:v for k,v in p.items() if k!='style_prompts'},style_digest=hashv(p['style_prompts']));db.flush();return {'version':row.version,'policy':p}
 
 def valid_key(key):
     if not isinstance(key,str) or not re.fullmatch('[A-Za-z0-9_-]{16,90}',key):raise HTTPException(422,'Idempotency key required')
@@ -67,7 +70,7 @@ def create(db,user,cid,values,key):
     if not isinstance(values,dict) or set(values)!={'transcript','language','style'}:raise HTTPException(422,'Transcript, language and style required')
     text=values['transcript']
     if not isinstance(text,str) or not text.strip() or len(text)>min(1000,settings.MONARA_TTS_MAX_CHARACTERS) or re.search('[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]',text):raise HTTPException(422,'Transcript is empty, too long or contains control characters')
-    if values['language'] not in ('si','en','ta') or values['style']!='transcript_only':raise HTTPException(422,'Choose a supported language and transcript-only style')
+    if not isinstance(values['language'],str) or values['language'] not in ('si','en','ta') or not isinstance(values['style'],str) or values['style'] not in PROMPTS:raise HTTPException(422,'Choose a supported language and style')
     c=access.require_owned(db,user,cid);lock_policy(db);p=policy(db)
     fingerprint=hashv({'staff':user.id,'conversation':cid,'recipient':hashv(c.phone_number),'values':values,'model':settings.MONARA_TTS_MODEL,'voice':settings.MONARA_TTS_VOICE_ID})
     prior=db.query(J).filter_by(request_key=key).one_or_none()
@@ -87,7 +90,7 @@ def create(db,user,cid,values,key):
     reserve=Decimal(str(p['reserve_per_request']));budget=Decimal(str(p['monthly_budget']))
     if chars+len(text)>p['monthly_characters'] or reserve<=0 or budget<=0 or Decimal(cost)+reserve>budget:raise HTTPException(429,'Monthly reserved usage budget reached')
     estimate=Decimal(str(p['price_per_1000_characters']))*len(text)/1000 if p['price_per_1000_characters'] is not None else None
-    job=J(id=str(uuid4()),request_key=key,fingerprint=fingerprint,staff_id=user.id,conversation_id=cid,recipient_hash=hashv(c.phone_number),status='PENDING',transcript=text,language=values['language'],style=values['style'],model=settings.MONARA_TTS_MODEL,voice=settings.MONARA_TTS_VOICE_ID,api_version=settings.MONARA_TTS_API_VERSION,characters=len(text),estimated_cost=estimate,reserved_cost=reserve,usage={'currency':p['currency'],'pricing_basis':'operator-configured input-character estimate; not actual billing'},expires_at=now+timedelta(days=min(p['retention_days'],max(1,settings.MONARA_TTS_RETENTION_DAYS))))
+    job=J(id=str(uuid4()),request_key=key,fingerprint=fingerprint,staff_id=user.id,conversation_id=cid,recipient_hash=hashv(c.phone_number),status='PENDING',transcript=text,language=values['language'],style=values['style'],style_prompt=p['style_prompts'][values['style']],model=settings.MONARA_TTS_MODEL,voice=settings.MONARA_TTS_VOICE_ID,api_version=settings.MONARA_TTS_API_VERSION,characters=len(text),estimated_cost=estimate,reserved_cost=reserve,usage={'currency':p['currency'],'pricing_basis':'operator-configured input-character estimate; not actual billing'},expires_at=now+timedelta(days=min(p['retention_days'],max(1,settings.MONARA_TTS_RETENTION_DAYS))))
     db.add(job);db.flush();event(db,user,'GENERATION_RESERVED',job.id,characters=len(text));return job
 
 def process(sessions,jid,provider=None):
@@ -102,7 +105,7 @@ def process(sessions,jid,provider=None):
             job.status='FAILED';job.failure='AUTHORIZATION_CHANGED';event(db,user,'GENERATION_BLOCKED',jid);db.commit();return
         job.status='GENERATING';job.started_at=datetime.utcnow();event(db,user,'GENERATION_STARTED',jid);db.commit()
         try:
-            output=(provider or monara_audio.generate)(job.transcript,job.model,job.voice,job.api_version)
+            output=(provider or monara_audio.generate)(job.transcript,job.model,job.voice,job.api_version,job.style_prompt,job.language)
             # Revalidate even injected provider adapters; media never trusts extension names.
             from audio_service import validate_voice_audio
             info=validate_voice_audio(output['ogg'])

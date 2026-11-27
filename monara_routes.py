@@ -15,11 +15,11 @@ def build_router(get_db,require_user,csrf,token,templates,sessions,upload,delive
     @r.get('/crm/monara')
     def page(request:Request,user=Depends(require_user),db=Depends(get_db)):
         svc.authorize(db,user)
-        return templates.TemplateResponse('monara.html',{'request':request,'user':user,'page_title':'Monara AI Voice','csrf_token':token(request),'admin':user.role=='ADMIN','embedded':request.query_params.get('embedded')=='1'},headers=HEADERS)
+        return templates.TemplateResponse('monara.html',{'request':request,'user':user,'page_title':'Monara AI Voice','csrf_token':token(request),'admin':user.role=='ADMIN','embedded':request.query_params.get('embedded')=='1','styles':svc.LABELS},headers=HEADERS)
     @r.get('/crm/monara/context/{cid}')
     def context(cid:int,request:Request,user=Depends(require_user),db=Depends(get_db)):
         svc.authorize(db,user);c=access.require_visible(db,user,cid);p=svc.policy(db)
-        return {'id':c.id,'name':c.customer_name,'assignment_version':c.assignment_version,'staff_id':user.id,'csrf_token':token(request),'generation_enabled':settings.MONARA_TTS_ENABLED and p['generation'],'send_enabled':settings.MONARA_TTS_SEND_ENABLED and p['sending'],'max_characters':min(1000,settings.MONARA_TTS_MAX_CHARACTERS),'voice':'PixiePinks – Monara 2','model':settings.MONARA_TTS_MODEL,'style':'transcript_only','style_notice':'Style presets unverified: no style instructions are inserted into the transcript.','disclosures':svc.DISCLOSURES,'delivery_behavior':'Standard audio attachment; no native voice-note claim'}
+        return {'id':c.id,'name':c.customer_name,'assignment_version':c.assignment_version,'staff_id':user.id,'csrf_token':token(request),'generation_enabled':settings.MONARA_TTS_ENABLED and p['generation'],'send_enabled':settings.MONARA_TTS_SEND_ENABLED and p['sending'],'max_characters':min(1000,settings.MONARA_TTS_MAX_CHARACTERS),'voice':'PixiePinks – Monara 2','model':settings.MONARA_TTS_MODEL,'style':p['default_style'],'styles':svc.LABELS,'style_notice':'Style instructions use separate SpeechMetadata; authored text is unchanged.','disclosures':svc.DISCLOSURES,'delivery_behavior':'Standard audio attachment; no native voice-note claim'}
     @r.post('/crm/monara/conversations/{cid}/generate')
     async def generate(cid:int,request:Request,tasks:BackgroundTasks,user=Depends(require_user),db=Depends(get_db)):
         csrf(request);values=await read_body(request)
@@ -55,8 +55,11 @@ def build_router(get_db,require_user,csrf,token,templates,sessions,upload,delive
     async def send(jid:str,cid:int,request:Request,user=Depends(require_user),db=Depends(get_db)):
         csrf(request);values=await read_body(request)
         from starlette.concurrency import run_in_threadpool
+        from saved_voice_routes import SEND_SLOTS
+        if not SEND_SLOTS.acquire(blocking=False):raise HTTPException(429,'Voice sending is busy; check the original request before retrying')
         try:return await run_in_threadpool(svc.send,db,user,cid,jid,values,request.headers.get('Idempotency-Key',''),upload,deliver)
         except (IntegrityError,OperationalError):db.rollback();raise HTTPException(409,'Original send intent already claimed; check status, never resend uncertain output') from None
+        finally:SEND_SLOTS.release()
     @r.get('/crm/monara/admin')
     def admin(user=Depends(require_user),db=Depends(get_db)):
         svc.authorize(db,user,admin=True);row=db.get(P,1)

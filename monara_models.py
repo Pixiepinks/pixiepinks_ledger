@@ -19,6 +19,7 @@ class MonaraJob(Base):
     transcript=Column(Text,nullable=False)
     language=Column(String(8),nullable=False)
     style=Column(String(40),nullable=False,default='transcript_only')
+    style_prompt=Column(Text,nullable=False,default='')
     model=Column(String(100),nullable=False)
     voice=Column(String(100),nullable=False)
     api_version=Column(String(30),nullable=False)
