@@ -11,4 +11,4 @@ PIP_ONLY_BINARY = "av"
 
 # Record provenance inside the built artifact; never infer deployment from a push.
 [phases.build]
-cmds = ["...", "python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements.voice-diagnostics.txt", "python -c \"import voice_diagnostic_tools as t; assert t.runtime().get('verified'), 'Pinned FFmpeg verification failed'\"", "python -m venv .monara-venv && .monara-venv/bin/pip install -r requirements.monara.txt", "python build_info.py --write"]
+cmds = ["...", "python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements.voice-diagnostics.txt", "python -c \"import voice_diagnostic_tools as t; assert t.runtime().get('verified'), 'Pinned FFmpeg verification failed'\"", "python -m venv .monara-venv && .monara-venv/bin/pip install -r requirements.monara.txt", ".monara-venv/bin/python monara_sdk_worker.py --capabilities", "python build_info.py --write"]
