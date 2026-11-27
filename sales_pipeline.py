@@ -100,7 +100,7 @@ def batch(db,rows):
     messages={m.phone_number:m.message_text or '' for m in db.query(M).join(last,M.id==last.c.mid).filter(last.c.position==1)}
     result=[]
     for o in rows:
-        c=cs[o.conversation_id];l=ls[o.lead_id];d=dict(o.data);s=stage(o,l);order=orders.get(d.get('order_id'))
+        c=cs[o.conversation_id];l=ls[o.lead_id];d={k:v for k,v in o.data.items() if k!='investigation'};s=stage(o,l);order=orders.get(d.get('order_id'))
         # A status label alone is never evidence of authoritative order conversion.
         valid=bool(order and order.crm_conversation_id==c.id and convertible(order))
         if s=='CONFIRMED' and not valid:s='PAYMENT' if l.status=='PAID' else 'INTERESTED'
@@ -111,6 +111,9 @@ def batch(db,rows):
         result.append({**d,'id':o.id,'version':o.version,'conversation_id':c.id,'assignment_version':c.assignment_version,'lead_status':l.status if o.active_conversation_id else d.get('archived_lead_status',CANONICAL.get(s,'LOST')),'stage':s,'source_stage':STAGES.get(l.status,'CLOSED') if o.active_conversation_id else s,'label':LABELS[s],'name':c.customer_name or l.customer_name,'phone':c.phone_number,'assigned_id':c.assigned_to_user_id,'assigned':users.get(c.assigned_to_user_id,'Unassigned'),'message':messages.get(c.phone_number,''),'activity_at':(c.last_customer_message_at or c.last_message_at or o.created_at).replace(tzinfo=timezone.utc).astimezone(TZ).isoformat(),'created_at':o.created_at.replace(tzinfo=timezone.utc).astimezone(TZ).isoformat(),'verified':str(verified) if verified is not None else None,'outstanding':str(outstanding) if outstanding is not None else None,'total':str(total) if total is not None else None,'review_required':STAGES.get(l.status)=='CONFIRMED' and not valid,'order':{'id':order.id,'number':order.internal_order_number,'status':order.order_status,'payment':order.payment_status,'shopify':order.shopify_order_name if order.shopify_order_id else None,'customer_id':order.customer_id,'currency':order.currency,'confirmed':valid} if linked else None,'due_label':due_label(d.get('payment_date') if s=='PAYMENT' else d.get('purchase_date')),'current':o.active_conversation_id is not None})
     for value in result:
         value['status_label']=display_status(value['lead_status'],value['verified'])
+        if value['order'] and value['order']['confirmed']:
+            paid_amount=Decimal(value['verified'] or '0');recorded=value['order']['payment']
+            value['confirmation_label']='Confirmed — '+('Payment Verification Required' if recorded=='PAID' and (paid_amount<=0 or paid_amount<Decimal(value['total'])) else 'Partially Paid' if paid_amount>0 and paid_amount<Decimal(value['total']) else 'Paid' if paid_amount>0 and paid_amount>=Decimal(value['total']) else 'Unpaid')+' · '+value['order']['status'].replace('_',' ').title()
         value['payment_due']=date_state(value.get('payment_date'))
         value['purchase_due']=date_state(value.get('purchase_date'))
         value['followup_due']=date_state(value.get('followup_date'))
@@ -224,6 +227,7 @@ def update(db,u,oid,p,key):
         return o
     if type(p.get('version')) is not int or p['version']!=o.version:raise HTTPException(409,'Opportunity changed. Refresh and review.')
     old=dict(o.data);d={**old,**{k:v for k,v in p.items() if k in FIELDS}}
+    if old.get('order_id') is not None and d.get('order_id')!=old['order_id']:raise HTTPException(409,'Existing order associations require a separately approved correction workflow')
     if not isinstance(d.get('stage'),str) or d.get('stage') not in LABELS:raise HTTPException(422,'Choose a pipeline stage')
     if not isinstance(d.get('priority','MEDIUM'),str) or d.get('priority','MEDIUM') not in {'HIGH','MEDIUM','LOW'}:raise HTTPException(422,'Choose a priority')
     for k in ['product','note','closed_reason']:
@@ -235,6 +239,7 @@ def update(db,u,oid,p,key):
         if not d.get('range_start') or not d.get('range_end') or d['range_start']>d['range_end']:raise HTTPException(422,'Supply a valid approximate date range')
         d['payment_date']=d['purchase_date']=None
     if d.get('precision')=='UNKNOWN':d['payment_date']=d['purchase_date']=None
+    if old.get('order_id') is None and d.get('order_id') is not None and db.get(Lead,o.lead_id).status in {'ORDER_CONFIRMED','DISPATCHED','DELIVERED','PAID'}:raise HTTPException(409,'Use administrator Order Reconciliation for historical associations')
     if d.get('order_id') is not None:
         linked=db.get(SalesOrder,d['order_id']) if type(d['order_id']) is int else None
         if not linked or linked.crm_conversation_id!=c.id:raise HTTPException(409,'Order/conversation identity mismatch')

@@ -3,7 +3,7 @@ from datetime import datetime
 import csv,io
 from fastapi import APIRouter,Depends,Request,HTTPException,Query
 from fastapi.responses import Response
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError,OperationalError
 from crm_dashboard_routes import DashboardRoute
 import sales_pipeline as s
 from sales_pipeline_models import SalesOpportunity as O,SalesPipelineEvent as E,SalesPipelineControl as Control
@@ -22,15 +22,47 @@ def build_router(get_db,require_user,csrf,token,templates):
         s.authorize(user)
         try:
             data=s.report(db,user,dict(request.query_params))
+            if user.role=='ADMIN':
+                import sales_pipeline_reconciliation as rec
+                data['reconciliation_review_count']=rec.listing(db,user,{'size':'1'})['counts']['ready']
             data['staff']=[{'id':v.id,'name':v.username} for v in db.query(User).filter(User.is_active.is_(True),User.role.in_(['ADMIN','STAFF','SALES_AGENT','SALES_MANAGER']))] if user.role=='ADMIN' else []
             return data
         except (ValueError,TypeError):raise HTTPException(422,'Invalid filter') from None
+    @r.get('/crm/sales-pipeline/reconciliation')
+    def reconciliation_page(request:Request,user=Depends(require_user)):
+        import sales_pipeline_reconciliation as rec
+        rec.authorize(user)
+        return templates.TemplateResponse('sales_pipeline_reconciliation.html',{'request':request,'user':user,'page_title':'Order Reconciliation','csrf_token':token(request)})
+    @r.get('/crm/sales-pipeline/reconciliation/api')
+    def reconciliation_list(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import sales_pipeline_reconciliation as rec
+        return rec.listing(db,user,dict(request.query_params))
+    @r.get('/crm/sales-pipeline/reconciliation/api/{oid:int}')
+    def reconciliation_detail(oid:int,db=Depends(get_db),user=Depends(require_user)):
+        import sales_pipeline_reconciliation as rec
+        return rec.evidence(db,user,oid)
+    @r.post('/crm/sales-pipeline/reconciliation/{action}')
+    async def reconciliation_write(action:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import sales_pipeline_reconciliation as rec
+        rec.authorize(user);csrf(request);p=await read_body(request)
+        if not isinstance(p,dict):raise HTTPException(422,'JSON object required')
+        try:
+            if action=='preview':return rec.preview(db,user,p)
+            if action=='associate':result=rec.associate(db,user,p,request.headers.get('Idempotency-Key',''))
+            elif action=='investigate':
+                oid=p.pop('opportunity_id',None);result=rec.investigate(db,user,oid,p,request.headers.get('Idempotency-Key',''))
+            else:raise HTTPException(404,'Unknown reconciliation action')
+            db.commit();return result
+        except (HTTPException,IntegrityError,OperationalError) as error:
+            db.rollback()
+            if isinstance(error,HTTPException):raise
+            raise HTTPException(409,'Concurrent association conflict; refresh and review') from None
     @r.get('/crm/sales-pipeline/api/{oid:int}')
     def detail(oid:int,db=Depends(get_db),user=Depends(require_user)):
         s.authorize(user);o=s.scope(db,user).filter(O.id==oid).one_or_none()
         if not o:raise HTTPException(404,'Opportunity not found')
         c=access.require_visible(db,user,o.conversation_id)
-        return {'opportunity':s.batch(db,[o])[0],'can_edit':access.permissions(db,user,c)['can_manage'] and o.active_conversation_id is not None,'history':[{'previous':v.previous,'current':v.current,'actor_id':v.actor_id,'at':s.stamp(v.created_at)} for v in db.query(E).filter_by(opportunity_id=oid).order_by(E.id.desc()).limit(50)]}
+        return {'opportunity':s.batch(db,[o])[0],'can_edit':access.permissions(db,user,c)['can_manage'] and o.active_conversation_id is not None,'history':[{'previous':{k:x for k,x in v.previous.items() if user.role=='ADMIN' or k!='investigation'},'current':{k:x for k,x in v.current.items() if user.role=='ADMIN' or k!='investigation'},'actor_id':v.actor_id,'at':s.stamp(v.created_at)} for v in db.query(E).filter_by(opportunity_id=oid).order_by(E.id.desc()).limit(50) if user.role=='ADMIN' or v.current.get('source')!='ADMIN_ORDER_RECONCILIATION']}
     @r.post('/crm/sales-pipeline/api/{oid:int}')
     async def edit(oid:int,request:Request,db=Depends(get_db),user=Depends(require_user)):
         s.authorize(user);csrf(request);p=await read_body(request)
@@ -110,6 +142,7 @@ def build_router(get_db,require_user,csrf,token,templates):
         o=s.scope(db,user).filter(O.id==oid).with_for_update().one_or_none()
         if not o:raise HTTPException(404,'Opportunity not found')
         c=access.require_visible(db,user,o.conversation_id);s.manageable(db,user,c)
+        if db.get(Lead,o.lead_id).status in {'ORDER_CONFIRMED','DISPATCHED','DELIVERED','PAID'} and not o.order_id:raise HTTPException(409,'Use administrator Order Reconciliation for historical associations')
         from models import SalesOrder
         order=db.get(SalesOrder,p.get('order_id')) if type(p.get('order_id')) is int else None
         if not order or order.crm_conversation_id!=c.id:raise HTTPException(409,'Order/conversation identity mismatch')
