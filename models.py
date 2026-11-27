@@ -1288,3 +1288,5 @@ from loyalty_models import LoyaltyHistoryScan,LoyaltyHistoricalOrder,LoyaltyReco
 
 # Imported after core conversation/order declarations to register additive metadata.
 from sales_pipeline_models import SalesOpportunity, SalesPipelineEvent, SalesPipelineReminder, SalesPipelineControl
+
+from monara_models import MonaraJob, MonaraSend, MonaraPolicy, MonaraEvent

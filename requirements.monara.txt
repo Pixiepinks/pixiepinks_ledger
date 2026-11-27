@@ -1,0 +1,2 @@
+# Separate environment: preserve the CRM's Pydantic/httpx pins.
+google-genai==3.6.1
