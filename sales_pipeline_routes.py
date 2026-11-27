@@ -22,9 +22,40 @@ def build_router(get_db,require_user,csrf,token,templates):
         s.authorize(user)
         try:
             data=s.report(db,user,dict(request.query_params))
+            if user.role=='ADMIN':
+                import sales_pipeline_reconciliation as rec
+                data['reconciliation_review_count']=rec.listing(db,user,{'size':'1'})['counts']['ready']
             data['staff']=[{'id':v.id,'name':v.username} for v in db.query(User).filter(User.is_active.is_(True),User.role.in_(['ADMIN','STAFF','SALES_AGENT','SALES_MANAGER']))] if user.role=='ADMIN' else []
             return data
         except (ValueError,TypeError):raise HTTPException(422,'Invalid filter') from None
+    @r.get('/crm/sales-pipeline/reconciliation')
+    def reconciliation_page(request:Request,user=Depends(require_user)):
+        import sales_pipeline_reconciliation as rec
+        rec.authorize(user)
+        return templates.TemplateResponse('sales_pipeline_reconciliation.html',{'request':request,'user':user,'page_title':'Order Reconciliation','csrf_token':token(request)})
+    @r.get('/crm/sales-pipeline/reconciliation/api')
+    def reconciliation_list(request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import sales_pipeline_reconciliation as rec
+        return rec.listing(db,user,dict(request.query_params))
+    @r.get('/crm/sales-pipeline/reconciliation/api/{oid:int}')
+    def reconciliation_detail(oid:int,db=Depends(get_db),user=Depends(require_user)):
+        import sales_pipeline_reconciliation as rec
+        return rec.evidence(db,user,oid)
+    @r.post('/crm/sales-pipeline/reconciliation/{action}')
+    async def reconciliation_write(action:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
+        import sales_pipeline_reconciliation as rec
+        rec.authorize(user);csrf(request);p=await read_body(request)
+        try:
+            if action=='preview':return rec.preview(db,user,p)
+            if action=='associate':result=rec.associate(db,user,p,request.headers.get('Idempotency-Key',''))
+            elif action=='investigate':
+                oid=p.pop('opportunity_id',None);result=rec.investigate(db,user,oid,p,request.headers.get('Idempotency-Key',''))
+            else:raise HTTPException(404,'Unknown reconciliation action')
+            db.commit();return result
+        except (HTTPException,IntegrityError) as error:
+            db.rollback()
+            if isinstance(error,HTTPException):raise
+            raise HTTPException(409,'Concurrent association conflict; refresh and review') from None
     @r.get('/crm/sales-pipeline/api/{oid:int}')
     def detail(oid:int,db=Depends(get_db),user=Depends(require_user)):
         s.authorize(user);o=s.scope(db,user).filter(O.id==oid).one_or_none()

@@ -224,6 +224,7 @@ def update(db,u,oid,p,key):
         return o
     if type(p.get('version')) is not int or p['version']!=o.version:raise HTTPException(409,'Opportunity changed. Refresh and review.')
     old=dict(o.data);d={**old,**{k:v for k,v in p.items() if k in FIELDS}}
+    if old.get('order_id') is not None and d.get('order_id')!=old['order_id']:raise HTTPException(409,'Existing order associations require a separately approved correction workflow')
     if not isinstance(d.get('stage'),str) or d.get('stage') not in LABELS:raise HTTPException(422,'Choose a pipeline stage')
     if not isinstance(d.get('priority','MEDIUM'),str) or d.get('priority','MEDIUM') not in {'HIGH','MEDIUM','LOW'}:raise HTTPException(422,'Choose a priority')
     for k in ['product','note','closed_reason']:
