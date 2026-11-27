@@ -19,14 +19,15 @@ def test_monara_preview_library_explicit_send_and_admin(setup,monkeypatch,width,
         page.goto('https://loyalty.test/crm/monara?conversation='+str(v.ids[0]))
         expect(page.locator('#monara-context')).to_contain_text('Conversation '+str(v.ids[0]))
         assert not page.locator('#monara-generate').is_disabled()
-        page.locator('#monara-text').fill(__import__('monara_service').DISCLOSURES['si']+'\nSynthetic Monara voice acceptance message.')
+        assert page.locator('#monara-text').input_value()==''
+        page.locator('#monara-text').fill('Synthetic Monara voice acceptance message.')
         page.locator('#monara-generate').click();expect(page.locator('#monara-status')).to_contain_text('Voice ready')
         assert calls==[]
         expect(page.locator('#monara-player')).to_be_visible();assert page.locator('#monara-send').is_disabled()
         original=page.locator('#monara-text').input_value()
         page.locator('#monara-approval').check();assert not page.locator('#monara-send').is_disabled()
         page.locator('#monara-text').fill(original+' Edited');assert page.locator('#monara-send').is_disabled()
-        page.locator('#monara-language').select_option('en');assert 'Synthetic Monara voice acceptance message. Edited' in page.locator('#monara-text').input_value()
+        page.locator('#monara-language').select_option('en');assert page.locator('#monara-text').input_value()==original+' Edited'
         page.locator('#monara-language').select_option('si');page.locator('#monara-text').fill(original)
         page.screenshot(path=str(folder/f'{width}-preview.png'),full_page=True)
         page.locator('#monara-title').fill('Synthetic welcome');page.locator('#monara-share-approved').check();page.locator('#monara-save').click()

@@ -100,13 +100,13 @@ of live Meta acceptance or recipient playback is made.
 
 ## Approval, disclosure and send fencing
 
-The editor visibly starts with a localized AI disclosure, which the staff member may
-review/edit as part of their message. Sending requires that the frozen transcript
-starts with the displayed disclosure for its selected language and that the staff
-member confirms hearing it in the actual preview. Nothing is silently prepended by
-the provider adapter. If it is missing, edit and explicitly regenerate before sending.
-The customer-facing disclosure is therefore spoken in the approved audio, rather than
-an unsupported audio caption or an extra automatically sent text message.
+The editor starts empty. A spoken AI disclosure is optional in the application;
+staff-authored text is never automatically prefixed or rewritten when changing
+language. Staff must listen to and explicitly approve the exact generated audio
+for the displayed conversation. Editing requires regeneration and fresh approval.
+The CRM continues to label Monara audio as AI-generated internally. This change
+is not a determination that disclosure is unnecessary under applicable provider,
+platform or legal obligations; the owner must review those obligations before rollout.
 
 Sending has a separate lifecycle: NOT_SENT → UPLOADING → SENDING → SENT,
 FAILED or UNKNOWN_REVIEW. Recipient/assignment, authorization, messaging window,
@@ -254,12 +254,12 @@ check is not live provider compatibility or send authorization.
    Verify only presence/capabilities; do not generate from the diagnostic.
 4. Separately approve generation enablement and a tightly limited admin-only policy.
    Authorize one short **billable** synthetic/non-customer preview. Check exact words,
-   AI disclosure, Sinhala pronunciation, Friendly style, duration and MP3/OGG quality.
+   any authored disclosure, Sinhala pronunciation, Friendly style, duration and MP3/OGG quality.
    Test English/Tamil/other styles only within separately approved budget.
 5. Keep sending OFF while validating preview/library permissions and retention.
 6. Separately approve sending enablement, one explicit recipient/test conversation
    with a valid customer-service window, and one staff-approved audio. Review Meta
-   acceptance, actual recipient playback and disclosure, then delivery callbacks.
+   acceptance, actual recipient playback and any applicable disclosure, then delivery callbacks.
    Verify refresh/retry/restart produces no duplicate. No such test ran here.
 7. Expand staff permissions/quotas only after acceptance. Continue monitoring usage,
    uncertain sends, storage and retention. No automatic replies or voice sends.
