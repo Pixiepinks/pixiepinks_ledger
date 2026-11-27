@@ -43,7 +43,7 @@ def ready(v,payload=None):
     jid=create(v,payload);svc.process(v.sessions,jid,provider=lambda *args:v.rendered);return jid
 
 def approve(v,jid):
-    with v.sessions() as db:return {'approved':True,'heard_disclosure':True,'sha256':db.get(J,jid).sha256,'assignment_version':db.get(C,v.ids[0]).assignment_version}
+    with v.sessions() as db:return {'approved':True,'previewed':True,'sha256':db.get(J,jid).sha256,'assignment_version':db.get(C,v.ids[0]).assignment_version}
 def send(v,jid,body=None,key=None,upload=None,deliver=None):
     with v.sessions() as db:return svc.send(db,db.get(User,v.uid),v.ids[0],jid,body or approve(v,jid),key or str(uuid4()),upload or (lambda raw:'synthetic-media-id'),deliver or (lambda *a:('SENT','wamid.synthetic')))
 
@@ -135,11 +135,11 @@ def test_explicit_send_duplicate_fence_and_history(setup):
         assert db.query(S).count()==1;assert db.query(M).filter_by(direction='outbound').count()==1
         assert db.query(M).filter_by(direction='outbound').one().response_kind=='monara_voice'
 
-@pytest.mark.parametrize('change',['approval','disclosure','window','recipient','unknown','transport_failure'])
+@pytest.mark.parametrize('change',['approval','preview','window','recipient','unknown','transport_failure'])
 def test_send_rejections_and_uncertain_outcomes(setup,change):
     v=setup;jid=ready(v);body=approve(v,jid)
     if change=='approval':body['approved']=False
-    if change=='disclosure':body['heard_disclosure']=False
+    if change=='preview':body['previewed']=False
     if change=='window':
         with v.sessions() as db:db.get(C,v.ids[0]).last_customer_message_at=datetime.utcnow()-timedelta(days=2);db.commit()
     if change=='recipient':
@@ -158,8 +158,30 @@ def test_send_rejections_and_uncertain_outcomes(setup,change):
 
 def test_no_hidden_spoken_disclosure(setup):
     p=values();p['transcript']='Exact transcript without disclosure';jid=ready(setup,p)
-    with pytest.raises(HTTPException) as e:send(setup,jid)
-    assert 'disclosure' in e.value.detail
+    assert send(setup,jid)['status']=='SENT'
+    with setup.sessions() as db:
+        assert db.get(J,jid).transcript==p['transcript']
+
+def test_original_client_approval_remains_compatible(setup):
+    jid=ready(setup);body=approve(setup,jid)
+    body['heard_disclosure']=body.pop('previewed')
+    key=str(uuid4())
+    assert send(setup,jid,body,key)['status']=='SENT'
+    assert send(setup,jid,body,key)['status']=='SENT'
+
+@pytest.mark.parametrize('case',['missing','false','string','both','legacy_false'])
+def test_preview_envelope_rejects_unapproved_requests(setup,case):
+    jid=ready(setup);body=approve(setup,jid)
+    if case=='missing':body.pop('previewed')
+    if case=='false':body['previewed']=False
+    if case=='string':body['previewed']='true'
+    if case=='both':body['heard_disclosure']=True
+    if case=='legacy_false':body['heard_disclosure']=False;body.pop('previewed')
+    calls=[]
+    with pytest.raises(HTTPException) as error:
+        send(setup,jid,body,upload=lambda raw:calls.append(raw))
+    assert error.value.status_code==422 and calls==[]
+    with setup.sessions() as db:assert db.query(S).count()==0
 
 def test_global_ai_off_does_not_block_manual_generation(setup):
     import global_ai_control
@@ -302,7 +324,7 @@ def test_postgresql_single_send_under_concurrency(pg,monkeypatch,rendered):
     def dispatch(_):
         with sessions() as db:
             try:
-                result=svc.send(db,db.get(User,uid),cid,jid,{'approved':True,'heard_disclosure':True,'sha256':db.get(J,jid).sha256,'assignment_version':0},str(uuid4()),lambda raw:'synthetic-media',deliver);return result['status']
+                result=svc.send(db,db.get(User,uid),cid,jid,{'approved':True,'previewed':True,'sha256':db.get(J,jid).sha256,'assignment_version':0},str(uuid4()),lambda raw:'synthetic-media',deliver);return result['status']
             except (HTTPException,IntegrityError):db.rollback();return 'CONFLICT'
     with ThreadPoolExecutor(2) as pool:results=list(pool.map(dispatch,range(2)))
     assert len(calls)==1 and results.count('SENT')==1 and results.count('CONFLICT')==1

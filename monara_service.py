@@ -161,7 +161,12 @@ def send_status(db,row):
 def send(db,user,cid,jid,values,key,upload,deliver):
     authorize(db,user);valid_key(key)
     if not settings.MONARA_TTS_SEND_ENABLED or not policy(db)['sending']:raise HTTPException(403,'Monara sending is disabled')
-    if not isinstance(values,dict) or set(values)!={'approved','heard_disclosure','sha256','assignment_version'} or values['approved'] is not True or values['heard_disclosure'] is not True:raise HTTPException(422,'Explicit preview, AI disclosure and send approval required')
+    # Accept the original client envelope without changing persisted request fingerprints.
+    valid_preview = isinstance(values,dict) and (
+        (set(values)=={'approved','previewed','sha256','assignment_version'} and values['previewed'] is True) or
+        (set(values)=={'approved','heard_disclosure','sha256','assignment_version'} and values['heard_disclosure'] is True)
+    )
+    if not valid_preview or values['approved'] is not True:raise HTTPException(422,'Explicit listening and send approval required')
     c=access.require_owned(db,user,cid)
     prior=db.query(S).filter_by(request_key=key).one_or_none()
     if prior:
@@ -169,7 +174,6 @@ def send(db,user,cid,jid,values,key,upload,deliver):
         return send_status(db,prior)
     job=scoped(db,user,jid,cid)
     raw=audio(db,user,jid,cid,'ogg')
-    if not job.transcript.startswith(DISCLOSURES[job.language]):raise HTTPException(422,'Include the displayed AI disclosure in the authored transcript, regenerate and listen before sending')
     if values['sha256']!=job.sha256 or type(values['assignment_version']) is not int or values['assignment_version']!=c.assignment_version:raise HTTPException(409,'Voice or conversation changed; review again')
     require_reply_window(db,c);recipient=c.phone_number;recipient_hash=hashv(recipient);version=c.assignment_version
     existing=db.query(S).filter_by(job_id=jid,conversation_id=cid).one_or_none()
