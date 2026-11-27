@@ -1,4 +1,4 @@
-# OPTIONAL owner diagnostic build. The normal nixpacks.toml is unchanged.
+# Alternative owner diagnostic build. Keep required Monara setup in sync with nixpacks.toml.
 # Select this file explicitly; it does NOT enable any diagnostic or AI flag.
 [phases.setup]
 nixLibs = ["...", "gcc-unwrapped"]
@@ -7,4 +7,4 @@ nixLibs = ["...", "gcc-unwrapped"]
 PIP_ONLY_BINARY = "av"
 
 [phases.build]
-cmds = ["...", "python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements.voice-diagnostics.txt", "python -c \"import voice_diagnostic_tools as t; assert t.runtime().get('verified'), 'Pinned diagnostic tool unavailable'\"", "python build_info.py --write"]
+cmds = ["...", "python -m pip install --no-deps --only-binary=:all: --require-hashes -r requirements.voice-diagnostics.txt", "python -c \"import voice_diagnostic_tools as t; assert t.runtime().get('verified'), 'Pinned diagnostic tool unavailable'\"", "python -m venv .monara-venv && .monara-venv/bin/pip install -r requirements.monara.txt", ".monara-venv/bin/python monara_sdk_worker.py --capabilities", "python build_info.py --write"]
