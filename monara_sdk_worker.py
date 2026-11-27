@@ -1,6 +1,7 @@
 """Isolated google-genai runtime. stdin transcript, stdout bounded JSON; never logs inputs."""
 import base64,json,os,re,sys,time
 from monara_diagnostics import diagnostic
+from monara_formats import profile,normalize,ResponseFormatError
 STAGE='sdk_import'
 class WorkerFailure(ValueError):
     def __init__(self,reason):self.reason=reason
@@ -14,7 +15,7 @@ def config(types):
 def collect(stream,*,max_bytes=4320000,deadline=60):
     global STAGE
     STAGE='provider_stream'
-    parts=[];mime=None;size=0;started=time.monotonic();usage={}
+    parts=[];kind=None;source_info={};size=0;started=time.monotonic();usage={}
     for chunk in stream:
         STAGE='response_validation'
         if len(chunk.candidates or [])>1:raise WorkerFailure('AMBIGUOUS_AUDIO_CANDIDATES')
@@ -27,13 +28,14 @@ def collect(stream,*,max_bytes=4320000,deadline=60):
                 if inline is None:
                     if getattr(part,'text',None):raise WorkerFailure('UNEXPECTED_PROVIDER_TEXT')
                     continue
-                value=inline.mime_type or ''
-                if not re.fullmatch(r'audio/L16;\s*codec=pcm;\s*rate=24000',value,re.I):raise WorkerFailure('UNSUPPORTED_PCM_FORMAT')
-                if mime is not None and value.lower()!=mime.lower():raise WorkerFailure('MIXED_AUDIO_FORMATS')
+                part_kind,info=profile(inline.mime_type or '')
+                if kind is not None and part_kind!=kind:raise ResponseFormatError('MIXED_AUDIO_FORMATS',info)
+                if part_kind=='wav' and any(k in source_info and k in info and source_info[k]!=info[k] for k in ('sample_rate','channels','bit_depth')):raise ResponseFormatError('UNSUPPORTED_WAV_PROFILE',info)
+                kind=part_kind;source_info={**source_info,**info}
                 raw=inline.data
                 if not isinstance(raw,bytes) or not raw:raise WorkerFailure('EMPTY_AUDIO_PART')
-                mime=value;size+=len(raw)
-                if size>max_bytes:raise WorkerFailure('OUTPUT_LIMIT')
+                size+=len(raw)
+                if size>max_bytes+(65536 if kind=='wav' else 0):raise WorkerFailure('OUTPUT_LIMIT')
                 parts.append(raw)
         meta=getattr(chunk,'usage_metadata',None)
         if meta:
@@ -42,9 +44,8 @@ def collect(stream,*,max_bytes=4320000,deadline=60):
                 if type(value) is int and value>=0:usage[key]=value
         STAGE='provider_stream'
     STAGE='response_validation'
-    raw=b''.join(parts)
-    if not raw or len(raw)%2:raise WorkerFailure('INVALID_PCM_LENGTH')
-    return {'pcm':base64.b64encode(raw).decode(),'mime':mime,'usage':usage}
+    raw=normalize(b''.join(parts),kind,source_info,max_bytes)
+    return {'pcm':base64.b64encode(raw).decode(),'mime':'audio/L16;codec=pcm;rate=24000','usage':usage}
 
 def main():
     global STAGE
@@ -84,4 +85,4 @@ if __name__=='__main__':
     try:main()
     except Exception as exc:
         # Deliberately suppress raw SDK errors, URLs, response bodies and transcript.
-        print(json.dumps({'error':'PROVIDER_UNAVAILABLE_OR_INVALID_AUDIO','diagnostic':diagnostic(STAGE,exc,exc.reason if isinstance(exc,WorkerFailure) else None)}));raise SystemExit(1)
+        print(json.dumps({'error':'PROVIDER_UNAVAILABLE_OR_INVALID_AUDIO','diagnostic':diagnostic(STAGE,exc,exc.reason if isinstance(exc,(WorkerFailure,ResponseFormatError)) else None,audio=exc.audio if isinstance(exc,ResponseFormatError) else None)}));raise SystemExit(1)

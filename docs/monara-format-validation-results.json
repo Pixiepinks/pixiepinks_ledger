@@ -1,0 +1,34 @@
+{
+  "baseline": "236170c",
+  "branch": "fix/monara-validated-audio-formats",
+  "distinct_tests": {
+    "passed": 99
+  },
+  "retrieved_reports": [
+    {
+      "report": "monara-formats.xml",
+      "results": {
+        "passed": 96
+      }
+    },
+    {
+      "report": "monara-formats-release.xml",
+      "results": {
+        "passed": 31
+      }
+    }
+  ],
+  "overlapping_cases_counted_once": true,
+  "evidence": {
+    "worker_rejection": "UNSUPPORTED_PCM_FORMAT",
+    "original_mime": "Not retained; not established",
+    "railway_excerpt": "CRM request accepted at 16:40:36 Asia/Colombo; no provider MIME present",
+    "live_success_claim": false
+  },
+  "production_provider_calls": 0,
+  "whatsapp_sends": 0,
+  "production_records_modified": false,
+  "variables_modified": false,
+  "migration_required": false,
+  "existing_failure_records_preserved": true
+}
