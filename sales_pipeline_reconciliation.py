@@ -29,7 +29,9 @@ def ident(value):
 def context(db,user):
     """Batched metadata only: no WhatsApp message body queries, no identity inference."""
     authorize(user)
-    rows=s.scope(db,user).join(Lead,Lead.id==O.lead_id).filter(O.active_conversation_id.isnot(None),Lead.status.in_(['ORDER_CONFIRMED','DISPATCHED','DELIVERED','PAID'])).order_by(O.id).all()
+    past=db.query(E).filter(E.current['source'].as_string()==SOURCE,E.current['action'].as_string()=='ASSOCIATED').all()
+    history_ids={v.opportunity_id for v in past}
+    rows=s.scope(db,user).join(Lead,Lead.id==O.lead_id).filter(or_((O.active_conversation_id.isnot(None)) & Lead.status.in_(['ORDER_CONFIRMED','DISPATCHED','DELIVERED','PAID']),O.id.in_(history_ids or [-1]))).order_by(O.id).all()
     cs={v.id:v for v in db.query(C).filter(C.id.in_([o.conversation_id for o in rows] or [-1]))}
     ls={v.id:v for v in db.query(Lead).filter(Lead.id.in_([o.lead_id for o in rows] or [-1]))}
     orders=db.query(SalesOrder).filter(or_(SalesOrder.crm_conversation_id.in_(list(cs) or [-1]),SalesOrder.id.in_([o.order_id or o.data.get('order_id') for o in rows] or [-1]))).order_by(SalesOrder.id).all()
@@ -41,7 +43,7 @@ def context(db,user):
     for oid,currency,amount in db.query(SalesPayment.sales_order_id,SalesPayment.currency,func.sum(SalesPayment.amount)).filter(SalesPayment.sales_order_id.in_(ids or [-1]),SalesPayment.verification_status=='VERIFIED').group_by(SalesPayment.sales_order_id,SalesPayment.currency):paid[(oid,currency)]=Decimal(amount)
     blockers=set()
     for model in (ShopifySyncEvent,ShopifyPaymentSyncOperation,ShopifyFulfillmentOperation):
-        blockers.update(v.sales_order_id for v in db.query(model).filter(model.sales_order_id.in_(ids or [-1]),model.status.notin_(TERMINAL)))
+        blockers.update(v.sales_order_id for v in db.query(model).filter(model.sales_order_id.in_(ids or [-1]),or_(model.status.notin_(TERMINAL),model.status.is_(None))))
     links={}
     for oid,orderid in db.query(O.id,O.order_id).filter(O.order_id.in_(ids or [-1])):links.setdefault(orderid,[]).append(oid)
     histories={}
@@ -63,6 +65,7 @@ def project(ctx,o):
         if not phone(order.whatsapp_phone) or phone(order.whatsapp_phone)!=phone(c.phone_number):conflicts.append('Purchaser identity conflicts with exact conversation')
         if any(v!=o.id for v in ctx['links'].get(order.id,[])):conflicts.append('Order already linked to another opportunity')
         if not s.convertible(order):conflicts.append('Existing authoritative conversion rules reject this order')
+        if o.data.get('customer_id') is not None and o.data['customer_id']!=order.customer_id:conflicts.append('Opportunity registered customer association conflicts with order')
         if order.customer_id and (not customer or not phone(customer.phone) or phone(customer.phone)!=phone(order.whatsapp_phone)):conflicts.append('Registered customer conflicts with purchaser')
         if len({v.customer_id for v in orders if v.customer_id})>1:conflicts.append('Conflicting registered customer associations')
         if order.id in ctx['blockers'] or order.shopify_payment_reconciliation_status in {'RECONCILIATION_REQUIRED','REVIEW','UNCERTAIN'}:conflicts.append('Unresolved Shopify operation or reconciliation lock')
@@ -70,7 +73,7 @@ def project(ctx,o):
     warning=bool((lead.status=='PAID' or order and order.payment_status=='PAID') and (not order or verified<=0 or verified<Decimal(order.grand_total)))
     history=ctx['histories'].get(o.id,[]);reconciled=any(v.current.get('action')=='ASSOCIATED' for v in history)
     already=bool(order and o.order_id==order.id and o.data.get('order_id')==order.id)
-    category='conflict' if conflicts else 'history' if reconciled else 'associated' if already else 'missing' if not order else 'ready'
+    category='history' if reconciled else 'conflict' if conflicts else 'associated' if already else 'missing' if not order else 'ready'
     return {'opportunity_id':o.id,'conversation_id':c.id,'lead_id':lead.id,'name':c.customer_name or lead.customer_name,'phone':c.phone_number,'assigned':ctx['users'].get(c.assigned_to_user_id,'Unassigned'),'version':o.version,'lead_status':lead.status,'stage':s.stage(o,lead),'expected_stage':'CONFIRMED','opportunity':{'data':o.data,'created_at':s.stamp(o.created_at),'updated_at':s.stamp(o.updated_at)},'candidate_ids':[v.id for v in orders],'order':{k:getattr(order,k) for k in ('id','internal_order_number','customer_id','crm_conversation_id','order_status','payment_status','shopify_sync_status','shopify_lifecycle_status','shopify_order_name','grand_total','currency','customer_name','whatsapp_phone','created_at')} if order else None,'verified_amount':str(verified),'outstanding':str(max(Decimal(0),Decimal(order.grand_total)-verified)) if order else None,'payment_warning':warning,'conflicts':conflicts,'eligible':not conflicts and order is not None and not already,'already_associated':already,'category':category,'investigation':o.data.get('investigation'),'history_count':len(history),'evidence':{'exact_conversation':bool(order and order.crm_conversation_id==c.id),'customer_consistency':'Conflict detected' if any('customer' in x.lower() or 'purchaser' in x.lower() for x in conflicts) else 'Verified locally' if customer else 'Not applicable — no registered association','unique_candidate':len(orders)==1,'authoritative_conversion':s.convertible(order),'shopify_safety':'Conflict detected' if order and order.id in ctx['blockers'] else 'Local records checked; live Shopify not verified','freshness':'Revalidated on submission'}}
 
 def listing(db,user,params):
@@ -133,6 +136,12 @@ def associate(db,user,payload,key):
     for item in items:db.query(O).filter_by(id=item['opportunity_id']).populate_existing().with_for_update().one_or_none()
     for oid in sorted(v['order_id'] for v in items):db.query(SalesOrder).filter_by(id=oid).populate_existing().with_for_update().one_or_none()
     for lid in sorted({v.lead_id for v in candidates}):db.query(Lead).filter_by(id=lid).populate_existing().with_for_update().one()
+    # Freeze existing financial/identity evidence while it is compared; no evidence rows are written.
+    orderids=sorted(v['order_id'] for v in items)
+    for model in (SalesPayment,SalesOrderLine,ShopifySyncEvent,ShopifyPaymentSyncOperation,ShopifyFulfillmentOperation):
+        db.query(model).filter(model.sales_order_id.in_(orderids)).order_by(model.id).populate_existing().with_for_update().all()
+    customerids=sorted({v.customer_id for v in db.query(SalesOrder).filter(SalesOrder.id.in_(orderids)) if v.customer_id})
+    db.query(Customer).filter(Customer.id.in_(customerids or [-1])).order_by(Customer.id).populate_existing().with_for_update().all()
     db.expire_all()
     prior=db.query(E).filter_by(key=root).one_or_none()
     if prior:
@@ -145,7 +154,7 @@ def associate(db,user,payload,key):
         if lead.status=='PAID':lead.status='ORDER_CONFIRMED'
         o.order_id=item['order_id'];o.data={**old,'order_id':item['order_id'],'stage':'CONFIRMED','lead_status':lead.status,'closed_at':datetime.utcnow().isoformat()};o.version+=1;o.updated_at=datetime.utcnow()
         s.schedule(db,o,c)
-        db.add(E(opportunity_id=o.id,actor_id=user.id,previous={'order_id':old.get('order_id'),'stage':old_stage,'lead_status':previous_status},current={'source':SOURCE,'action':'ASSOCIATED','conversation_id':c.id,'lead_id':lead.id,'order_id':o.order_id,'stage':s.stage(o,lead),'lead_status':lead.status,'note':note.strip(),'evidence_digest':v['digest'],'evidence':v['evidence'],'payment_warning':v['payment_warning'],'batch_id':batch,'request_hash':request_hash},key=root+':'+str(o.id)))
+        db.add(E(opportunity_id=o.id,actor_id=user.id,previous={'order_id':old.get('order_id'),'stage':old_stage,'lead_status':previous_status},current={'source':SOURCE,'action':'ASSOCIATED','conversation_id':c.id,'lead_id':lead.id,'order_id':o.order_id,'stage':s.stage(o,lead),'lead_status':lead.status,'note':note.strip(),'evidence_digest':v['digest'],'evidence':{**v['evidence'],'candidate_order_ids':v['candidate_ids'],'opportunity_version':v['version'],'order_status':v['order']['order_status'],'recorded_payment_status':v['order']['payment_status'],'shopify_sync_status':v['order']['shopify_sync_status'],'shopify_lifecycle_status':v['order']['shopify_lifecycle_status'],'currency':v['order']['currency'],'order_total':str(v['order']['grand_total']),'verified_local_amount':v['verified_amount'],'outstanding':v['outstanding']},'payment_warning':v['payment_warning'],'batch_id':batch,'request_hash':request_hash},key=root+':'+str(o.id)))
         results.append({'opportunity_id':o.id,'order_id':o.order_id,'status':'ASSOCIATED','stage':s.stage(o,lead)})
     result={'batch_id':batch,'results':results,'financial_mutations':False}
     db.add(E(actor_id=user.id,previous={},current={'source':SOURCE,'action':'BATCH_COMMITTED','request_hash':request_hash,'result':result},key=root));db.flush()
@@ -165,3 +174,24 @@ def investigate(db,user,oid,payload,key):
     old=o.data.get('investigation');o.data={**o.data,'investigation':{'state':payload['state'],'note':payload['note'].strip()}};o.version+=1;o.updated_at=datetime.utcnow()
     db.add(E(opportunity_id=oid,actor_id=user.id,previous={'investigation':old},current={'source':SOURCE,'action':'INVESTIGATION','investigation':o.data['investigation'],'request_hash':h},key='investigate:'+key));db.flush()
     return {'saved':True}
+
+def readiness(db):
+    """Sanitized metadata and current counts for an already READ ONLY transaction."""
+    from sqlalchemy import inspect,text
+    inspector=inspect(db.bind);tables=set(inspector.get_table_names());required={'sales_opportunities','sales_pipeline_events','sales_orders'}
+    constraints=[]
+    if required<=tables:
+        constraints=inspector.get_unique_constraints('sales_opportunities')+inspector.get_indexes('sales_opportunities')
+    unique=any(x.get('column_names')==['order_id'] and (x.get('unique') or 'unique' not in x) for x in constraints)
+    if db.bind.dialect.name=='postgresql':
+        trigger=bool(db.execute(text("SELECT 1 FROM pg_trigger WHERE tgrelid=to_regclass('sales_pipeline_events') AND tgname='pipeline_audit_immutable' AND NOT tgisinternal AND tgenabled IN ('O','A')")).first())
+    else:trigger=bool(db.execute(text("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='pipeline_audit_no_update'")).first())
+    admins=db.query(User).filter(User.role=='ADMIN',User.is_active.is_(True)).all();allowed=[u for u in admins if __import__('staff_access').allowed(u,'whatsapp')]
+    counts=listing(db,allowed[0],{'size':'1'})['counts'] if allowed and s.settings.SALES_PIPELINE_ENABLED else None
+    blockers=[]
+    if not required<=tables:blockers.append('Required tables missing')
+    if not unique:blockers.append('Unique order association constraint missing')
+    if not trigger:blockers.append('Immutable pipeline audit trigger missing or disabled')
+    if not allowed:blockers.append('No active authorized administrator')
+    if not s.settings.SALES_PIPELINE_ENABLED:blockers.append('Existing Sales Pipeline gate disabled')
+    return {'feature_gate':'SALES_PIPELINE_ENABLED','pipeline_enabled':s.settings.SALES_PIPELINE_ENABLED,'reminders_enabled':s.settings.SALES_PIPELINE_REMINDERS_ENABLED,'administrator_authorization_ready':bool(allowed),'unique_order_association':unique,'immutable_audit_ready':trigger,'counts':counts,'blockers':blockers,'local_evidence_only':True,'mutations':False}
