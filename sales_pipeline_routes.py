@@ -45,6 +45,7 @@ def build_router(get_db,require_user,csrf,token,templates):
     async def reconciliation_write(action:str,request:Request,db=Depends(get_db),user=Depends(require_user)):
         import sales_pipeline_reconciliation as rec
         rec.authorize(user);csrf(request);p=await read_body(request)
+        if not isinstance(p,dict):raise HTTPException(422,'JSON object required')
         try:
             if action=='preview':return rec.preview(db,user,p)
             if action=='associate':result=rec.associate(db,user,p,request.headers.get('Idempotency-Key',''))

@@ -1,0 +1,652 @@
+{
+  "baseline": "796c107",
+  "branch": "feature/sales-pipeline-order-reconciliation",
+  "recovery": {
+    "workspace_recovered": true,
+    "partial_service_persisted": false,
+    "missing_implementation_reconstructed": true
+  },
+  "migration_required": false,
+  "retained_migration": "20261126_61",
+  "new_flags": [],
+  "production_variables_modified": false,
+  "production_records_modified": false,
+  "shopify_requests_performed": false,
+  "final_distinct_outcomes": {
+    "passed": 443
+  },
+  "by_test_class": {
+    "tests.test_conversation_work": 26,
+    "tests.test_customer_registration": 21,
+    "tests.test_inbox_customer_panel": 12,
+    "tests.test_loyalty": 60,
+    "tests.test_loyalty_postgres": 5,
+    "tests.test_loyalty_recovery": 37,
+    "tests.test_loyalty_recovery_postgres": 6,
+    "tests.test_manual_unread": 8,
+    "tests.test_order_recipient": 26,
+    "tests.test_order_recipient_postgres": 1,
+    "tests.test_sales_orders_phase2": 9,
+    "tests.test_sales_payment_excess": 11,
+    "tests.test_sales_payments_phase4b": 12,
+    "tests.test_sales_pipeline": 31,
+    "tests.test_sales_pipeline_browser": 4,
+    "tests.test_sales_pipeline_reconciliation": 52,
+    "tests.test_sales_pipeline_reconciliation_browser": 5,
+    "tests.test_sales_pipeline_refinement": 12,
+    "tests.test_sales_pipeline_refinement_browser": 5,
+    "tests.test_shopify_draft_order_sync": 53,
+    "tests.test_staff_notifications": 37,
+    "tests.test_whatsapp_inbox_lead_status": 10
+  },
+  "retrieved_reports": [
+    {
+      "report": "reconcile-regressions.xml",
+      "results": {
+        "passed": 321,
+        "skipped": 1
+      }
+    },
+    {
+      "report": "reconcile-identity-pg.xml",
+      "results": {
+        "passed": 12
+      }
+    },
+    {
+      "report": "reconcile-draft-pg.xml",
+      "results": {
+        "passed": 1
+      }
+    },
+    {
+      "report": "reconcile-release-browser.xml",
+      "results": {
+        "passed": 14
+      }
+    },
+    {
+      "report": "reconcile-ui-reviewed.xml",
+      "results": {
+        "passed": 5
+      }
+    },
+    {
+      "report": "reconcile-delivery-backend.xml",
+      "results": {
+        "passed": 95
+      }
+    }
+  ],
+  "skip_resolution": "The SQLite-conditional Shopify retry-claim case was rerun successfully on PostgreSQL; final distinct outcomes use that result. Five new browser cases reran and supersede overlapping cases in the combined browser report.",
+  "disposable_postgresql_cli_smoke": {
+    "status": "READ_ONLY_CHECK_COMPLETE",
+    "transaction_read_only": true,
+    "migration": "20261126_61",
+    "orders": {
+      "scope": "Current active opportunities with confirmed/dispatched/delivered/paid lead statuses",
+      "examined": 0,
+      "counts": {},
+      "association_verification_is_not_shopify_or_payment_verification": true,
+      "details": null,
+      "mutations": false
+    },
+    "reconciliation_readiness": {
+      "feature_gate": "SALES_PIPELINE_ENABLED",
+      "pipeline_enabled": true,
+      "reminders_enabled": false,
+      "administrator_authorization_ready": true,
+      "unique_order_association": true,
+      "immutable_audit_ready": true,
+      "counts": {
+        "ready": 0,
+        "missing": 0,
+        "payment": 0,
+        "conflict": 0,
+        "history": 0,
+        "associated": 0
+      },
+      "blockers": [],
+      "local_evidence_only": true,
+      "mutations": false
+    }
+  },
+  "screenshots": [
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-ambiguous.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        880
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-bulk-preview.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        1099
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-confirmed-after.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        768
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-dashboard.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        1099
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-individual-evidence.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        1099
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-investigation-panel.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        886
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-missing-investigation.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        886
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-payment-warning.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        1212
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-pipeline-entry.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        768
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-reconciled-history.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        1028
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1366-single-confirmation.png",
+      "requested_viewport": [
+        1366,
+        768
+      ],
+      "png_dimensions": [
+        1366,
+        1099
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-ambiguous.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        928
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-bulk-preview.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        974
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-confirmed-after.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        928
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-dashboard.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        974
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-individual-evidence.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        974
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-investigation-panel.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        928
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-missing-investigation.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        928
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-payment-warning.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        1085
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-pipeline-entry.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        928
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-reconciled-history.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        928
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1648-single-confirmation.png",
+      "requested_viewport": [
+        1648,
+        928
+      ],
+      "png_dimensions": [
+        1648,
+        974
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-ambiguous.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-bulk-preview.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-confirmed-after.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-dashboard.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-individual-evidence.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-investigation-panel.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-missing-investigation.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-payment-warning.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-pipeline-entry.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-reconciled-history.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/1920-single-confirmation.png",
+      "requested_viewport": [
+        1920,
+        1080
+      ],
+      "png_dimensions": [
+        1920,
+        1080
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-ambiguous.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1422
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-bulk-preview.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1641
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-confirmed-after.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1260
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-dashboard.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1641
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-individual-evidence.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1641
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-investigation-panel.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1404
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-missing-investigation.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1404
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-payment-warning.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1759
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-pipeline-entry.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1357
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-reconciled-history.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1587
+      ],
+      "synthetic": true
+    },
+    {
+      "path": "docs/images/sales-pipeline-reconciliation/412-single-confirmation.png",
+      "requested_viewport": [
+        412,
+        915
+      ],
+      "png_dimensions": [
+        412,
+        1641
+      ],
+      "synthetic": true
+    }
+  ],
+  "physical_android_verified": false,
+  "production_readiness_executed": false,
+  "remaining_operator_checks": [
+    "Fresh production READ ONLY readiness and candidate evidence",
+    "Physical Android touch acceptance",
+    "Release approval",
+    "Separate administrator approval for each current mapping or bounded reviewed bulk selection"
+  ]
+}

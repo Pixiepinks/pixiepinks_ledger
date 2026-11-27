@@ -42,7 +42,7 @@ def test_candidate_discovery_association_and_financial_isolation(candidate):
     report=client.get('/crm/sales-pipeline/api').json();assert report['counts']['CONFIRMED']==1 and report['kpi']['open']==0
     assert post(v,p).status_code==409
 
-@pytest.mark.parametrize('change',['version','order','phone','customer','lock','lead','ambiguous','already','data'])
+@pytest.mark.parametrize('change',['version','order','phone','customer','lock','lead','leadphone','conversation','ambiguous','already','data'])
 def test_stale_and_conflicting_evidence(candidate,change):
     p=payload(candidate);client,sessions,ids,csrf,oid=candidate
     with sessions() as db:
@@ -53,6 +53,8 @@ def test_stale_and_conflicting_evidence(candidate,change):
         if change=='customer':
             from models import Customer
             c=Customer(name='Different synthetic customer',phone='94770099998');db.add(c);db.flush();order.customer_id=c.id
+        if change=='leadphone':db.get(Lead,o.lead_id).mobile='94770099997'
+        if change=='conversation':order.crm_conversation_id=ids[1]
         if change=='lock':order.shopify_lifecycle_status='RECONCILIATION_REQUIRED'
         if change=='lead':order.crm_lead_id=None;db.get(Lead,o.lead_id).status='INTERESTED'
         if change=='ambiguous':db.add(SalesOrder(internal_order_number='AMBIGUOUS',idempotency_key=str(uuid4()),crm_conversation_id=ids[0],customer_name='Synthetic',whatsapp_phone=order.whatsapp_phone,created_by='test',grand_total=350,order_status='CONFIRMED'))
@@ -170,6 +172,10 @@ def test_postgres_concurrency_audit_and_readonly(pg,monkeypatch,same_key):
         db.info['pipeline_sync']=True
         oid,orderid=add_candidate(db,uid,500);db.commit();user=db.get(User,uid);d=r.evidence(db,user,oid)
         p={'items':[{'opportunity_id':oid,'order_id':orderid,'version':d['version'],'digest':d['digest'],'reviewed':True}],'confirmed':True,'note':'PostgreSQL concurrent review'}
+    with sessions() as db:
+        origin=db.get(O,oid);legacy=O(conversation_id=origin.conversation_id,lead_id=origin.lead_id,data={'order_id':orderid},order_id=None);db.add(legacy);db.commit()
+        assert not r.evidence(db,db.get(User,uid),oid)['eligible']
+        db.delete(legacy);db.commit()
     key=str(uuid4())
     def run(_):
         with sessions() as db:
@@ -186,6 +192,9 @@ def test_postgres_concurrency_audit_and_readonly(pg,monkeypatch,same_key):
         db.rollback()
         db.execute(text('SET TRANSACTION READ ONLY'));before=r.readiness(db);assert before['unique_order_association'] and before['immutable_audit_ready']
         assert db.execute(text('SHOW transaction_read_only')).scalar()=='on';db.rollback()
+        with engine.begin() as conn:
+            monkeypatch.setattr(migration,'op',Operations(MigrationContext.configure(conn)))
+            with pytest.raises(RuntimeError,match='Pipeline history exists'):migration.downgrade()
         # Unique constraint rejects a second intent reusing the order, even outside the API.
         other=O(conversation_id=db.get(O,oid).conversation_id,lead_id=db.get(O,oid).lead_id,order_id=orderid,data={'order_id':orderid})
         db.add(other)
@@ -244,3 +253,18 @@ def test_unauthed_cannot_access_candidate_data(candidate):
     response=client.get('/crm/sales-pipeline/reconciliation/api',follow_redirects=False)
     assert response.status_code in (302,303,401,403)
     assert 'SYNTHETIC-REVIEW' not in response.text
+
+def test_legacy_json_link_conflict_is_not_overlooked(candidate):
+    with candidate[1]() as db:
+        original=db.get(O,candidate[4]);order=db.query(SalesOrder).one()
+        archived=O(conversation_id=original.conversation_id,lead_id=original.lead_id,data={'order_id':order.id,'stage':'CONFIRMED'},order_id=None)
+        db.add(archived);db.commit()
+    d=detail(candidate);assert not d['eligible']
+    assert 'Order already linked to another opportunity' in d['conflicts']
+
+def test_already_associated_result_and_invalid_json(candidate):
+    p=payload(candidate);assert post(candidate,p).status_code==200
+    response=post(candidate,p)
+    assert response.json()['detail']['results'][0]['status']=='ALREADY_ASSOCIATED'
+    for action in ('preview','associate','investigate'):
+        assert post(candidate,[],action=action).status_code==422

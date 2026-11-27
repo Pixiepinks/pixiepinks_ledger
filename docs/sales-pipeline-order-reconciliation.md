@@ -57,7 +57,9 @@ Commit locks conversations, opportunities, orders, leads and existing evidence r
 refreshes the ORM identity map, and rechecks every pair **before changing any pair**.
 Order/conversation foreign-key locks also serialize related insertions. Existing order
 uniqueness remains the final duplicate guard. The entire selection commits atomically;
-one invalid/stale item causes rollback, with no silently skipped records. Normal
+one invalid/stale item causes rollback, with no silently skipped records. Rejections
+include per-record Already Associated, Conflict Detected or Requires Investigation
+results; eligible members of a rejected batch are explicitly not committed. Normal
 pipeline edits cannot remove or replace an existing association. Historical linking
 must use the reviewed administrator path rather than the legacy convenience endpoint.
 
@@ -188,6 +190,12 @@ through SQL. If a downstream correction is necessary, stop for separately review
 identity and dependency handling.
 
 ## Validation and known limits
+
+**443 distinct automated cases passed; no unresolved failures or skips.** The broad
+SQLite run had one conditional skip, subsequently passed explicitly on PostgreSQL.
+Final runs: 95 backend/pipeline, 14 browser, 321 broader regressions and 13 additional
+PostgreSQL cases. Overlapping reruns are counted once. Existing datetime/deprecation
+warnings remain; they are not counted as failures.
 
 See `sales-pipeline-order-reconciliation-results.json` for final retrieved test counts,
 and `images/sales-pipeline-reconciliation/` for actual Chromium screenshots using

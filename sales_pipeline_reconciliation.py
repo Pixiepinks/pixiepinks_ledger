@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import uuid4
 from decimal import Decimal
 from fastapi import HTTPException
-from sqlalchemy import or_,func
+from sqlalchemy import or_,func,cast,String
 from models import (Lead,User,Customer,SalesOrder,SalesOrderLine,SalesPayment,WhatsAppConversation as C,
                     ShopifySyncEvent,ShopifyPaymentSyncOperation,ShopifyFulfillmentOperation)
 from sales_pipeline_models import SalesOpportunity as O,SalesPipelineEvent as E
@@ -45,7 +45,9 @@ def context(db,user):
     for model in (ShopifySyncEvent,ShopifyPaymentSyncOperation,ShopifyFulfillmentOperation):
         blockers.update(v.sales_order_id for v in db.query(model).filter(model.sales_order_id.in_(ids or [-1]),or_(model.status.notin_(TERMINAL),model.status.is_(None))))
     links={}
-    for oid,orderid in db.query(O.id,O.order_id).filter(O.order_id.in_(ids or [-1])):links.setdefault(orderid,[]).append(oid)
+    for other in db.query(O).filter(or_(O.order_id.in_(ids or [-1]),cast(O.data['order_id'].as_string(),String).in_([str(x) for x in ids] or ['-1']))):
+        for orderid in {other.order_id,other.data.get('order_id')}:
+            if type(orderid) is int:links.setdefault(orderid,[]).append(other.id)
     histories={}
     for event in db.query(E).filter(E.opportunity_id.in_([v.id for v in rows] or [-1])).order_by(E.id):
         if event.current.get('source')==SOURCE:histories.setdefault(event.opportunity_id,[]).append(event)
@@ -57,6 +59,7 @@ def project(ctx,o):
     order=ctx['byid'].get(selected);customer=ctx['customers'].get(order.customer_id) if order else None
     conflicts=[]
     if o.active_conversation_id!=c.id or lead.whatsapp_conversation_id!=c.id:conflicts.append('Current purchase intent / lead identity mismatch')
+    if not phone(lead.mobile) or phone(lead.mobile)!=phone(c.phone_number):conflicts.append('Lead purchaser identity conflicts with conversation')
     if o.order_id!=o.data.get('order_id'):conflicts.append('Stored order association fields disagree')
     if len(orders)>1 and not o.order_id:conflicts.append('Multiple existing orders require separate identity investigation')
     if order:
@@ -116,11 +119,15 @@ def request_items(payload):
     return sorted(items,key=lambda v:v['opportunity_id'])
 
 def preview(db,user,payload):
-    authorize(user);items=request_items(payload);out=[]
+    authorize(user);items=request_items(payload);out=[];results=[];rejected=False
     for item in items:
         v=evidence(db,user,item['opportunity_id'])
-        if not v['eligible'] or v['order']['id']!=item['order_id'] or v['digest']!=item['digest'] or v['version']!=item['version']:raise HTTPException(409,'Evidence changed or candidate is ineligible; review again')
+        valid=bool(v['eligible'] and v['order']['id']==item['order_id'] and v['digest']==item['digest'] and v['version']==item['version'])
+        status='REVIEWED_ELIGIBLE_NOT_COMMITTED' if valid else 'ALREADY_ASSOCIATED' if v['already_associated'] else 'REQUIRES_INVESTIGATION' if v['category']=='missing' else 'CONFLICT_DETECTED'
+        results.append({'opportunity_id':item['opportunity_id'],'order_id':item['order_id'],'status':status,'reasons':v['conflicts'] if v['conflicts'] else [] if valid else ['Evidence changed or association already exists; review again']})
+        if not valid:rejected=True
         out.append(v)
+    if rejected:raise HTTPException(409,{'message':'No associations committed. Evidence changed or a candidate is ineligible; review again.','results':results})
     return {'items':out,'message':'Associate the selected existing CRM orders with their corresponding Sales Pipeline opportunities. No new orders, payments or Shopify transactions will be created.'}
 
 def associate(db,user,payload,key):
