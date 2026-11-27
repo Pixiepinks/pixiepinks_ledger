@@ -12,6 +12,7 @@ from settings import settings
 import conversation_access as access
 from quick_message_service import require_reply_window
 import monara_audio
+from monara_diagnostics import diagnostic,clean
 from monara_styles import PROMPTS,LABELS
 
 DEFAULT={'generation':False,'sending':False,'staff_ids':[],'monthly_characters':50000,'daily_requests_per_staff':20,'monthly_budget':'0','reserve_per_request':'0','price_per_1000_characters':None,'currency':'USD','retention_days':7,'default_style':'friendly','style_prompts':PROMPTS}
@@ -104,20 +105,25 @@ def process(sessions,jid,provider=None):
         except HTTPException:
             job.status='FAILED';job.failure='AUTHORIZATION_CHANGED';event(db,user,'GENERATION_BLOCKED',jid);db.commit();return
         job.status='GENERATING';job.started_at=datetime.utcnow();event(db,user,'GENERATION_STARTED',jid);db.commit()
+        stage='provider_execution'
         try:
             output=(provider or monara_audio.generate)(job.transcript,job.model,job.voice,job.api_version,job.style_prompt,job.language)
             # Revalidate even injected provider adapters; media never trusts extension names.
+            stage='output_validation'
             from audio_service import validate_voice_audio
             info=validate_voice_audio(output['ogg'])
             if len(output['ogg'])>settings.MONARA_TTS_MAX_AUDIO_BYTES or len(output['mp3'])>settings.MONARA_TTS_MAX_AUDIO_BYTES or info['duration_seconds']>min(90,settings.MONARA_TTS_MAX_AUDIO_SECONDS):raise ValueError()
+            stage='storage_commit'
             db.refresh(job)
             if job.status!='GENERATING':return
             job.ogg=output['ogg'];job.mp3=output['mp3'];job.duration=output['duration'];job.sha256=hashlib.sha256(job.ogg).hexdigest();job.status='READY';job.completed_at=datetime.utcnow()
             job.usage={**job.usage,'provider_reported':{k:v for k,v in output.get('usage',{}).items() if k in {'prompt_token_count','candidates_token_count','total_token_count'} and type(v) is int and v>=0}}
             event(db,user,'GENERATION_READY',jid,duration=job.duration);db.commit()
-        except Exception:
+        except Exception as exc:
+            detail=clean(getattr(exc,'diagnostic',None)) if hasattr(exc,'diagnostic') else diagnostic(stage,exc)
             db.rollback();job=db.get(J,jid)
-            if job.status=='GENERATING':job.status='FAILED';job.failure='PROVIDER_OR_ENCODING_FAILED_NO_RETRY';event(db,user,'GENERATION_FAILED',jid);db.commit()
+            if job.status=='GENERATING':
+                job.status='FAILED';job.failure='PROVIDER_OR_ENCODING_FAILED_NO_RETRY';job.usage={**job.usage,'diagnostic':detail};event(db,user,'GENERATION_FAILED',jid,diagnostic=detail);db.commit()
 
 def scoped(db,user,jid,cid=None):
     authorize(db,user);job=db.query(J).options(defer(J.ogg),defer(J.mp3)).filter_by(id=jid).one_or_none()
