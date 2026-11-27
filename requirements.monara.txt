@@ -1,0 +1,3 @@
+# Separate environment: preserve the CRM's Pydantic/httpx pins.
+-c requirements.monara.lock
+google-genai==3.6.1

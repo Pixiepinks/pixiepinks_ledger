@@ -5,6 +5,21 @@ from pydantic_settings import BaseSettings
 from pydantic import Field
 
 class Settings(BaseSettings):
+    GEMINI_API_KEY: str = Field("", repr=False)
+    MONARA_TTS_ENABLED: bool = False
+    MONARA_TTS_SEND_ENABLED: bool = False
+    MONARA_TTS_MODEL: str = "gemini-3.8-flash-tts"
+    MONARA_TTS_VOICE_ID: str = "voice_xu8nahptj1p9"
+    MONARA_TTS_API_VERSION: str = "v1beta"
+    MONARA_TTS_PYTHON: str = ""
+    MONARA_TTS_TIMEOUT_SECONDS: int = 60
+    MONARA_TTS_MAX_CHARACTERS: int = 1000
+    MONARA_TTS_MAX_AUDIO_SECONDS: int = 90
+    MONARA_TTS_MAX_AUDIO_BYTES: int = 5000000
+    MONARA_TTS_CONCURRENCY: int = 2
+    MONARA_TTS_RETENTION_DAYS: int = 7
+    MONARA_TTS_STORAGE_MAX_BYTES: int = 200000000
+
     APP_NAME: str = "PixiePinks Ledger"
 
     # Read DATABASE_URL from environment (Railway sets this automatically)

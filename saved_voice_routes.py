@@ -24,8 +24,8 @@ SEND_SLOTS = threading.BoundedSemaphore(4)
 HEADERS = {"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}
 
 
-def audio_response(raw, mime, request):
-    headers = {**HEADERS, "Accept-Ranges": "bytes", "Content-Disposition": 'inline; filename="saved-voice.ogg"'}
+def audio_response(raw, mime, request, filename="saved-voice.ogg"):
+    headers = {**HEADERS, "Accept-Ranges": "bytes", "Content-Disposition": f'inline; filename="{filename}"'}
     value = request.headers.get("range")
     if value:
         try:

@@ -7,3 +7,6 @@ ledger.db
 /build_revision.json
 # Generated local notification key material (never commit).
 *push.env
+
+# Isolated Monara SDK runtime is built locally, never committed.
+.monara-venv/
