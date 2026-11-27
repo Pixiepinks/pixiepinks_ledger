@@ -9,6 +9,7 @@ def config(types):
 def collect(stream,*,max_bytes=4320000,deadline=60):
     parts=[];mime=None;size=0;started=time.monotonic();usage={}
     for chunk in stream:
+        if len(chunk.candidates or [])>1:raise ValueError('AMBIGUOUS_AUDIO_CANDIDATES')
         if time.monotonic()-started>deadline:raise ValueError('PROVIDER_TIMEOUT')
         for candidate in chunk.candidates or []:
             if getattr(candidate,'finish_reason',None) and str(candidate.finish_reason).split('.')[-1] not in {'STOP','FINISH_REASON_UNSPECIFIED'}:raise ValueError('PROVIDER_INTERRUPTED')
@@ -36,11 +37,16 @@ def collect(stream,*,max_bytes=4320000,deadline=60):
     return {'pcm':base64.b64encode(raw).decode(),'mime':mime,'usage':usage}
 
 def main():
+    if sys.platform=='linux':
+        import resource
+        resource.setrlimit(resource.RLIMIT_AS,(768*1024*1024,768*1024*1024))
+        resource.setrlimit(resource.RLIMIT_CPU,(35,35))
     from google import genai
     from google.genai import types
     cfg=config(types)
+    options=types.HttpOptions(api_version=VERSION,timeout=60000,retry_options=types.HttpRetryOptions(attempts=1))
     if sys.argv[1:]==['--capabilities']:
-        print(json.dumps({'sdk':__import__('importlib.metadata',fromlist=['version']).version('google-genai'),'custom_voice_supported':True,'config':cfg.model_dump(mode='json',exclude_none=True),'model':MODEL,'api_version':VERSION,'style_supported':False}));return
+        print(json.dumps({'sdk':__import__('importlib.metadata',fromlist=['version']).version('google-genai'),'custom_voice_supported':True,'config':cfg.model_dump(mode='json',exclude_none=True),'model':MODEL,'api_version':VERSION,'style_supported':False,'http_options':options.model_dump(mode='json',exclude_none=True)}));return
     payload=json.loads(sys.stdin.buffer.read(16000))
     if payload.get('model')!=MODEL or payload.get('voice')!=VOICE or payload.get('api_version')!=VERSION:raise ValueError('UNAPPROVED_PROFILE')
     transcript=payload['transcript']

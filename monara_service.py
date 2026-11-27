@@ -4,6 +4,7 @@ from decimal import Decimal,InvalidOperation
 from uuid import uuid4
 import hashlib,json,re
 from sqlalchemy import func
+from sqlalchemy.orm import defer,load_only
 from fastapi import HTTPException
 from models import User,WhatsAppConversation as C,WhatsAppConversationMessage as M
 from monara_models import MonaraPolicy as P,MonaraJob as J,MonaraSend as S,MonaraEvent as E
@@ -53,6 +54,7 @@ def configure(db,user,values):
         except (ValueError,InvalidOperation,AssertionError):raise HTTPException(422,'Use nonnegative bounded decimal pricing') from None
     if p['generation'] and (Decimal(str(p['monthly_budget']))<=0 or Decimal(str(p['reserve_per_request']))<=0):raise HTTPException(422,'Explicit positive monthly cost budget and conservative per-request reservation required')
     row=lock_policy(db)
+    if p['currency']!=policy(db)['currency'] and db.query(J).filter(J.created_at>=datetime.utcnow().replace(day=1,hour=0,minute=0,second=0,microsecond=0)).first():raise HTTPException(409,'Keep one budget currency throughout the current UTC month')
     if row.version!=values['version']:raise HTTPException(409,'Policy changed; refresh')
     row.data=p;row.version+=1;event(db,user,'POLICY_CHANGED',version=row.version);db.flush();return {'version':row.version,'policy':p}
 
@@ -77,6 +79,10 @@ def create(db,user,cid,values,key):
     # Reserve before external calls. Failed/uncertain jobs retain usage reservations.
     if db.query(J).filter(J.staff_id==user.id,J.created_at>=day).count()>=p['daily_requests_per_staff']:raise HTTPException(429,'Staff daily generation limit reached')
     if db.query(J).filter(J.status.in_(['PENDING','GENERATING'])).count()>=max(1,min(4,settings.MONARA_TTS_CONCURRENCY)):raise HTTPException(429,'Monara generation slots are busy')
+    stored=db.query(func.coalesce(func.sum(func.coalesce(func.length(J.mp3),0)+func.coalesce(func.length(J.ogg),0)),0)).scalar()
+    in_flight=db.query(J).filter(J.status.in_(['PENDING','GENERATING'])).count()
+    reserve_bytes=2*min(5000000,settings.MONARA_TTS_MAX_AUDIO_BYTES)
+    if stored+(in_flight+1)*reserve_bytes>max(0,min(1000000000,settings.MONARA_TTS_STORAGE_MAX_BYTES)):raise HTTPException(429,'Durable audio storage budget reached; administrator retention review required')
     chars,cost=db.query(func.coalesce(func.sum(J.characters),0),func.coalesce(func.sum(J.reserved_cost),0)).filter(J.created_at>=month).one()
     reserve=Decimal(str(p['reserve_per_request']));budget=Decimal(str(p['monthly_budget']))
     if chars+len(text)>p['monthly_characters'] or reserve<=0 or budget<=0 or Decimal(cost)+reserve>budget:raise HTTPException(429,'Monthly reserved usage budget reached')
@@ -111,7 +117,7 @@ def process(sessions,jid,provider=None):
             if job.status=='GENERATING':job.status='FAILED';job.failure='PROVIDER_OR_ENCODING_FAILED_NO_RETRY';event(db,user,'GENERATION_FAILED',jid);db.commit()
 
 def scoped(db,user,jid,cid=None):
-    authorize(db,user);job=db.get(J,jid)
+    authorize(db,user);job=db.query(J).options(defer(J.ogg),defer(J.mp3)).filter_by(id=jid).one_or_none()
     if not job:raise HTTPException(404,'Voice not found')
     if job.shared:return job
     c=access.require_visible(db,user,job.conversation_id)
@@ -119,7 +125,7 @@ def scoped(db,user,jid,cid=None):
     return job
 
 def public(job):
-    return {k:getattr(job,k) for k in ('id','conversation_id','status','transcript','language','style','model','voice','characters','duration','shared','active','title','category','failure','created_at','expires_at')}
+    return {k:getattr(job,k) for k in ('id','staff_id','conversation_id','status','transcript','language','style','model','voice','characters','duration','shared','active','title','category','failure','created_at','expires_at')}
 
 def audio(db,user,jid,cid,kind):
     job=scoped(db,user,jid,cid)
@@ -150,7 +156,7 @@ def send(db,user,cid,jid,values,key,upload,deliver):
     c=access.require_owned(db,user,cid)
     prior=db.query(S).filter_by(request_key=key).one_or_none()
     if prior:
-        if (prior.staff_id,prior.conversation_id,prior.job_id)!=(user.id,cid,jid):raise HTTPException(409,'Send key belongs to another request')
+        if (prior.staff_id,prior.conversation_id,prior.job_id)!=(user.id,cid,jid) or prior.fingerprint!=hashv(values):raise HTTPException(409,'Send key belongs to another request')
         return send_status(db,prior)
     job=scoped(db,user,jid,cid)
     raw=audio(db,user,jid,cid,'ogg')
@@ -159,7 +165,7 @@ def send(db,user,cid,jid,values,key,upload,deliver):
     require_reply_window(db,c);recipient=c.phone_number;recipient_hash=hashv(recipient);version=c.assignment_version
     existing=db.query(S).filter_by(job_id=jid,conversation_id=cid).one_or_none()
     if existing:raise HTTPException(409,'This audio already has a send intent; inspect its status, never replay an uncertain send')
-    row=S(id=str(uuid4()),request_key=key,job_id=jid,staff_id=user.id,conversation_id=cid,recipient_hash=recipient_hash,status='UPLOADING');db.add(row);event(db,user,'SEND_APPROVED',jid,send_id=row.id);db.commit()
+    row=S(id=str(uuid4()),request_key=key,job_id=jid,fingerprint=hashv(values),staff_id=user.id,conversation_id=cid,recipient_hash=recipient_hash,status='UPLOADING');db.add(row);event(db,user,'SEND_APPROVED',jid,send_id=row.id,library_reuse=job.shared);db.commit()
     try:media=upload(raw)
     except Exception:media=None
     db.expire_all();row=db.get(S,row.id);job=db.get(J,jid)
@@ -178,7 +184,7 @@ def send(db,user,cid,jid,values,key,upload,deliver):
 def maintain(db,user):
     authorize(db,user,admin=True);now=datetime.utcnow();expired=0;uncertain=0
     lock_policy(db)
-    for job in db.query(J).filter(J.expires_at<=now,J.status!='EXPIRED').with_for_update():
+    for job in db.query(J).options(defer(J.ogg),defer(J.mp3),defer(J.transcript)).filter(J.expires_at<=now,J.status!='EXPIRED').with_for_update():
         if db.query(S).filter(S.job_id==job.id,S.status.in_(['UPLOADING','SENDING'])).first():continue
         job.ogg=None;job.mp3=None;job.transcript='';job.status='EXPIRED';job.active=False;event(db,user,'RETENTION_EXPIRED',job.id);expired+=1
     for job in db.query(J).filter(J.status.in_(['PENDING','GENERATING']),J.created_at<now-timedelta(minutes=5)).with_for_update():
@@ -190,6 +196,17 @@ def maintain(db,user):
 def summary(db,user):
     authorize(db,user,admin=True);now=datetime.utcnow();month=now.replace(day=1,hour=0,minute=0,second=0,microsecond=0);day=now.replace(hour=0,minute=0,second=0,microsecond=0)
     def counts(since):
-        rows=db.query(J).filter(J.created_at>=since).all()
-        return {'requests':len(rows),'ready':sum(v.status=='READY' for v in rows),'failed':sum(v.status=='FAILED' for v in rows),'characters':sum(v.characters for v in rows),'estimated_cost':str(sum((v.estimated_cost or Decimal(0) for v in rows),Decimal(0))) if any(v.estimated_cost is not None for v in rows) else None,'reserved_cost':str(sum((v.reserved_cost or Decimal(0) for v in rows),Decimal(0))),'actual_provider_billing':None,'by_staff':{str(uid):sum(v.staff_id==uid for v in rows) for uid in {v.staff_id for v in rows}}}
+        rows=db.query(J).options(load_only(J.completed_at,J.status,J.characters,J.estimated_cost,J.reserved_cost,J.usage,J.staff_id)).filter(J.created_at>=since).all()
+        return {'requests':len(rows),'ready':sum(v.completed_at is not None for v in rows),'success_rate':sum(v.completed_at is not None for v in rows)/len(rows) if rows else None,'provider_total_tokens':sum(v.usage.get('provider_reported',{}).get('total_token_count',0) for v in rows),'library_send_reuses':sum(bool(e.detail.get('library_reuse')) for e in db.query(E).filter(E.action=='SEND_APPROVED',E.created_at>=since)),'failed':sum(v.status=='FAILED' for v in rows),'characters':sum(v.characters for v in rows),'estimated_cost':str(sum((v.estimated_cost or Decimal(0) for v in rows),Decimal(0))) if any(v.estimated_cost is not None for v in rows) else None,'reserved_cost':str(sum((v.reserved_cost or Decimal(0) for v in rows),Decimal(0))),'actual_provider_billing':None,'by_staff':{str(uid):sum(v.staff_id==uid for v in rows) for uid in {v.staff_id for v in rows}}}
     return {'daily':counts(day),'monthly':counts(month),'recent_audit':[{'id':v.id,'staff_id':v.staff_id,'action':v.action,'at':v.created_at,'detail':v.detail} for v in db.query(E).order_by(E.id.desc()).limit(100)],'cost_notice':'Estimates/reservations are operator-configured, not actual Gemini billing. Provider token metadata is retained on each job.'}
+
+
+def playback(db,user,cid,message_id):
+    from outbound_media_service import authorize as inbox_authorize
+    inbox_authorize(user);access.require_visible(db,user,cid)
+    attempt=db.query(S).filter_by(conversation_id=cid,message_id=message_id,status='SENT').one_or_none()
+    if not attempt:raise HTTPException(404,'Sent voice not found')
+    job=db.get(J,attempt.job_id)
+    if not job or not job.ogg or job.expires_at<=datetime.utcnow():raise HTTPException(410,'Voice retention has expired')
+    if hashlib.sha256(job.ogg).hexdigest()!=job.sha256:raise HTTPException(503,'Voice integrity check failed')
+    return job.ogg

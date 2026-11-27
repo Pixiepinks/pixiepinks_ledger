@@ -44,6 +44,7 @@ class MonaraSend(Base):
     id=Column(String(36),primary_key=True)
     request_key=Column(String(100),nullable=False,unique=True)
     job_id=Column(String(36),ForeignKey('monara_jobs.id'),nullable=False,index=True)
+    fingerprint=Column(String(64),nullable=False)
     conversation_id=Column(Integer,ForeignKey('whatsapp_conversations.id'),nullable=False,index=True)
     staff_id=Column(Integer,ForeignKey('users.id'),nullable=False)
     recipient_hash=Column(String(64),nullable=False)

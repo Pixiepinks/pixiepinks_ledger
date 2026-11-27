@@ -2,6 +2,7 @@
 from fastapi import APIRouter,Request,Depends,BackgroundTasks,HTTPException,Query
 from fastapi.responses import Response
 from sqlalchemy.exc import IntegrityError,OperationalError
+from sqlalchemy.orm import defer
 from learning_routes import read_body
 from monara_models import MonaraJob as J,MonaraSend as S,MonaraPolicy as P
 from settings import settings
@@ -35,13 +36,16 @@ def build_router(get_db,require_user,csrf,token,templates,sessions,upload,delive
     def job(jid:str,cid:int,user=Depends(require_user),db=Depends(get_db)):
         access.require_visible(db,user,cid);row=svc.scoped(db,user,jid,cid);return {**svc.public(row),'sha256':row.sha256,'usage':row.usage,'estimated_cost':row.estimated_cost,'reserved_cost':row.reserved_cost,'send':svc.send_status(db,v) if (v:=db.query(S).filter_by(job_id=jid,conversation_id=cid).first()) else {'status':'NOT_SENT'}}
     @r.get('/crm/monara/jobs/{jid}/audio/{kind}')
-    def audio(jid:str,kind:str,cid:int|None=None,user=Depends(require_user),db=Depends(get_db)):
+    def audio(jid:str,kind:str,request:Request,cid:int|None=None,user=Depends(require_user),db=Depends(get_db)):
         raw=svc.audio(db,user,jid,cid,kind)
-        return Response(raw,media_type='audio/mpeg' if kind=='mp3' else 'audio/ogg',headers={**HEADERS,'Content-Disposition':f'inline; filename="PixiePinks-Monara-AI.{kind}"'})
+        from saved_voice_routes import audio_response
+        return audio_response(raw,'audio/mpeg' if kind=='mp3' else 'audio/ogg',request,filename=f'PixiePinks-Monara-AI.{kind}')
     @r.get('/crm/monara/library')
-    def library(q:str=Query('',max_length=100),offset:int=Query(0,ge=0,le=100000),user=Depends(require_user),db=Depends(get_db)):
+    def library(q:str=Query('',max_length=100),inactive:bool=False,offset:int=Query(0,ge=0,le=100000),user=Depends(require_user),db=Depends(get_db)):
         svc.authorize(db,user)
-        query=db.query(J).filter_by(shared=True,active=True,status='READY').filter(J.expires_at>svc.datetime.utcnow())
+        query=db.query(J).options(defer(J.ogg),defer(J.mp3)).filter_by(shared=True,status='READY').filter(J.expires_at>svc.datetime.utcnow())
+        if inactive:svc.authorize(db,user,admin=True)
+        else:query=query.filter(J.active.is_(True))
         if q:query=query.filter(J.title.icontains(q,autoescape=True)|J.category.icontains(q,autoescape=True)|J.transcript.icontains(q,autoescape=True))
         return {'rows':[svc.public(v) for v in query.order_by(J.created_at.desc()).offset(offset).limit(25)],'total':query.count(),'limit':25}
     @r.post('/crm/monara/jobs/{jid}/library')
@@ -69,5 +73,6 @@ def build_router(get_db,require_user,csrf,token,templates,sessions,upload,delive
         row=db.query(J).filter_by(id=jid,shared=True).with_for_update().one_or_none()
         if not row:raise HTTPException(404,'Library entry not found')
         if not isinstance(p,dict) or set(p)!={'active'} or type(p['active']) is not bool:raise HTTPException(422,'Explicit active state required')
+        if p['active'] and (row.status!='READY' or row.expires_at<=svc.datetime.utcnow()):raise HTTPException(409,'Expired audio cannot be reactivated')
         row.active=p['active'];svc.event(db,user,'LIBRARY_ACTIVE_CHANGED',jid,active=row.active);db.commit();return {'active':row.active}
     return r

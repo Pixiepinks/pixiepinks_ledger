@@ -2631,7 +2631,7 @@ def whatsapp_message_media(conversation_id: int, message_id: int, request: Reque
         conversation_access.require_visible(db,user,conversation_id)
         attempt=db.query(MonaraSend).filter_by(conversation_id=conversation_id,message_id=message_id).one_or_none()
         if not attempt:raise HTTPException(404,'Voice not found')
-        return audio_response(monara.audio(db,user,attempt.job_id,conversation_id,'ogg'),'audio/ogg',request)
+        return audio_response(monara.playback(db,user,conversation_id,message_id),'audio/ogg',request)
     if message.response_kind == "staff_saved_voice":
         quick_messages.authorize(user)
         from models import SavedVoice, SavedVoiceSend
@@ -4846,5 +4846,5 @@ templates.env.globals['sales_pipeline_enabled'] = lambda: settings.SALES_PIPELIN
 # Manual Monara jobs are independent of Global AI automatic reply admission.
 from monara_routes import build_router as build_monara_router
 app.include_router(build_monara_router(get_db, require_user, _require_csrf, _csrf_token, templates,
-    lambda: SessionLocal, upload_whatsapp_audio,
+    lambda: SessionLocal, lambda raw: upload_whatsapp_audio(raw),
     lambda recipient, media: send_whatsapp_audio(recipient, media, voice=False, return_outcome=True)))

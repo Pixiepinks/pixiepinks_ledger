@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     MONARA_TTS_MAX_AUDIO_BYTES: int = 5000000
     MONARA_TTS_CONCURRENCY: int = 2
     MONARA_TTS_RETENTION_DAYS: int = 7
+    MONARA_TTS_STORAGE_MAX_BYTES: int = 200000000
 
     APP_NAME: str = "PixiePinks Ledger"
 
